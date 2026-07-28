@@ -11,7 +11,11 @@ build.cxxflags += [
     "-Werror",
 ]
 
-libstd = dependency(ldflags=[] if "-Dno_vendored_std" in build.cppflags else ["-lstd"])
+libstd = dependency(
+    ldflags=[]
+    if "-Dno_vendored_std" in build.cppflags or "-lstd" in build.ldflags
+    else ["-lstd"]
+)
 
 common_sources = [
     "$(S)/input.cpp",
