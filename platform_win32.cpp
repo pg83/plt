@@ -1,17 +1,17 @@
 #include "platform_win32.h"
 
 #include "input.h"
-#include "platform.h"
 #include "poller.h"
 #include "window.h"
+#include "platform.h"
 
+#include <std/sys/crt.h>
+#include <std/sym/i_map.h>
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
 #include <std/lib/vector.h>
-#include <std/mem/obj_pool.h>
-#include <std/sym/i_map.h>
-#include <std/sys/crt.h>
 #include <std/thr/poll_fd.h>
+#include <std/mem/obj_pool.h>
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -1012,6 +1012,6 @@ LRESULT CALLBACK WindowImpl::procedure(HWND handle, UINT message, WPARAM wparam,
     return DefWindowProcW(handle, message, wparam, lparam);
 }
 
-Platform* createWin32Platform(ObjPool& owner) {
+Platform* plt::createWin32Platform(ObjPool& owner) {
     return owner.make<PlatformImpl>(owner);
 }

@@ -1,47 +1,44 @@
 #include "platform_wayland.h"
 
 #include "input.h"
-#include "platform.h"
 #include "poller.h"
-#include "pointer_grab.h"
 #include "window.h"
+#include "platform.h"
+#include "pointer_grab.h"
+#include "xdg-shell-client-protocol.h"
+#include "viewporter-client-protocol.h"
+#include "xdg-shell-client-protocol-code.h"
+#include "cursor-shape-v1-client-protocol.h"
+#include "viewporter-client-protocol-code.h"
+#include "xdg-activation-v1-client-protocol.h"
+#include "fractional-scale-v1-client-protocol.h"
+#include "cursor-shape-v1-client-protocol-code.h"
+#include "xdg-activation-v1-client-protocol-code.h"
+#include "fractional-scale-v1-client-protocol-code.h"
+#include "xdg-decoration-unstable-v1-client-protocol.h"
+#include "primary-selection-unstable-v1-client-protocol.h"
+#include "xdg-decoration-unstable-v1-client-protocol-code.h"
+#include "primary-selection-unstable-v1-client-protocol-code.h"
 
+#include <std/sys/crt.h>
+#include <std/sym/i_map.h>
+#include <std/sys/throw.h>
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
 #include <std/lib/vector.h>
-#include <std/mem/obj_pool.h>
-#include <std/sym/i_map.h>
-#include <std/sys/crt.h>
-#include <std/sys/throw.h>
 #include <std/thr/poll_fd.h>
-
-#include <wayland-client.h>
-#include <xkbcommon/xkbcommon-keysyms.h>
-#include <xkbcommon/xkbcommon.h>
-
-#include "cursor-shape-v1-client-protocol.h"
-#include "fractional-scale-v1-client-protocol.h"
-#include "primary-selection-unstable-v1-client-protocol.h"
-#include "viewporter-client-protocol.h"
-#include "xdg-activation-v1-client-protocol.h"
-#include "xdg-decoration-unstable-v1-client-protocol.h"
-#include "xdg-shell-client-protocol.h"
+#include <std/mem/obj_pool.h>
 
 #include <cerrno>
+#include <poll.h>
 #include <climits>
 #include <fcntl.h>
-#include <linux/input-event-codes.h>
-#include <poll.h>
-#include <sys/mman.h>
 #include <unistd.h>
-
-#include "cursor-shape-v1-client-protocol-code.h"
-#include "fractional-scale-v1-client-protocol-code.h"
-#include "primary-selection-unstable-v1-client-protocol-code.h"
-#include "viewporter-client-protocol-code.h"
-#include "xdg-activation-v1-client-protocol-code.h"
-#include "xdg-decoration-unstable-v1-client-protocol-code.h"
-#include "xdg-shell-client-protocol-code.h"
+#include <sys/mman.h>
+#include <wayland-client.h>
+#include <xkbcommon/xkbcommon.h>
+#include <linux/input-event-codes.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 
 using namespace stl;
 using namespace plt;
@@ -1848,6 +1845,6 @@ RenderContext WindowImpl::renderContext() const {
     };
 }
 
-Platform* createWaylandPlatform(ObjPool& owner) {
+Platform* plt::createWaylandPlatform(ObjPool& owner) {
     return owner.make<PlatformImpl>(owner);
 }

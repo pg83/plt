@@ -1,17 +1,17 @@
 #include "platform_cocoa.h"
 
 #include "input.h"
-#include "platform.h"
 #include "poller.h"
 #include "window.h"
+#include "platform.h"
 
+#include <std/sys/crt.h>
+#include <std/sym/i_map.h>
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
 #include <std/lib/vector.h>
-#include <std/mem/obj_pool.h>
-#include <std/sym/i_map.h>
-#include <std/sys/crt.h>
 #include <std/thr/poll_fd.h>
+#include <std/mem/obj_pool.h>
 
 #import <AppKit/AppKit.h>
 #import <CoreVideo/CoreVideo.h>
@@ -886,6 +886,6 @@ void cocoaPointerPresenceImpl(void* owner, bool present) {
     ((WindowImpl*)(owner))->pointerPresence(present);
 }
 
-Platform* createCocoaPlatform(ObjPool& owner) {
+Platform* plt::createCocoaPlatform(ObjPool& owner) {
     return owner.make<PlatformImpl>(owner);
 }
