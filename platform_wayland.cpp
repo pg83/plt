@@ -33,6 +33,8 @@
 #include <poll.h>
 #include <climits>
 #include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <wayland-client.h>
@@ -47,6 +49,7 @@ namespace {
     struct PlatformImpl;
     struct PollerImpl;
     struct WindowImpl;
+    struct SelectionTransfer;
 
     constexpr u32 scaleDenominator = 120;
     const StringView utf8Mime(u8"text/plain;charset=utf-8");
@@ -120,8 +123,9 @@ namespace {
         void setMinimumSize(u32 width, u32 height) override;
         void setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
         WindowInfo info() const override;
-        StringView readPrimary() override;
-        StringView readClipboard() override;
+        void readPrimary(ClipboardRead& read) override;
+        void readClipboard(ClipboardRead& read) override;
+        void cancelClipboardRead(ClipboardRead& read) override;
         void writePrimary(StringView content) override;
         void writeClipboard(StringView content) override;
         void pointerIcon(PointerIcon icon) override;
@@ -142,7 +146,7 @@ namespace {
         u32 logicalForPixel(u32 pixels) const;
         u32 snappedLogical(u32 suggested, u32 unit, u32 base) const;
         void setLogicalSize(u32 width, u32 height, bool notify);
-        StringView receive(Offer& offer, bool primary);
+        void receive(Offer& offer, bool primary, ClipboardRead& read);
 
         PlatformImpl& platform;
         InputSink* input = nullptr;
@@ -156,7 +160,6 @@ namespace {
         struct wl_callback* frameCallback = nullptr;
         struct xdg_activation_token_v1* activationToken = nullptr;
         Buffer title;
-        Buffer clipboardRead;
         u32 logicalWidth = 1;
         u32 logicalHeight = 1;
         u32 pendingWidth = 0;
@@ -201,6 +204,7 @@ namespace {
         void dispatch();
         void dispatchTimeouts();
         u64 nextDeadline() const;
+        void serial(u32 value);
         void keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool repeated = false);
         void repeat();
         void stopRepeat();
@@ -214,7 +218,10 @@ namespace {
         void setCursor(WindowImpl& window);
         void activate(WindowImpl& window);
         void writeSelection(int fd, StringView content);
-        StringView readSelection(int fd, Buffer& destination);
+        void readSelection(int fd, WindowImpl& window, ClipboardRead& read);
+        void completeSelection(WindowImpl& window, ClipboardRead& read, StringView content, bool success);
+        void cancelSelection(WindowImpl& window, ClipboardRead* read);
+        void removeTransfer(SelectionTransfer& transfer);
 
         PollerImpl* poller_ = nullptr;
         struct wl_display* display = nullptr;
@@ -259,14 +266,75 @@ namespace {
         Offer primaryOffer;
         Buffer clipboardContent;
         Buffer primaryContent;
+        SelectionTransfer* transfers = nullptr;
         bool clipboardPending = false;
         bool primaryPending = false;
         bool running = false;
     };
 
+    struct SelectionTransfer final: public PollCallback, public TimerCallback {
+        SelectionTransfer(
+            PlatformImpl& platform,
+            int fd,
+            WindowImpl* window,
+            ClipboardRead* read,
+            StringView content,
+            bool writing,
+            bool success
+        );
+
+        void start();
+        void ready(PollFD event) override;
+        void ready() override;
+        void cancel();
+        void finish(bool success);
+        void dispose();
+
+        PlatformImpl& platform;
+        SelectionTransfer* next = nullptr;
+        WindowImpl* window = nullptr;
+        ClipboardRead* read = nullptr;
+        Buffer content;
+        size_t offset = 0;
+        int fd = -1;
+        bool writing = false;
+        bool success = false;
+        bool fdArmed = false;
+        bool timerArmed = false;
+        bool dispatching = false;
+        bool cancelled = false;
+    };
+
     bool textMime(const char* mime) {
         const StringView value(mime);
         return value == utf8Mime || value == plainMime || value == utf8StringMime;
+    }
+
+    ssize_t writeNoSignal(int fd, const void* data, size_t size) {
+        sigset_t blocked;
+        sigset_t previous;
+        sigset_t pending;
+        sigemptyset(&blocked);
+        sigaddset(&blocked, SIGPIPE);
+        const int maskError = pthread_sigmask(SIG_BLOCK, &blocked, &previous);
+        if (maskError != 0) {
+            errno = maskError;
+            return -1;
+        }
+        bool wasPending = false;
+        if (sigpending(&pending) == 0) {
+            wasPending = sigismember(&pending, SIGPIPE) == 1;
+        }
+        const ssize_t result = write(fd, data, size);
+        const int writeError = errno;
+        if (result < 0 && writeError == EPIPE && !wasPending) {
+            const struct timespec timeout{};
+            while (sigtimedwait(&blocked, nullptr, &timeout) < 0 && errno == EINTR) {
+            }
+        }
+        const int restoreError = pthread_sigmask(SIG_SETMASK, &previous, nullptr);
+        errno = result < 0 ? writeError : restoreError;
+        return result;
     }
 
     [[noreturn]]
@@ -437,7 +505,7 @@ namespace {
 
     void keyboardEnter(void* data, struct wl_keyboard*, u32 serial, struct wl_surface* surface, struct wl_array*) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
-        platform.latestSerial = serial;
+        platform.serial(serial);
         platform.keyboardFocus = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
         if (platform.keyboardFocus != nullptr) {
             platform.keyboardFocus->focused = true;
@@ -450,7 +518,7 @@ namespace {
 
     void keyboardLeave(void* data, struct wl_keyboard*, u32 serial, struct wl_surface* surface) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
-        platform.latestSerial = serial;
+        platform.serial(serial);
         WindowImpl* const window = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
         if (window != nullptr) {
             window->focused = false;
@@ -471,7 +539,7 @@ namespace {
 
     void keyboardModifiers(void* data, struct wl_keyboard*, u32 serial, u32 depressed, u32 latched, u32 locked, u32 group) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
-        platform.latestSerial = serial;
+        platform.serial(serial);
         if (platform.xkbState != nullptr) {
             xkb_state_update_mask(platform.xkbState, depressed, latched, locked, 0, 0, group);
         }
@@ -494,7 +562,7 @@ namespace {
 
     void pointerEnter(void* data, struct wl_pointer*, u32 serial, struct wl_surface* surface, wl_fixed_t x, wl_fixed_t y) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
-        platform.latestSerial = serial;
+        platform.serial(serial);
         WindowImpl* const window = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
         platform.pointerGrab.enter(window);
         if (window != nullptr) {
@@ -504,7 +572,7 @@ namespace {
 
     void pointerLeave(void* data, struct wl_pointer*, u32 serial, struct wl_surface* surface) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
-        platform.latestSerial = serial;
+        platform.serial(serial);
         WindowImpl* const window = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
         if (window != nullptr) {
             window->pointerLeft();
@@ -522,7 +590,7 @@ namespace {
 
     void pointerButton(void* data, struct wl_pointer*, u32 serial, u32 time, u32 button, u32 state) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
-        platform.latestSerial = serial;
+        platform.serial(serial);
         WindowImpl* const window = (WindowImpl*)(platform.pointerGrab.buttonTarget(state == WL_POINTER_BUTTON_STATE_PRESSED));
         if (window != nullptr) {
             window->pointerButton(time, button, state);
@@ -726,6 +794,176 @@ const char* Offer::mime() const {
     return plain ? "text/plain" : nullptr;
 }
 
+SelectionTransfer::SelectionTransfer(
+    PlatformImpl& platform_,
+    int fd_,
+    WindowImpl* window_,
+    ClipboardRead* read_,
+    StringView content_,
+    bool writing_,
+    bool success_
+)
+    : platform(platform_)
+    , window(window_)
+    , read(read_)
+    , content(content_)
+    , fd(fd_)
+    , writing(writing_)
+    , success(success_)
+{
+    next = platform.transfers;
+    platform.transfers = this;
+}
+
+void SelectionTransfer::start() {
+    if (fd < 0) {
+        timerArmed = true;
+        platform.poller_->timeout(0, *this);
+        return;
+    }
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        if (writing) {
+            dispose();
+        } else {
+            close(fd);
+            fd = -1;
+            success = false;
+            timerArmed = true;
+            platform.poller_->timeout(0, *this);
+        }
+        return;
+    }
+    fdArmed = true;
+    platform.poller_->arm(
+        {
+            .fd = fd,
+            .flags = writing ? PollFlag::Out : PollFlag::In,
+        },
+        *this
+    );
+}
+
+void SelectionTransfer::ready(PollFD) {
+    fdArmed = false;
+    if (cancelled) {
+        dispose();
+        return;
+    }
+    if (writing) {
+        const size_t remaining = content.length() - offset;
+        if (remaining == 0) {
+            dispose();
+            return;
+        }
+        const size_t chunk = min<size_t>(remaining, 64 * 1024);
+        const ssize_t count = writeNoSignal(
+            fd,
+            (const u8*)(content.data()) + offset,
+            chunk
+        );
+        if (count > 0) {
+            offset += (size_t)(count);
+            if (offset == content.length()) {
+                dispose();
+                return;
+            }
+        } else if (count < 0 && errno == EINTR) {
+        } else if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            dispose();
+            return;
+        }
+        fdArmed = true;
+        platform.poller_->arm({.fd = fd, .flags = PollFlag::Out}, *this);
+        return;
+    }
+
+    u8 bytes[64 * 1024];
+    const ssize_t count = ::read(fd, bytes, sizeof(bytes));
+    if (count > 0) {
+        dispatching = true;
+        ClipboardRead* const target = read;
+        const bool accepted =
+            target != nullptr
+            && target->data(StringView(bytes, (size_t)(count)));
+        dispatching = false;
+        if (cancelled) {
+            dispose();
+            return;
+        }
+        if (!accepted) {
+            finish(false);
+            return;
+        }
+        fdArmed = true;
+        platform.poller_->arm({.fd = fd, .flags = PollFlag::In}, *this);
+    } else if (count == 0) {
+        finish(true);
+    } else if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+        fdArmed = true;
+        platform.poller_->arm({.fd = fd, .flags = PollFlag::In}, *this);
+    } else {
+        finish(false);
+    }
+}
+
+void SelectionTransfer::ready() {
+    timerArmed = false;
+    if (cancelled) {
+        dispose();
+        return;
+    }
+    bool accepted = success;
+    if (accepted && !content.empty()) {
+        dispatching = true;
+        ClipboardRead* const target = read;
+        accepted =
+            target != nullptr
+            && target->data(StringView(content));
+        dispatching = false;
+    }
+    if (cancelled) {
+        dispose();
+        return;
+    }
+    finish(accepted);
+}
+
+void SelectionTransfer::cancel() {
+    read = nullptr;
+    if (dispatching) {
+        cancelled = true;
+        return;
+    }
+    dispose();
+}
+
+void SelectionTransfer::finish(bool completed) {
+    ClipboardRead* const target = read;
+    read = nullptr;
+    dispose();
+    if (target != nullptr) {
+        target->done(completed);
+    }
+}
+
+void SelectionTransfer::dispose() {
+    if (fdArmed) {
+        platform.poller_->disarm(fd);
+        fdArmed = false;
+    }
+    if (timerArmed) {
+        platform.poller_->cancel(*this);
+        timerArmed = false;
+    }
+    if (fd >= 0) {
+        close(fd);
+        fd = -1;
+    }
+    platform.removeTransfer(*this);
+    delete this;
+}
+
 PlatformImpl::PlatformImpl(ObjPool& owner)
     : poller_(owner.make<PollerImpl>(owner, *this))
 {
@@ -749,6 +987,9 @@ PlatformImpl::PlatformImpl(ObjPool& owner)
 }
 
 PlatformImpl::~PlatformImpl() {
+    while (transfers != nullptr) {
+        transfers->cancel();
+    }
     stopRepeat();
     pendingClipboardOffer.reset();
     clipboardOffer.reset();
@@ -984,12 +1225,21 @@ void PollerImpl::wait(u64 monotonicDeadline) {
             return;
         }
     }
-    wl_display_flush(platform.display);
+    int flushResult;
+    do {
+        flushResult = wl_display_flush(platform.display);
+    } while (flushResult < 0 && errno == EINTR);
+    const bool needsWrite = flushResult < 0 && errno == EAGAIN;
+    if (flushResult < 0 && !needsWrite) {
+        wl_display_cancel_read(platform.display);
+        platform.stop();
+        return;
+    }
 
     pollFDs.clear();
     pollFDs.pushBack({
         .fd = wl_display_get_fd(platform.display),
-        .events = POLLIN,
+        .events = (short)(POLLIN | (needsWrite ? POLLOUT : 0)),
         .revents = 0,
     });
     armed.visit([this](const ArmedFD& source) {
@@ -1026,6 +1276,14 @@ void PollerImpl::wait(u64 monotonicDeadline) {
     }
     if (displayEvents & (POLLERR | POLLHUP | POLLNVAL)) {
         platform.stop();
+    }
+    if (displayEvents & POLLOUT) {
+        do {
+            flushResult = wl_display_flush(platform.display);
+        } while (flushResult < 0 && errno == EINTR);
+        if (flushResult < 0 && errno != EAGAIN) {
+            platform.stop();
+        }
     }
     if (wl_display_dispatch_pending(platform.display) < 0) {
         platform.stop();
@@ -1253,8 +1511,14 @@ u32 PlatformImpl::baseCodepoint(xkb_keycode_t key) const {
     return xkb_keysym_to_utf32(symbols[0]);
 }
 
+void PlatformImpl::serial(u32 value) {
+    latestSerial = value;
+    applyClipboardSelection();
+    applyPrimarySelection();
+}
+
 void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool repeated) {
-    latestSerial = serial;
+    this->serial(serial);
     if (keyboardFocus == nullptr || keyboardFocus->input == nullptr || xkbState == nullptr) {
         return;
     }
@@ -1305,35 +1569,41 @@ void PlatformImpl::stopRepeat() {
 }
 
 void PlatformImpl::writeSelection(int fd, StringView content) {
-    const u8* cursor = content.begin();
-    while (cursor != content.end()) {
-        const ssize_t written = write(fd, cursor, content.end() - cursor);
-        if (written > 0) {
-            cursor += written;
-        } else if (written < 0 && errno == EINTR) {
-            continue;
-        } else {
-            break;
-        }
-    }
-    close(fd);
+    (new SelectionTransfer(*this, fd, nullptr, nullptr, content, true, true))->start();
 }
 
-StringView PlatformImpl::readSelection(int fd, Buffer& destination) {
-    destination.reset();
-    u8 data[8192];
-    for (;;) {
-        const ssize_t count = read(fd, data, sizeof(data));
-        if (count > 0) {
-            destination.append(data, count);
-        } else if (count < 0 && errno == EINTR) {
-            continue;
-        } else {
-            break;
+void PlatformImpl::readSelection(int fd, WindowImpl& window, ClipboardRead& read) {
+    (new SelectionTransfer(*this, fd, &window, &read, {}, false, true))->start();
+}
+
+void PlatformImpl::completeSelection(
+    WindowImpl& window,
+    ClipboardRead& read,
+    StringView content,
+    bool success
+) {
+    (new SelectionTransfer(*this, -1, &window, &read, content, false, success))->start();
+}
+
+void PlatformImpl::cancelSelection(WindowImpl& window, ClipboardRead* read) {
+    for (SelectionTransfer* transfer = transfers; transfer != nullptr;) {
+        SelectionTransfer* const next = transfer->next;
+        if (transfer->window == &window
+            && (read == nullptr || transfer->read == read)) {
+            transfer->cancel();
         }
+        transfer = next;
     }
-    close(fd);
-    return StringView(destination);
+}
+
+void PlatformImpl::removeTransfer(SelectionTransfer& transfer) {
+    SelectionTransfer** current = &transfers;
+    while (*current != nullptr && *current != &transfer) {
+        current = &(*current)->next;
+    }
+    if (*current == &transfer) {
+        *current = transfer.next;
+    }
 }
 
 void PlatformImpl::applyClipboardSelection() {
@@ -1447,6 +1717,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
 }
 
 WindowImpl::~WindowImpl() {
+    platform.cancelSelection(*this, nullptr);
     if (platform.keyboardFocus == this) {
         platform.keyboardFocus = nullptr;
         platform.stopRepeat();
@@ -1477,11 +1748,11 @@ WindowImpl::~WindowImpl() {
 }
 
 u32 WindowImpl::pixelWidth() const {
-    return max(1u, (u32)(((u64)(logicalWidth)*scaleNumerator) / scaleDenominator));
+    return max(1u, (u32)(((u64)(logicalWidth)*scaleNumerator + scaleDenominator / 2) / scaleDenominator));
 }
 
 u32 WindowImpl::pixelHeight() const {
-    return max(1u, (u32)(((u64)(logicalHeight)*scaleNumerator) / scaleDenominator));
+    return max(1u, (u32)(((u64)(logicalHeight)*scaleNumerator + scaleDenominator / 2) / scaleDenominator));
 }
 
 u32 WindowImpl::logicalForPixel(u32 pixels) const {
@@ -1552,6 +1823,7 @@ void WindowImpl::contentScale(u32 numerator) {
     if (fractionalScale != nullptr) {
         wl_surface_set_buffer_scale(surface, 1);
     }
+    xdg_toplevel_set_min_size(toplevel, logicalForPixel(minimumWidth), logicalForPixel(minimumHeight));
     setLogicalSize(logicalWidth, logicalHeight, true);
 }
 
@@ -1690,16 +1962,16 @@ WindowInfo WindowImpl::info() const {
     };
 }
 
-StringView WindowImpl::receive(Offer& offer, bool primary) {
+void WindowImpl::receive(Offer& offer, bool primary, ClipboardRead& read) {
     const char* const mime = offer.mime();
     if (mime == nullptr) {
-        clipboardRead.reset();
-        return StringView(clipboardRead);
+        platform.completeSelection(*this, read, {}, false);
+        return;
     }
     int pipes[2];
-    if (pipe(pipes) != 0) {
-        clipboardRead.reset();
-        return StringView(clipboardRead);
+    if (pipe2(pipes, O_CLOEXEC) != 0) {
+        platform.completeSelection(*this, read, {}, false);
+        return;
     }
     if (primary) {
         zwp_primary_selection_offer_v1_receive(offer.primary, mime, pipes[1]);
@@ -1707,22 +1979,46 @@ StringView WindowImpl::receive(Offer& offer, bool primary) {
         wl_data_offer_receive(offer.data, mime, pipes[1]);
     }
     close(pipes[1]);
-    wl_display_flush(platform.display);
-    return platform.readSelection(pipes[0], clipboardRead);
+    int flushed;
+    do {
+        flushed = wl_display_flush(platform.display);
+    } while (flushed < 0 && errno == EINTR);
+    if (flushed < 0 && errno != EAGAIN) {
+        close(pipes[0]);
+        platform.completeSelection(*this, read, {}, false);
+        return;
+    }
+    platform.readSelection(pipes[0], *this, read);
 }
 
-StringView WindowImpl::readPrimary() {
-    if (!platform.primaryContent.empty() && platform.primarySource != nullptr) {
-        return StringView(platform.primaryContent);
+void WindowImpl::readPrimary(ClipboardRead& read) {
+    if (platform.primarySource != nullptr) {
+        platform.completeSelection(
+            *this,
+            read,
+            StringView(platform.primaryContent),
+            true
+        );
+    } else {
+        receive(platform.primaryOffer, true, read);
     }
-    return receive(platform.primaryOffer, true);
 }
 
-StringView WindowImpl::readClipboard() {
-    if (!platform.clipboardContent.empty() && platform.clipboardSource != nullptr) {
-        return StringView(platform.clipboardContent);
+void WindowImpl::readClipboard(ClipboardRead& read) {
+    if (platform.clipboardSource != nullptr) {
+        platform.completeSelection(
+            *this,
+            read,
+            StringView(platform.clipboardContent),
+            true
+        );
+    } else {
+        receive(platform.clipboardOffer, false, read);
     }
-    return receive(platform.clipboardOffer, false);
+}
+
+void WindowImpl::cancelClipboardRead(ClipboardRead& read) {
+    platform.cancelSelection(*this, &read);
 }
 
 void WindowImpl::writePrimary(StringView content) {

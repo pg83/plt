@@ -1,4 +1,5 @@
 #include "platform_win32.h"
+#include "platform_win32_logic.h"
 
 #include "input.h"
 #include "poller.h"
@@ -6,6 +7,7 @@
 #include "platform.h"
 
 #include <std/sys/crt.h>
+#include <std/sys/throw.h>
 #include <std/sym/i_map.h>
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
@@ -21,6 +23,7 @@
 #include <shellapi.h>
 #include <windowsx.h>
 
+#include <errno.h>
 #include <limits.h>
 
 using namespace stl;
@@ -28,6 +31,7 @@ using namespace plt;
 
 namespace {
     constexpr UINT frameMessage = WM_APP + 0x317;
+    constexpr UINT nonMutatingUnicodeTranslation = 1u << 2;
     constexpr u16 cursorIBeam = 32513;
     constexpr u16 cursorHand = 32649;
 
@@ -37,6 +41,11 @@ namespace {
 
     HCURSOR loadCursor(u16 id) {
         return LoadCursorW(nullptr, MAKEINTRESOURCEW(id));
+    }
+
+    [[noreturn]]
+    void fail(StringView message) {
+        Errno(EIO).raise(message);
     }
 
     struct ArmedFD {
@@ -131,8 +140,9 @@ namespace {
         void setMinimumSize(u32 width, u32 height) override;
         void setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
         WindowInfo info() const override;
-        StringView readPrimary() override;
-        StringView readClipboard() override;
+        void readPrimary(ClipboardRead& read) override;
+        void readClipboard(ClipboardRead& read) override;
+        void cancelClipboardRead(ClipboardRead& read) override;
         void writePrimary(StringView content) override;
         void writeClipboard(StringView content) override;
         void pointerIcon(PointerIcon icon) override;
@@ -147,7 +157,8 @@ namespace {
         void scroll(UINT message, WPARAM state, LPARAM data);
         void frame();
         void snapRect(RECT& rect, UINT edge);
-        InputKey inputKey(WPARAM key) const;
+        void completeClipboardRead(ClipboardRead& read, StringView content, bool success);
+        InputKey inputKey(WPARAM key, LPARAM data) const;
         u16 modifiers() const;
         u32 layoutCodepoint(WPARAM key, LPARAM data, bool base) const;
         PointerButton pointerButtonFor(UINT message) const;
@@ -159,6 +170,7 @@ namespace {
         HWND handle = nullptr;
         Buffer primary;
         Buffer clipboard;
+        Vector<ClipboardRead*> clipboardReads;
         u32 minimumWidth = 1;
         u32 minimumHeight = 1;
         u32 resizeUnitWidth = 1;
@@ -169,6 +181,7 @@ namespace {
         HCURSOR cursor = nullptr;
         WINDOWPLACEMENT placement{};
         LONG_PTR windowedStyle = 0;
+        unsigned pressedButtons = 0;
         bool framePending = false;
         bool fullscreen = false;
         bool pointerPresent = false;
@@ -184,11 +197,15 @@ namespace {
         void stop() override;
 
         void dispatchMessages();
+        void queueInputFlush(WindowImpl& window);
+        void forget(WindowImpl& window);
 
         PollerImpl* poller_ = nullptr;
         HINSTANCE instance = nullptr;
         DWORD thread = 0;
         ATOM windowClass = 0;
+        Vector<WindowImpl*> pendingInputFlushes;
+        bool dispatchingMessages = false;
         bool running = false;
     };
 
@@ -209,6 +226,9 @@ PlatformImpl::PlatformImpl(ObjPool& owner)
     description.hCursor = loadCursor(cursorIBeam);
     description.lpszClassName = className;
     windowClass = RegisterClassExW(&description);
+    if (windowClass == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        fail(u8"RegisterClassExW failed");
+    }
 }
 
 PlatformImpl::~PlatformImpl() {
@@ -348,6 +368,7 @@ void PollerImpl::dispatchTimers() {
 }
 
 void PlatformImpl::dispatchMessages() {
+    dispatchingMessages = true;
     MSG message;
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
         if (message.message == WM_QUIT) {
@@ -356,6 +377,39 @@ void PlatformImpl::dispatchMessages() {
         }
         TranslateMessage(&message);
         DispatchMessageW(&message);
+    }
+    dispatchingMessages = false;
+    while (!pendingInputFlushes.empty()) {
+        WindowImpl* const window = pendingInputFlushes.back();
+        pendingInputFlushes.popBack();
+        if (window->input != nullptr) {
+            window->input->flush();
+        }
+    }
+}
+
+void PlatformImpl::queueInputFlush(WindowImpl& window) {
+    if (!dispatchingMessages) {
+        if (window.input != nullptr) {
+            window.input->flush();
+        }
+        return;
+    }
+    for (WindowImpl* pending : pendingInputFlushes) {
+        if (pending == &window) {
+            return;
+        }
+    }
+    pendingInputFlushes.pushBack(&window);
+}
+
+void PlatformImpl::forget(WindowImpl& window) {
+    for (size_t index = 0; index != pendingInputFlushes.length(); ++index) {
+        if (pendingInputFlushes[index] == &window) {
+            pendingInputFlushes.mut(index) = pendingInputFlushes.back();
+            pendingInputFlushes.popBack();
+            return;
+        }
     }
 }
 
@@ -388,10 +442,14 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     const DWORD style = WS_OVERLAPPEDWINDOW;
     AdjustWindowRectExForDpi(&area, style, FALSE, 0, USER_DEFAULT_SCREEN_DPI);
     handle = CreateWindowExW(0, className, (const wchar_t*)(title.data()), style, CW_USEDEFAULT, CW_USEDEFAULT, area.right - area.left, area.bottom - area.top, nullptr, nullptr, platform.instance, this);
+    if (handle == nullptr) {
+        fail(u8"CreateWindowExW failed");
+    }
     cursor = loadCursor(cursorIBeam);
 }
 
 WindowImpl::~WindowImpl() {
+    platform.forget(*this);
     if (handle != nullptr) {
         SetWindowLongPtrW(handle, GWLP_USERDATA, 0);
         DestroyWindow(handle);
@@ -528,29 +586,51 @@ WindowInfo WindowImpl::info() const {
     };
 }
 
-StringView WindowImpl::readPrimary() {
-    return StringView(primary);
+void WindowImpl::completeClipboardRead(ClipboardRead& read, StringView content, bool success) {
+    const size_t slot = clipboardReads.length();
+    clipboardReads.pushBack(&read);
+    if (success && !content.empty() && !read.data(content)) {
+        success = false;
+    }
+    ClipboardRead* const completion = clipboardReads[slot];
+    clipboardReads.popBack();
+    if (completion != nullptr) {
+        completion->done(success);
+    }
 }
 
-StringView WindowImpl::readClipboard() {
+void WindowImpl::readPrimary(ClipboardRead& read) {
+    completeClipboardRead(read, StringView(primary), true);
+}
+
+void WindowImpl::readClipboard(ClipboardRead& read) {
     clipboard.reset();
     if (!OpenClipboard(handle)) {
-        return StringView(clipboard);
+        read.done(false);
+        return;
     }
+    bool success = false;
     HANDLE data = GetClipboardData(CF_UNICODETEXT);
     if (data != nullptr) {
         const wchar_t* const value = (const wchar_t*)(GlobalLock(data));
         if (value != nullptr) {
-            int length = 0;
-            while (value[length] != 0) {
-                ++length;
-            }
-            appendUtf8(clipboard, value, length);
+            const size_t capacity = GlobalSize(data) / sizeof(wchar_t);
+            const size_t length = win32_detail::boundedWideLength(value, capacity);
+            appendUtf8(clipboard, value, (int)(min<size_t>(length, INT_MAX)));
+            success = true;
             GlobalUnlock(data);
         }
     }
     CloseClipboard();
-    return StringView(clipboard);
+    completeClipboardRead(read, StringView(clipboard), success);
+}
+
+void WindowImpl::cancelClipboardRead(ClipboardRead& read) {
+    for (size_t index = 0; index != clipboardReads.length(); ++index) {
+        if (clipboardReads[index] == &read) {
+            clipboardReads.mut(index) = nullptr;
+        }
+    }
 }
 
 void WindowImpl::writePrimary(StringView content) {
@@ -620,7 +700,7 @@ u16 WindowImpl::modifiers() const {
     return result;
 }
 
-InputKey WindowImpl::inputKey(WPARAM key) const {
+InputKey WindowImpl::inputKey(WPARAM key, LPARAM data) const {
     if ((key >= '0' && key <= '9') || (key >= 'A' && key <= 'Z') || key == VK_SPACE || (key >= VK_OEM_1 && key <= VK_OEM_8)) {
         return InputKey::Printable;
     }
@@ -628,7 +708,7 @@ InputKey WindowImpl::inputKey(WPARAM key) const {
         case VK_ESCAPE:
             return InputKey::Escape;
         case VK_RETURN:
-            return (GetKeyState(VK_RETURN) & 0x100) ? InputKey::KeypadEnter : InputKey::Enter;
+            return win32_detail::extendedKey(data) ? InputKey::KeypadEnter : InputKey::Enter;
         case VK_BACK:
             return InputKey::Backspace;
         case VK_TAB:
@@ -735,7 +815,7 @@ u32 WindowImpl::layoutCodepoint(WPARAM key, LPARAM data, bool base) const {
     }
     wchar_t output[4]{};
     const UINT scan = (data >> 16) & 0xff;
-    const int count = ToUnicodeEx((UINT)(key), scan, state, output, 4, 0, GetKeyboardLayout(0));
+    const int count = ToUnicodeEx((UINT)(key), scan, state, output, 4, nonMutatingUnicodeTranslation, GetKeyboardLayout(0));
     if (count <= 0) {
         return 0;
     }
@@ -757,7 +837,7 @@ void WindowImpl::key(WPARAM key, LPARAM data, bool pressed) {
         key = data & (1u << 24) ? VK_RMENU : VK_LMENU;
     }
     input->key({
-        .key = inputKey(key),
+        .key = inputKey(key, data),
         .action = !pressed ? InputAction::Release : (data & (1u << 30) ? InputAction::Repeat : InputAction::Press),
         .modifiers = modifiers(),
         .layoutCodepoint = layoutCodepoint(key, data, false),
@@ -823,10 +903,16 @@ void WindowImpl::pointerButton(UINT message, WPARAM state, LPARAM data) {
     if (message == WM_XBUTTONDOWN || message == WM_XBUTTONUP) {
         button = GET_XBUTTON_WPARAM(state) == XBUTTON1 ? PointerButton::Auxiliary1 : PointerButton::Auxiliary2;
     }
-    if (pressed) {
-        SetCapture(handle);
-    } else {
-        ReleaseCapture();
+    const unsigned buttonMask = 1u << (u8)(button);
+    switch (win32_detail::updateButtonMask(pressedButtons, buttonMask, pressed)) {
+        case win32_detail::CaptureChange::Acquire:
+            SetCapture(handle);
+            break;
+        case win32_detail::CaptureChange::Release:
+            ReleaseCapture();
+            break;
+        case win32_detail::CaptureChange::None:
+            break;
     }
     input->pointerButton({
         .button = button,
@@ -911,7 +997,6 @@ LRESULT WindowImpl::message(UINT message, WPARAM wparam, LPARAM lparam) {
         case WM_DPICHANGED: {
             const RECT& rect = *(const RECT*)(lparam);
             SetWindowPos(handle, nullptr, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, SWP_NOZORDER | SWP_NOACTIVATE);
-            resized();
             return 0;
         }
         case WM_PAINT: {
@@ -953,6 +1038,9 @@ LRESULT WindowImpl::message(UINT message, WPARAM wparam, LPARAM lparam) {
             if (input != nullptr) {
                 input->pointerPresence(false);
             }
+            return 0;
+        case WM_CAPTURECHANGED:
+            pressedButtons = 0;
             return 0;
         case WM_LBUTTONDOWN:
         case WM_LBUTTONUP:
@@ -1004,9 +1092,7 @@ LRESULT CALLBACK WindowImpl::procedure(HWND handle, UINT message, WPARAM wparam,
     }
     if (window != nullptr) {
         const LRESULT result = window->message(message, wparam, lparam);
-        if (window->input != nullptr) {
-            window->input->flush();
-        }
+        window->platform.queueInputFlush(*window);
         return result;
     }
     return DefWindowProcW(handle, message, wparam, lparam);

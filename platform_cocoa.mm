@@ -8,13 +8,13 @@
 #include <std/sys/crt.h>
 #include <std/sym/i_map.h>
 #include <std/alg/minmax.h>
-#include <std/lib/buffer.h>
 #include <std/lib/vector.h>
 #include <std/thr/poll_fd.h>
 #include <std/mem/obj_pool.h>
 
 #import <AppKit/AppKit.h>
 #import <CoreVideo/CoreVideo.h>
+#import <IOKit/hidsystem/IOLLEvent.h>
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <errno.h>
@@ -26,6 +26,7 @@ using namespace plt;
 
 void cocoaCloseImpl(void* owner);
 void cocoaResizeImpl(void* owner);
+NSSize cocoaWillResizeImpl(void* owner, NSSize frameSize);
 void cocoaFocusImpl(void* owner, bool focused);
 void cocoaKeyImpl(void* owner, NSEvent* event, bool pressed);
 void cocoaFlagsImpl(void* owner, NSEvent* event);
@@ -54,6 +55,11 @@ void cocoaPointerPresenceImpl(void* owner, bool present);
 - (void)windowDidResize:(NSNotification*)notification {
     (void)notification;
     cocoaResizeImpl(self.owner);
+}
+
+- (NSSize)windowWillResize:(NSWindow*)sender toSize:(NSSize)frameSize {
+    (void)sender;
+    return cocoaWillResizeImpl(self.owner, frameSize);
 }
 
 - (void)windowDidChangeBackingProperties:(NSNotification*)notification {
@@ -225,8 +231,9 @@ namespace {
         void setMinimumSize(u32 width, u32 height) override;
         void setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
         WindowInfo info() const override;
-        StringView readPrimary() override;
-        StringView readClipboard() override;
+        void readPrimary(ClipboardRead& sink) override;
+        void readClipboard(ClipboardRead& sink) override;
+        void cancelClipboardRead(ClipboardRead& sink) override;
         void writePrimary(StringView content) override;
         void writeClipboard(StringView content) override;
         void pointerIcon(PointerIcon icon) override;
@@ -234,6 +241,7 @@ namespace {
 
         void close();
         void resized();
+        NSSize willResize(NSSize frameSize) const;
         void focused(bool value);
         void key(NSEvent* event, bool pressed);
         void flags(NSEvent* event);
@@ -245,9 +253,12 @@ namespace {
         u16 modifiers(NSEventModifierFlags flags) const;
         InputKey inputKey(NSEvent* event) const;
         u32 firstCodepoint(NSString* string) const;
+        void emitText(NSString* string, u16 modifiers);
         NSPoint pointerPosition(NSEvent* event) const;
-        StringView readPasteboard(NSPasteboard* pasteboard);
+        void completeClipboardRead(ClipboardRead& sink, StringView content, bool success);
+        void readPasteboard(NSPasteboard* pasteboard, ClipboardRead& sink);
         void writePasteboard(NSPasteboard* pasteboard, StringView content);
+        void applySizeConstraints();
 
         PlatformImpl& platform;
         InputSink* input = nullptr;
@@ -256,10 +267,14 @@ namespace {
         PltView* view = nil;
         PltWindowDelegate* delegate = nil;
         CVDisplayLinkRef displayLink = nullptr;
-        Buffer text;
-        u64 modifierState = 0;
+        u32 minimumWidth = 1;
+        u32 minimumHeight = 1;
+        u32 resizeUnitWidth = 1;
+        u32 resizeUnitHeight = 1;
+        u32 resizeBaseWidth = 0;
+        u32 resizeBaseHeight = 0;
+        Vector<ClipboardRead*> clipboardReads;
         bool framePending = false;
-        bool maximized = false;
     };
 
     struct PlatformImpl final: public Platform {
@@ -536,9 +551,8 @@ void WindowImpl::restore() {
     if ((window.styleMask & NSWindowStyleMaskFullScreen) != 0) {
         [window toggleFullScreen:nil];
     }
-    if (maximized) {
+    if ([window isZoomed]) {
         [window zoom:nil];
-        maximized = false;
     }
 }
 
@@ -557,9 +571,8 @@ void WindowImpl::focus() {
 }
 
 void WindowImpl::setMaximized(bool value) {
-    if (maximized != value) {
+    if ([window isZoomed] != value) {
         [window zoom:nil];
-        maximized = value;
     }
 }
 
@@ -577,13 +590,23 @@ void WindowImpl::resize(u32 width, u32 height) {
 }
 
 void WindowImpl::setMinimumSize(u32 width, u32 height) {
-    const CGFloat scale = window.backingScaleFactor;
-    window.contentMinSize = NSMakeSize(max(1u, width) / scale, max(1u, height) / scale);
+    minimumWidth = max(1u, width);
+    minimumHeight = max(1u, height);
+    applySizeConstraints();
 }
 
-void WindowImpl::setResizeUnit(u32 width, u32 height, u32, u32) {
+void WindowImpl::setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) {
+    resizeUnitWidth = max(1u, width);
+    resizeUnitHeight = max(1u, height);
+    resizeBaseWidth = baseWidth;
+    resizeBaseHeight = baseHeight;
+    applySizeConstraints();
+}
+
+void WindowImpl::applySizeConstraints() {
     const CGFloat scale = window.backingScaleFactor;
-    window.contentResizeIncrements = NSMakeSize(max(1u, width) / scale, max(1u, height) / scale);
+    window.contentMinSize = NSMakeSize(minimumWidth / scale, minimumHeight / scale);
+    window.contentResizeIncrements = NSMakeSize(resizeUnitWidth / scale, resizeUnitHeight / scale);
 }
 
 WindowInfo WindowImpl::info() const {
@@ -598,21 +621,34 @@ WindowInfo WindowImpl::info() const {
         .screenPixelWidth = (u32)(max(0.0, screenFrame.size.width)),
         .screenPixelHeight = (u32)(max(0.0, screenFrame.size.height)),
         .contentScale = (float)(window.backingScaleFactor),
-        .focused = window.keyWindow,
-        .iconified = window.miniaturized,
-        .maximized = maximized,
+        .focused = (bool)(window.keyWindow),
+        .iconified = (bool)(window.miniaturized),
+        .maximized = (bool)([window isZoomed]),
         .fullscreen = (window.styleMask & NSWindowStyleMaskFullScreen) != 0,
     };
 }
 
-StringView WindowImpl::readPasteboard(NSPasteboard* pasteboard) {
-    NSString* value = [pasteboard stringForType:NSPasteboardTypeString];
-    text.reset();
-    if (value != nil) {
-        NSData* data = [value dataUsingEncoding:NSUTF8StringEncoding];
-        text.append(data.bytes, data.length);
+void WindowImpl::completeClipboardRead(ClipboardRead& sink, StringView content, bool success) {
+    const size_t slot = clipboardReads.length();
+    clipboardReads.pushBack(&sink);
+    if (success && !content.empty() && !sink.data(content)) {
+        success = false;
     }
-    return StringView(text);
+    ClipboardRead* const completion = clipboardReads[slot];
+    clipboardReads.popBack();
+    if (completion != nullptr) {
+        completion->done(success);
+    }
+}
+
+void WindowImpl::readPasteboard(NSPasteboard* pasteboard, ClipboardRead& sink) {
+    NSString* value = [pasteboard stringForType:NSPasteboardTypeString];
+    NSData* data = value == nil ? nil : [value dataUsingEncoding:NSUTF8StringEncoding];
+    completeClipboardRead(
+        sink,
+        data == nil ? StringView{} : StringView((const u8*)(data.bytes), data.length),
+        data != nil
+    );
 }
 
 void WindowImpl::writePasteboard(NSPasteboard* pasteboard, StringView content) {
@@ -621,12 +657,20 @@ void WindowImpl::writePasteboard(NSPasteboard* pasteboard, StringView content) {
     [pasteboard setString:value == nil ? @"" : value forType:NSPasteboardTypeString];
 }
 
-StringView WindowImpl::readPrimary() {
-    return readPasteboard([NSPasteboard pasteboardWithName:NSPasteboardNameFind]);
+void WindowImpl::readPrimary(ClipboardRead& sink) {
+    readPasteboard([NSPasteboard pasteboardWithName:NSPasteboardNameFind], sink);
 }
 
-StringView WindowImpl::readClipboard() {
-    return readPasteboard([NSPasteboard generalPasteboard]);
+void WindowImpl::readClipboard(ClipboardRead& sink) {
+    readPasteboard([NSPasteboard generalPasteboard], sink);
+}
+
+void WindowImpl::cancelClipboardRead(ClipboardRead& sink) {
+    for (size_t index = 0; index != clipboardReads.length(); ++index) {
+        if (clipboardReads[index] == &sink) {
+            clipboardReads.mut(index) = nullptr;
+        }
+    }
 }
 
 void WindowImpl::writePrimary(StringView content) {
@@ -660,15 +704,32 @@ void WindowImpl::close() {
 }
 
 void WindowImpl::resized() {
+    applySizeConstraints();
     ((CAMetalLayer*)(view.layer)).contentsScale = window.backingScaleFactor;
     if (events != nullptr) {
         events->resized(info());
     }
 }
 
+NSSize WindowImpl::willResize(NSSize frameSize) const {
+    const NSRect content = [window contentRectForFrameRect:NSMakeRect(0, 0, frameSize.width, frameSize.height)];
+    const CGFloat scale = window.backingScaleFactor;
+    u32 width = (u32)(max(1.0, content.size.width * scale) + 0.5);
+    u32 height = (u32)(max(1.0, content.size.height * scale) + 0.5);
+    if (resizeUnitWidth > 1 && width > resizeBaseWidth) {
+        width = resizeBaseWidth + ((width - resizeBaseWidth) / resizeUnitWidth) * resizeUnitWidth;
+    }
+    if (resizeUnitHeight > 1 && height > resizeBaseHeight) {
+        height = resizeBaseHeight + ((height - resizeBaseHeight) / resizeUnitHeight) * resizeUnitHeight;
+    }
+    const NSRect frame = [window frameRectForContentRect:NSMakeRect(0, 0, width / scale, height / scale)];
+    return frame.size;
+}
+
 void WindowImpl::focused(bool value) {
     if (input != nullptr) {
         input->focus(value);
+        input->flush();
     }
 }
 
@@ -688,9 +749,6 @@ u16 WindowImpl::modifiers(NSEventModifierFlags flags) const {
     }
     if (flags & NSEventModifierFlagCapsLock) {
         result |= InputCapsLock;
-    }
-    if (flags & NSEventModifierFlagNumericPad) {
-        result |= InputNumLock;
     }
     return result;
 }
@@ -761,36 +819,68 @@ void WindowImpl::key(NSEvent* event, bool pressed) {
         .layoutCodepoint = layout,
         .baseCodepoint = base,
     });
-    if (pressed && layout >= 0x20 && layout != 0x7f && !(mods & (InputControl | InputSuper))) {
-        input->text({layout, mods});
+    if (pressed && !(mods & (InputControl | InputSuper))) {
+        emitText(event.characters, mods);
     }
     input->flush();
 }
 
-void WindowImpl::flags(NSEvent* event) {
-    const u64 changed = modifierState ^ event.modifierFlags;
-    modifierState = event.modifierFlags;
+void WindowImpl::emitText(NSString* string, u16 mods) {
+    const NSUInteger length = string.length;
+    for (NSUInteger index = 0; index < length;) {
+        const unichar first = [string characterAtIndex:index++];
+        u32 codepoint = first;
+        if (CFStringIsSurrogateHighCharacter(first)) {
+            if (index == length) {
+                continue;
+            }
+            const unichar second = [string characterAtIndex:index];
+            if (!CFStringIsSurrogateLowCharacter(second)) {
+                continue;
+            }
+            ++index;
+            codepoint = CFStringGetLongCharacterForSurrogatePair(first, second);
+        } else if (CFStringIsSurrogateLowCharacter(first)) {
+            continue;
+        }
+        if (codepoint >= 0x20 && codepoint != 0x7f) {
+            input->text({codepoint, mods});
+        }
+    }
+}
 
+void WindowImpl::flags(NSEvent* event) {
     struct ModifierKey {
-        u64 flag;
+        u16 keyCode;
+        u64 stateFlag;
+        u64 otherStateFlag;
+        u64 aggregateFlag;
         InputKey key;
     };
 
     const ModifierKey keys[] = {
-        {NSEventModifierFlagShift, InputKey::LeftShift},
-        {NSEventModifierFlagControl, InputKey::LeftControl},
-        {NSEventModifierFlagOption, InputKey::LeftAlt},
-        {NSEventModifierFlagCommand, InputKey::LeftSuper},
-        {NSEventModifierFlagCapsLock, InputKey::CapsLock},
+        {56, NX_DEVICELSHIFTKEYMASK, NX_DEVICERSHIFTKEYMASK, NSEventModifierFlagShift, InputKey::LeftShift},
+        {60, NX_DEVICERSHIFTKEYMASK, NX_DEVICELSHIFTKEYMASK, NSEventModifierFlagShift, InputKey::RightShift},
+        {59, NX_DEVICELCTLKEYMASK, NX_DEVICERCTLKEYMASK, NSEventModifierFlagControl, InputKey::LeftControl},
+        {62, NX_DEVICERCTLKEYMASK, NX_DEVICELCTLKEYMASK, NSEventModifierFlagControl, InputKey::RightControl},
+        {58, NX_DEVICELALTKEYMASK, NX_DEVICERALTKEYMASK, NSEventModifierFlagOption, InputKey::LeftAlt},
+        {61, NX_DEVICERALTKEYMASK, NX_DEVICELALTKEYMASK, NSEventModifierFlagOption, InputKey::RightAlt},
+        {55, NX_DEVICELCMDKEYMASK, NX_DEVICERCMDKEYMASK, NSEventModifierFlagCommand, InputKey::LeftSuper},
+        {54, NX_DEVICERCMDKEYMASK, NX_DEVICELCMDKEYMASK, NSEventModifierFlagCommand, InputKey::RightSuper},
+        {57, NSEventModifierFlagCapsLock, 0, NSEventModifierFlagCapsLock, InputKey::CapsLock},
     };
     for (const ModifierKey& current : keys) {
-        if ((changed & current.flag) && input != nullptr) {
-            input->key({
-                .key = current.key,
-                .action = (modifierState & current.flag) ? InputAction::Press : InputAction::Release,
-                .modifiers = modifiers(event.modifierFlags),
-            });
+        if (event.keyCode != current.keyCode) {
+            continue;
         }
+        const bool statePressed = (event.modifierFlags & current.stateFlag) != 0;
+        const bool otherStatePressed = (event.modifierFlags & current.otherStateFlag) != 0;
+        const bool aggregatePressed = (event.modifierFlags & current.aggregateFlag) != 0;
+        const bool pressed = aggregatePressed != (statePressed || otherStatePressed) ? aggregatePressed : statePressed;
+        if (input != nullptr) {
+            input->key({.key = current.key, .action = pressed ? InputAction::Press : InputAction::Release, .modifiers = modifiers(event.modifierFlags)});
+        }
+        break;
     }
     if (input != nullptr) {
         input->flush();
@@ -856,6 +946,10 @@ void cocoaCloseImpl(void* owner) {
 
 void cocoaResizeImpl(void* owner) {
     ((WindowImpl*)(owner))->resized();
+}
+
+NSSize cocoaWillResizeImpl(void* owner, NSSize frameSize) {
+    return ((WindowImpl*)(owner))->willResize(frameSize);
 }
 
 void cocoaFocusImpl(void* owner, bool focused) {

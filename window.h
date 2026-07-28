@@ -45,6 +45,14 @@ namespace plt {
         virtual void frame() = 0;
     };
 
+    struct ClipboardRead {
+        // chunk is valid only for the duration of this call. Returning false
+        // stops the transfer and completes it with success=false.
+        virtual bool data(stl::StringView chunk) = 0;
+        // Called exactly once unless the transfer is cancelled.
+        virtual void done(bool success) = 0;
+    };
+
     struct WindowOptions {
         stl::StringView appId;
         stl::StringView title;
@@ -76,8 +84,10 @@ namespace plt {
         virtual void setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) = 0;
         virtual WindowInfo info() const = 0;
 
-        virtual stl::StringView readPrimary() = 0;
-        virtual stl::StringView readClipboard() = 0;
+        virtual void readPrimary(ClipboardRead& read) = 0;
+        virtual void readClipboard(ClipboardRead& read) = 0;
+        // After this returns, read receives no more callbacks for cancelled transfers.
+        virtual void cancelClipboardRead(ClipboardRead& read) = 0;
         virtual void writePrimary(stl::StringView content) = 0;
         virtual void writeClipboard(stl::StringView content) = 0;
         virtual void pointerIcon(PointerIcon icon) = 0;
