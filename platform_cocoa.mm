@@ -6,12 +6,18 @@
 
 #include "platform_cocoa.h"
 
+#include "input.h"
+#include "platform.h"
+#include "poller.h"
+#include "window.h"
+
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
 #include <std/lib/vector.h>
 #include <std/mem/obj_pool.h>
 #include <std/sym/i_map.h>
 #include <std/sys/crt.h>
+#include <std/thr/poll_fd.h>
 
 #import <AppKit/AppKit.h>
 #import <CoreVideo/CoreVideo.h>
@@ -166,11 +172,42 @@ void cocoaPointerPresenceImpl(void* owner, bool present);
 
 namespace {
     struct PlatformImpl;
+    struct PollerImpl;
     struct WindowImpl;
 
     struct ArmedFD {
-        int fd = -1;
-        int mode = 0;
+        PollFD fd;
+        PollCallback* callback = nullptr;
+    };
+
+    struct ReadyFD {
+        PollFD fd;
+        PollCallback* callback = nullptr;
+    };
+
+    struct Timer {
+        TimerCallback* callback = nullptr;
+        u64 deadline = 0;
+    };
+
+    struct PollerImpl final: public Poller {
+        explicit PollerImpl(ObjPool& owner);
+
+        void arm(PollFD fd, PollCallback& callback) override;
+        void disarm(int fd) override;
+        void timeout(u64 microseconds, TimerCallback& callback) override;
+        void deadline(u64 monotonicMicroseconds, TimerCallback& callback) override;
+        void cancel(TimerCallback& callback) override;
+
+        void dispatch();
+        void dispatchTimers();
+        u64 nextDeadline() const;
+
+        IntMap<ArmedFD> armed;
+        Vector<struct pollfd> pollFDs;
+        Vector<ReadyFD> readyFDs;
+        Vector<Timer> timers;
+        Vector<TimerCallback*> readyTimers;
     };
 
     struct WindowImpl final: public Window {
@@ -232,24 +269,16 @@ namespace {
     };
 
     struct PlatformImpl final: public Platform {
-        PlatformImpl(ObjPool& owner, PlatformEvents& events);
+        explicit PlatformImpl(ObjPool& owner);
 
         Window* createWindow(ObjPool& owner, const WindowOptions& options) override;
-        void arm(int fd, int mode) override;
-        void disarm(int fd) override;
-        void timeout(u64 microseconds) override;
-        void deadline(u64 monotonicMicroseconds) override;
+        Poller* poller() override;
         void run() override;
         void stop() override;
 
-        void dispatchFDs();
-        void dispatchTimeout();
         double waitSeconds() const;
 
-        PlatformEvents& events;
-        IntMap<ArmedFD> armed;
-        Vector<struct pollfd> pollFDs;
-        u64 minDeadline = 0;
+        PollerImpl* poller_ = nullptr;
         bool running = false;
     };
 
@@ -267,9 +296,8 @@ namespace {
     }
 }
 
-PlatformImpl::PlatformImpl(ObjPool& owner, PlatformEvents& events_)
-    : events(events_)
-    , armed(ObjPool::create(&owner))
+PlatformImpl::PlatformImpl(ObjPool& owner)
+    : poller_(owner.make<PollerImpl>(owner))
 {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -280,78 +308,122 @@ Window* PlatformImpl::createWindow(ObjPool& owner, const WindowOptions& options)
     return owner.make<WindowImpl>(*this, options);
 }
 
-void PlatformImpl::arm(int fd, int mode) {
-    armed[fd] = {fd, mode};
+Poller* PlatformImpl::poller() {
+    return poller_;
 }
 
-void PlatformImpl::disarm(int fd) {
+PollerImpl::PollerImpl(ObjPool& owner)
+    : armed(ObjPool::create(&owner))
+{
+}
+
+void PollerImpl::arm(PollFD fd, PollCallback& callback) {
+    armed[fd.fd] = {
+        .fd = fd,
+        .callback = &callback,
+    };
+}
+
+void PollerImpl::disarm(int fd) {
     armed.erase(fd);
 }
 
-void PlatformImpl::timeout(u64 microseconds) {
-    deadline(monotonicNowUs() + microseconds);
-}
-
-void PlatformImpl::deadline(u64 value) {
-    if (value == 0) {
-        value = monotonicNowUs();
-    }
-    if (minDeadline == 0 || value < minDeadline) {
-        minDeadline = value;
-    }
-}
-
 double PlatformImpl::waitSeconds() const {
-    if (minDeadline == 0) {
+    const u64 deadline = poller_->nextDeadline();
+    if (deadline == UINT64_MAX) {
         return 0.01;
     }
     const u64 now = monotonicNowUs();
-    if (minDeadline <= now) {
+    if (deadline <= now) {
         return 0;
     }
-    return min(0.01, (minDeadline - now) / 1'000'000.0);
+    return min(0.01, (deadline - now) / 1'000'000.0);
 }
 
-void PlatformImpl::dispatchFDs() {
+void PollerImpl::timeout(u64 microseconds, TimerCallback& callback) {
+    deadline(monotonicNowUs() + microseconds, callback);
+}
+
+void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
+    if (monotonicMicroseconds == 0) {
+        monotonicMicroseconds = monotonicNowUs();
+    }
+    for (Timer* timer = timers.mutBegin(); timer != timers.mutEnd(); ++timer) {
+        if (timer->callback == &callback) {
+            timer->deadline = monotonicMicroseconds;
+            return;
+        }
+    }
+    timers.pushBack({
+        .callback = &callback,
+        .deadline = monotonicMicroseconds,
+    });
+}
+
+void PollerImpl::cancel(TimerCallback& callback) {
+    for (size_t index = 0; index != timers.length(); ++index) {
+        if (timers[index].callback == &callback) {
+            timers.mut(index) = timers.back();
+            timers.popBack();
+            return;
+        }
+    }
+}
+
+u64 PollerImpl::nextDeadline() const {
+    u64 result = UINT64_MAX;
+    for (const Timer& timer : timers) {
+        result = min(result, timer.deadline);
+    }
+    return result;
+}
+
+void PollerImpl::dispatchTimers() {
+    const u64 now = monotonicNowUs();
+    readyTimers.clear();
+    for (size_t index = 0; index != timers.length();) {
+        if (timers[index].deadline > now) {
+            ++index;
+            continue;
+        }
+        readyTimers.pushBack(timers[index].callback);
+        timers.mut(index) = timers.back();
+        timers.popBack();
+    }
+    for (TimerCallback* callback : readyTimers) {
+        callback->ready();
+    }
+    readyTimers.clear();
+}
+
+void PollerImpl::dispatch() {
     pollFDs.clear();
     armed.visit([this](const ArmedFD& source) {
-        short native = 0;
-        if (source.mode & PollRead) {
-            native |= POLLIN;
-        }
-        if (source.mode & PollWrite) {
-            native |= POLLOUT;
-        }
-        pollFDs.pushBack({source.fd, native, 0});
+        pollFDs.pushBack({source.fd.fd, source.fd.toPollEvents(), 0});
     });
-    if (pollFDs.empty() || poll(pollFDs.mutData(), pollFDs.length(), 0) <= 0) {
-        return;
-    }
-    for (const struct pollfd& source : pollFDs) {
-        int what = 0;
-        if (source.revents & POLLIN) {
-            what |= PollRead;
-        }
-        if (source.revents & POLLOUT) {
-            what |= PollWrite;
-        }
-        if (source.revents & (POLLERR | POLLNVAL)) {
-            what |= PollError;
-        }
-        if (source.revents & POLLHUP) {
-            what |= PollHangup;
-        }
-        if (what != 0) {
-            events.fdReady({source.fd, what});
+    readyFDs.clear();
+    if (!pollFDs.empty() && ::poll(pollFDs.mutData(), pollFDs.length(), 0) > 0) {
+        for (const struct pollfd& source : pollFDs) {
+            ArmedFD* registration = armed.find(source.fd);
+            if (source.revents == 0 || registration == nullptr) {
+                continue;
+            }
+            readyFDs.pushBack({
+                .fd =
+                    {
+                        .fd = source.fd,
+                        .flags = PollFD::fromPollEvents(source.revents),
+                    },
+                .callback = registration->callback,
+            });
+            armed.erase(source.fd);
         }
     }
-}
-
-void PlatformImpl::dispatchTimeout() {
-    if (minDeadline != 0 && monotonicNowUs() >= minDeadline) {
-        minDeadline = 0;
-        events.timeout();
+    for (const ReadyFD& ready : readyFDs) {
+        ready.callback->ready(ready.fd);
     }
+    readyFDs.clear();
+    dispatchTimers();
 }
 
 void PlatformImpl::run() {
@@ -363,9 +435,7 @@ void PlatformImpl::run() {
             if (event != nil) {
                 [NSApp sendEvent:event];
             }
-            dispatchFDs();
-            dispatchTimeout();
-            events.check();
+            poller_->dispatch();
         }
     }
 }
@@ -822,6 +892,6 @@ void cocoaPointerPresenceImpl(void* owner, bool present) {
     ((WindowImpl*)(owner))->pointerPresence(present);
 }
 
-Platform* createCocoaPlatform(ObjPool& owner, PlatformEvents& events) {
-    return owner.make<PlatformImpl>(owner, events);
+Platform* createCocoaPlatform(ObjPool& owner) {
+    return owner.make<PlatformImpl>(owner);
 }

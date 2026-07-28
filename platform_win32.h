@@ -6,8 +6,12 @@
 
 #pragma once
 
-#include "platform.h"
+namespace stl {
+    class ObjPool;
+}
 
 namespace plt {
-    Platform* createWin32Platform(stl::ObjPool& owner, PlatformEvents& events);
+    struct Platform;
+
+    Platform* createWin32Platform(stl::ObjPool& owner);
 }

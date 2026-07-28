@@ -6,7 +6,11 @@
 
 #include "platform_wayland.h"
 
+#include "input.h"
+#include "platform.h"
+#include "poller.h"
 #include "pointer_grab.h"
+#include "window.h"
 
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
@@ -15,6 +19,7 @@
 #include <std/sym/i_map.h>
 #include <std/sys/crt.h>
 #include <std/sys/throw.h>
+#include <std/thr/poll_fd.h>
 
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -49,6 +54,7 @@ using namespace plt;
 
 namespace {
     struct PlatformImpl;
+    struct PollerImpl;
     struct WindowImpl;
 
     constexpr u32 scaleDenominator = 120;
@@ -57,8 +63,39 @@ namespace {
     const StringView utf8StringMime(u8"UTF8_STRING");
 
     struct ArmedFD {
-        int fd = -1;
-        int mode = 0;
+        PollFD fd;
+        PollCallback* callback = nullptr;
+    };
+
+    struct ReadyFD {
+        PollFD fd;
+        PollCallback* callback = nullptr;
+    };
+
+    struct Timer {
+        TimerCallback* callback = nullptr;
+        u64 deadline = 0;
+    };
+
+    struct PollerImpl final: public Poller {
+        PollerImpl(ObjPool& owner, PlatformImpl& platform);
+
+        void arm(PollFD fd, PollCallback& callback) override;
+        void disarm(int fd) override;
+        void timeout(u64 microseconds, TimerCallback& callback) override;
+        void deadline(u64 monotonicMicroseconds, TimerCallback& callback) override;
+        void cancel(TimerCallback& callback) override;
+
+        void wait(u64 monotonicDeadline);
+        void dispatchTimers();
+        u64 nextDeadline() const;
+
+        PlatformImpl& platform;
+        IntMap<ArmedFD> armed;
+        Vector<struct pollfd> pollFDs;
+        Vector<ReadyFD> readyFDs;
+        Vector<Timer> timers;
+        Vector<TimerCallback*> readyTimers;
     };
 
     struct Offer {
@@ -159,14 +196,11 @@ namespace {
     };
 
     struct PlatformImpl final: public Platform {
-        PlatformImpl(ObjPool& owner, PlatformEvents& events);
+        explicit PlatformImpl(ObjPool& owner);
         ~PlatformImpl();
 
         Window* createWindow(ObjPool& owner, const WindowOptions& options) override;
-        void arm(int fd, int mode) override;
-        void disarm(int fd) override;
-        void timeout(u64 microseconds) override;
-        void deadline(u64 monotonicMicroseconds) override;
+        Poller* poller() override;
         void run() override;
         void stop() override;
 
@@ -174,10 +208,8 @@ namespace {
         void seatCapabilities(u32 capabilities);
         void createSelectionDevices();
         void dispatch();
-        void wait();
-        void dispatchReady();
         void dispatchTimeouts();
-        int timeoutMilliseconds() const;
+        u64 nextDeadline() const;
         void keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool repeated = false);
         void repeat();
         void stopRepeat();
@@ -192,14 +224,8 @@ namespace {
         void activate(WindowImpl& window);
         void writeSelection(int fd, StringView content);
         StringView readSelection(int fd, Buffer& destination);
-        static short nativeEvents(int mode);
-        static int platformEvents(short events);
 
-        ObjPool& owner;
-        PlatformEvents& events;
-        IntMap<ArmedFD> armed;
-        Vector<struct pollfd> pollFDs;
-        Vector<FDReady> ready;
+        PollerImpl* poller_ = nullptr;
         struct wl_display* display = nullptr;
         struct wl_registry* registry = nullptr;
         struct wl_compositor* compositor = nullptr;
@@ -232,7 +258,6 @@ namespace {
         u32 repeatRate = 0;
         u32 repeatDelay = 0;
         u64 repeatDeadline = 0;
-        u64 minDeadline = 0;
         u32 latestSerial = 0;
         u32 outputWidth = 0;
         u32 outputHeight = 0;
@@ -245,7 +270,6 @@ namespace {
         Buffer primaryContent;
         bool clipboardPending = false;
         bool primaryPending = false;
-        bool timeoutReady = false;
         bool running = false;
     };
 
@@ -709,10 +733,8 @@ const char* Offer::mime() const {
     return plain ? "text/plain" : nullptr;
 }
 
-PlatformImpl::PlatformImpl(ObjPool& owner_, PlatformEvents& events_)
-    : owner(owner_)
-    , events(events_)
-    , armed(ObjPool::create(&owner))
+PlatformImpl::PlatformImpl(ObjPool& owner)
+    : poller_(owner.make<PollerImpl>(owner, *this))
 {
     display = wl_display_connect(nullptr);
     if (display == nullptr) {
@@ -814,6 +836,10 @@ Window* PlatformImpl::createWindow(ObjPool& windowOwner, const WindowOptions& op
     return windowOwner.make<WindowImpl>(*this, options);
 }
 
+Poller* PlatformImpl::poller() {
+    return poller_;
+}
+
 void PlatformImpl::bindRegistry(u32 name, const char* interface, u32 version) {
     if (StringView(interface) == StringView(wl_compositor_interface.name)) {
         compositor = (struct wl_compositor*)(wl_registry_bind(registry, name, &wl_compositor_interface, min(version, 6u)));
@@ -885,133 +911,155 @@ void PlatformImpl::createSelectionDevices() {
     }
 }
 
-void PlatformImpl::arm(int fd, int mode) {
-    armed[fd] = {fd, mode};
+PollerImpl::PollerImpl(ObjPool& owner, PlatformImpl& platform_)
+    : platform(platform_)
+    , armed(ObjPool::create(&owner))
+{
 }
 
-void PlatformImpl::disarm(int fd) {
+void PollerImpl::arm(PollFD fd, PollCallback& callback) {
+    armed[fd.fd] = {
+        .fd = fd,
+        .callback = &callback,
+    };
+}
+
+void PollerImpl::disarm(int fd) {
     armed.erase(fd);
 }
 
-void PlatformImpl::timeout(u64 microseconds) {
-    deadline(monotonicNowUs() + microseconds);
+void PollerImpl::timeout(u64 microseconds, TimerCallback& callback) {
+    deadline(monotonicNowUs() + microseconds, callback);
 }
 
-void PlatformImpl::deadline(u64 value) {
-    if (value == 0) {
-        value = monotonicNowUs();
+void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
+    if (monotonicMicroseconds == 0) {
+        monotonicMicroseconds = monotonicNowUs();
     }
-    if (minDeadline == 0 || value < minDeadline) {
-        minDeadline = value;
-    }
-}
-
-short PlatformImpl::nativeEvents(int mode) {
-    short result = 0;
-    if (mode & PollRead) {
-        result |= POLLIN;
-    }
-    if (mode & PollWrite) {
-        result |= POLLOUT;
-    }
-    return result;
-}
-
-int PlatformImpl::platformEvents(short events) {
-    int result = 0;
-    if (events & POLLIN) {
-        result |= PollRead;
-    }
-    if (events & POLLOUT) {
-        result |= PollWrite;
-    }
-    if (events & (POLLERR | POLLNVAL)) {
-        result |= PollError;
-    }
-    if (events & POLLHUP) {
-        result |= PollHangup;
-    }
-    return result;
-}
-
-int PlatformImpl::timeoutMilliseconds() const {
-    u64 next = minDeadline;
-    if (repeatDeadline != 0 && (next == 0 || repeatDeadline < next)) {
-        next = repeatDeadline;
-    }
-    if (next == 0) {
-        return -1;
-    }
-    const u64 now = monotonicNowUs();
-    if (next <= now) {
-        return 0;
-    }
-    const u64 milliseconds = (next - now + 999) / 1000;
-    return milliseconds > INT_MAX ? INT_MAX : (int)(milliseconds);
-}
-
-void PlatformImpl::wait() {
-    while (wl_display_prepare_read(display) != 0) {
-        if (wl_display_dispatch_pending(display) < 0) {
-            running = false;
+    for (Timer* timer = timers.mutBegin(); timer != timers.mutEnd(); ++timer) {
+        if (timer->callback == &callback) {
+            timer->deadline = monotonicMicroseconds;
             return;
         }
     }
-    wl_display_flush(display);
+    timers.pushBack({
+        .callback = &callback,
+        .deadline = monotonicMicroseconds,
+    });
+}
+
+void PollerImpl::cancel(TimerCallback& callback) {
+    for (size_t index = 0; index != timers.length(); ++index) {
+        if (timers[index].callback == &callback) {
+            timers.mut(index) = timers.back();
+            timers.popBack();
+            return;
+        }
+    }
+}
+
+u64 PollerImpl::nextDeadline() const {
+    u64 result = UINT64_MAX;
+    for (const Timer& timer : timers) {
+        result = min(result, timer.deadline);
+    }
+    return result;
+}
+
+void PollerImpl::dispatchTimers() {
+    const u64 now = monotonicNowUs();
+    readyTimers.clear();
+    for (size_t index = 0; index != timers.length();) {
+        if (timers[index].deadline > now) {
+            ++index;
+            continue;
+        }
+        readyTimers.pushBack(timers[index].callback);
+        timers.mut(index) = timers.back();
+        timers.popBack();
+    }
+    for (TimerCallback* callback : readyTimers) {
+        callback->ready();
+    }
+    readyTimers.clear();
+}
+
+void PollerImpl::wait(u64 monotonicDeadline) {
+    while (wl_display_prepare_read(platform.display) != 0) {
+        if (wl_display_dispatch_pending(platform.display) < 0) {
+            platform.stop();
+            return;
+        }
+    }
+    wl_display_flush(platform.display);
 
     pollFDs.clear();
     pollFDs.pushBack({
-        .fd = wl_display_get_fd(display),
+        .fd = wl_display_get_fd(platform.display),
         .events = POLLIN,
         .revents = 0,
     });
-    armed.visit([this](const ArmedFD& fd) {
+    armed.visit([this](const ArmedFD& source) {
         pollFDs.pushBack({
-            .fd = fd.fd,
-            .events = nativeEvents(fd.mode),
+            .fd = source.fd.fd,
+            .events = source.fd.toPollEvents(),
             .revents = 0,
         });
     });
 
+    int timeoutMilliseconds = -1;
+    if (monotonicDeadline != UINT64_MAX) {
+        const u64 now = monotonicNowUs();
+        const u64 timeoutUs = monotonicDeadline > now ? monotonicDeadline - now : 0;
+        timeoutMilliseconds = (int)(min<u64>((timeoutUs + 999) / 1000, INT_MAX));
+    }
     int result;
     do {
-        result = ::poll(pollFDs.mutData(), pollFDs.length(), timeoutMilliseconds());
+        result = ::poll(pollFDs.mutData(), pollFDs.length(), timeoutMilliseconds);
     } while (result < 0 && errno == EINTR);
     if (result < 0) {
-        wl_display_cancel_read(display);
+        wl_display_cancel_read(platform.display);
         fail(u8"poll failed");
     }
 
     const short displayEvents = pollFDs[0].revents;
     if (displayEvents & POLLIN) {
-        if (wl_display_read_events(display) < 0) {
-            running = false;
+        if (wl_display_read_events(platform.display) < 0) {
+            platform.stop();
             return;
         }
     } else {
-        wl_display_cancel_read(display);
+        wl_display_cancel_read(platform.display);
     }
     if (displayEvents & (POLLERR | POLLHUP | POLLNVAL)) {
-        running = false;
+        platform.stop();
+    }
+    if (wl_display_dispatch_pending(platform.display) < 0) {
+        platform.stop();
+        return;
     }
 
-    ready.clear();
+    readyFDs.clear();
     for (size_t index = 1; index != pollFDs.length(); ++index) {
         const struct pollfd& source = pollFDs[index];
-        if (source.revents != 0) {
-            ready.pushBack({
-                .fd = source.fd,
-                .what = platformEvents(source.revents),
-            });
+        ArmedFD* registration = armed.find(source.fd);
+        if (source.revents == 0 || registration == nullptr) {
+            continue;
         }
+        readyFDs.pushBack({
+            .fd =
+                {
+                    .fd = source.fd,
+                    .flags = PollFD::fromPollEvents(source.revents),
+                },
+            .callback = registration->callback,
+        });
+        armed.erase(source.fd);
     }
-}
-
-void PlatformImpl::dispatchReady() {
-    for (const FDReady& event : ready) {
-        events.fdReady(event);
+    for (const ReadyFD& ready : readyFDs) {
+        ready.callback->ready(ready.fd);
     }
-    ready.clear();
+    readyFDs.clear();
 }
 
 void PlatformImpl::dispatchTimeouts() {
@@ -1019,18 +1067,18 @@ void PlatformImpl::dispatchTimeouts() {
     if (repeatDeadline != 0 && now >= repeatDeadline) {
         repeat();
     }
-    if (minDeadline != 0 && now >= minDeadline) {
-        minDeadline = 0;
-        events.timeout();
-    }
+    poller_->dispatchTimers();
+}
+
+u64 PlatformImpl::nextDeadline() const {
+    return repeatDeadline == 0 ? poller_->nextDeadline() : min(repeatDeadline, poller_->nextDeadline());
 }
 
 void PlatformImpl::dispatch() {
     if (wl_display_dispatch_pending(display) < 0) {
-        running = false;
+        stop();
         return;
     }
-    dispatchReady();
     dispatchTimeouts();
     if (keyboardFocus != nullptr && keyboardFocus->input != nullptr) {
         keyboardFocus->input->flush();
@@ -1039,13 +1087,15 @@ void PlatformImpl::dispatch() {
     if (pointerTarget != nullptr && pointerTarget != keyboardFocus && pointerTarget->input != nullptr) {
         pointerTarget->input->flush();
     }
-    events.check();
 }
 
 void PlatformImpl::run() {
     running = true;
     while (running) {
-        wait();
+        poller_->wait(nextDeadline());
+        if (!running) {
+            break;
+        }
         dispatch();
     }
 }
@@ -1804,6 +1854,6 @@ RenderContext WindowImpl::renderContext() const {
     };
 }
 
-Platform* createWaylandPlatform(ObjPool& owner, PlatformEvents& events) {
-    return owner.make<PlatformImpl>(owner, events);
+Platform* createWaylandPlatform(ObjPool& owner) {
+    return owner.make<PlatformImpl>(owner);
 }

@@ -6,12 +6,12 @@
 
 #pragma once
 
-#include "input.h"
-
 #include <std/str/view.h>
 #include <std/sys/types.h>
 
 namespace plt {
+    struct InputSink;
+
     enum class RenderBackend : u8 {
         Wayland,
         Cocoa,

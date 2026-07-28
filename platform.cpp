@@ -18,12 +18,12 @@
 
 using namespace plt;
 
-Platform* Platform::create(stl::ObjPool& owner, PlatformEvents& events) {
+Platform* Platform::create(stl::ObjPool& owner) {
 #if defined(__APPLE__)
-    return createCocoaPlatform(owner, events);
+    return createCocoaPlatform(owner);
 #elif defined(_WIN32)
-    return createWin32Platform(owner, events);
+    return createWin32Platform(owner);
 #else
-    return createWaylandPlatform(owner, events);
+    return createWaylandPlatform(owner);
 #endif
 }

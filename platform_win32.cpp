@@ -6,12 +6,18 @@
 
 #include "platform_win32.h"
 
+#include "input.h"
+#include "platform.h"
+#include "poller.h"
+#include "window.h"
+
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
 #include <std/lib/vector.h>
 #include <std/mem/obj_pool.h>
 #include <std/sym/i_map.h>
 #include <std/sys/crt.h>
+#include <std/thr/poll_fd.h>
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -32,6 +38,7 @@ namespace {
     constexpr u16 cursorHand = 32649;
 
     struct PlatformImpl;
+    struct PollerImpl;
     struct WindowImpl;
 
     HCURSOR loadCursor(u16 id) {
@@ -39,9 +46,42 @@ namespace {
     }
 
     struct ArmedFD {
-        int fd = -1;
-        int mode = 0;
+        PollFD fd;
+        PollCallback* callback = nullptr;
         HANDLE handle = nullptr;
+    };
+
+    struct ReadyFD {
+        PollFD fd;
+        PollCallback* callback = nullptr;
+    };
+
+    struct Timer {
+        TimerCallback* callback = nullptr;
+        u64 deadline = 0;
+    };
+
+    struct PollerImpl final: public Poller {
+        explicit PollerImpl(ObjPool& owner);
+
+        void arm(PollFD fd, PollCallback& callback) override;
+        void disarm(int fd) override;
+        void timeout(u64 microseconds, TimerCallback& callback) override;
+        void deadline(u64 monotonicMicroseconds, TimerCallback& callback) override;
+        void cancel(TimerCallback& callback) override;
+
+        void prepare();
+        void dispatchHandles(DWORD result);
+        void dispatchTimers();
+        DWORD waitMilliseconds() const;
+        u64 nextDeadline() const;
+
+        IntMap<ArmedFD> armed;
+        Vector<HANDLE> handles;
+        Vector<int> handleFDs;
+        Vector<ReadyFD> readyFDs;
+        Vector<Timer> timers;
+        Vector<TimerCallback*> readyTimers;
     };
 
     Buffer wideString(StringView value) {
@@ -141,39 +181,28 @@ namespace {
     };
 
     struct PlatformImpl final: public Platform {
-        PlatformImpl(ObjPool& owner, PlatformEvents& events);
+        explicit PlatformImpl(ObjPool& owner);
         ~PlatformImpl();
 
         Window* createWindow(ObjPool& owner, const WindowOptions& options) override;
-        void arm(int fd, int mode) override;
-        void disarm(int fd) override;
-        void timeout(u64 microseconds) override;
-        void deadline(u64 monotonicMicroseconds) override;
+        Poller* poller() override;
         void run() override;
         void stop() override;
 
-        DWORD waitMilliseconds() const;
-        void dispatchHandles(DWORD result);
         void dispatchMessages();
-        void dispatchTimeout();
 
-        PlatformEvents& events;
-        IntMap<ArmedFD> armed;
-        Vector<HANDLE> handles;
-        Vector<int> handleFDs;
+        PollerImpl* poller_ = nullptr;
         HINSTANCE instance = nullptr;
         DWORD thread = 0;
         ATOM windowClass = 0;
-        u64 minDeadline = 0;
         bool running = false;
     };
 
     const wchar_t* className = L"pg83.platform.window";
 }
 
-PlatformImpl::PlatformImpl(ObjPool& owner, PlatformEvents& events_)
-    : events(events_)
-    , armed(ObjPool::create(&owner))
+PlatformImpl::PlatformImpl(ObjPool& owner)
+    : poller_(owner.make<PollerImpl>(owner))
     , instance(GetModuleHandleW(nullptr))
     , thread(GetCurrentThreadId())
 {
@@ -198,44 +227,91 @@ Window* PlatformImpl::createWindow(ObjPool& owner, const WindowOptions& options)
     return owner.make<WindowImpl>(*this, options);
 }
 
-void PlatformImpl::arm(int fd, int mode) {
-    const intptr_t native = _get_osfhandle(fd);
-    armed[fd] = {
+Poller* PlatformImpl::poller() {
+    return poller_;
+}
+
+PollerImpl::PollerImpl(ObjPool& owner)
+    : armed(ObjPool::create(&owner))
+{
+}
+
+void PollerImpl::arm(PollFD fd, PollCallback& callback) {
+    const intptr_t native = _get_osfhandle(fd.fd);
+    armed[fd.fd] = {
         .fd = fd,
-        .mode = mode,
+        .callback = &callback,
         .handle = native == -1 ? nullptr : (HANDLE)(native),
     };
 }
 
-void PlatformImpl::disarm(int fd) {
+void PollerImpl::disarm(int fd) {
     armed.erase(fd);
 }
 
-void PlatformImpl::timeout(u64 microseconds) {
-    deadline(monotonicNowUs() + microseconds);
+void PollerImpl::timeout(u64 microseconds, TimerCallback& callback) {
+    deadline(monotonicNowUs() + microseconds, callback);
 }
 
-void PlatformImpl::deadline(u64 value) {
-    if (value == 0) {
-        value = monotonicNowUs();
+void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
+    if (monotonicMicroseconds == 0) {
+        monotonicMicroseconds = monotonicNowUs();
     }
-    if (minDeadline == 0 || value < minDeadline) {
-        minDeadline = value;
+    for (Timer* timer = timers.mutBegin(); timer != timers.mutEnd(); ++timer) {
+        if (timer->callback == &callback) {
+            timer->deadline = monotonicMicroseconds;
+            return;
+        }
+    }
+    timers.pushBack({
+        .callback = &callback,
+        .deadline = monotonicMicroseconds,
+    });
+}
+
+void PollerImpl::cancel(TimerCallback& callback) {
+    for (size_t index = 0; index != timers.length(); ++index) {
+        if (timers[index].callback == &callback) {
+            timers.mut(index) = timers.back();
+            timers.popBack();
+            return;
+        }
     }
 }
 
-DWORD PlatformImpl::waitMilliseconds() const {
-    if (minDeadline == 0) {
+u64 PollerImpl::nextDeadline() const {
+    u64 result = UINT64_MAX;
+    for (const Timer& timer : timers) {
+        result = min(result, timer.deadline);
+    }
+    return result;
+}
+
+DWORD PollerImpl::waitMilliseconds() const {
+    const u64 deadline = nextDeadline();
+    if (deadline == UINT64_MAX) {
         return INFINITE;
     }
     const u64 now = monotonicNowUs();
-    if (minDeadline <= now) {
+    if (deadline <= now) {
         return 0;
     }
-    return (DWORD)(min<u64>(UINT_MAX - 1, (minDeadline - now + 999) / 1000));
+    return (DWORD)(min<u64>(UINT_MAX - 1, (deadline - now + 999) / 1000));
 }
 
-void PlatformImpl::dispatchHandles(DWORD result) {
+void PollerImpl::prepare() {
+    handles.clear();
+    handleFDs.clear();
+    armed.visit([this](const ArmedFD& source) {
+        if (source.handle != nullptr && handles.length() < MAXIMUM_WAIT_OBJECTS - 1) {
+            handles.pushBack(source.handle);
+            handleFDs.pushBack(source.fd.fd);
+        }
+    });
+}
+
+void PollerImpl::dispatchHandles(DWORD result) {
+    readyFDs.clear();
     if (result >= WAIT_OBJECT_0 && result < WAIT_OBJECT_0 + handles.length()) {
         const size_t first = result - WAIT_OBJECT_0;
         for (size_t index = first; index != handles.length(); ++index) {
@@ -243,12 +319,38 @@ void PlatformImpl::dispatchHandles(DWORD result) {
                 continue;
             }
             const int fd = handleFDs[index];
-            const ArmedFD* const source = armed.find(fd);
+            ArmedFD* const source = armed.find(fd);
             if (source != nullptr) {
-                events.fdReady({fd, source->mode});
+                readyFDs.pushBack({
+                    .fd = source->fd,
+                    .callback = source->callback,
+                });
+                armed.erase(fd);
             }
         }
     }
+    for (const ReadyFD& ready : readyFDs) {
+        ready.callback->ready(ready.fd);
+    }
+    readyFDs.clear();
+}
+
+void PollerImpl::dispatchTimers() {
+    const u64 now = monotonicNowUs();
+    readyTimers.clear();
+    for (size_t index = 0; index != timers.length();) {
+        if (timers[index].deadline > now) {
+            ++index;
+            continue;
+        }
+        readyTimers.pushBack(timers[index].callback);
+        timers.mut(index) = timers.back();
+        timers.popBack();
+    }
+    for (TimerCallback* callback : readyTimers) {
+        callback->ready();
+    }
+    readyTimers.clear();
 }
 
 void PlatformImpl::dispatchMessages() {
@@ -263,29 +365,14 @@ void PlatformImpl::dispatchMessages() {
     }
 }
 
-void PlatformImpl::dispatchTimeout() {
-    if (minDeadline != 0 && monotonicNowUs() >= minDeadline) {
-        minDeadline = 0;
-        events.timeout();
-    }
-}
-
 void PlatformImpl::run() {
     running = true;
     while (running) {
-        handles.clear();
-        handleFDs.clear();
-        armed.visit([this](const ArmedFD& source) {
-            if (source.handle != nullptr && handles.length() < MAXIMUM_WAIT_OBJECTS - 1) {
-                handles.pushBack(source.handle);
-                handleFDs.pushBack(source.fd);
-            }
-        });
-        const DWORD result = MsgWaitForMultipleObjectsEx((DWORD)(handles.length()), handles.data(), waitMilliseconds(), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-        dispatchHandles(result);
+        poller_->prepare();
+        const DWORD result = MsgWaitForMultipleObjectsEx((DWORD)(poller_->handles.length()), poller_->handles.data(), poller_->waitMilliseconds(), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        poller_->dispatchHandles(result);
         dispatchMessages();
-        dispatchTimeout();
-        events.check();
+        poller_->dispatchTimers();
     }
 }
 
@@ -931,6 +1018,6 @@ LRESULT CALLBACK WindowImpl::procedure(HWND handle, UINT message, WPARAM wparam,
     return DefWindowProcW(handle, message, wparam, lparam);
 }
 
-Platform* createWin32Platform(ObjPool& owner, PlatformEvents& events) {
-    return owner.make<PlatformImpl>(owner, events);
+Platform* createWin32Platform(ObjPool& owner) {
+    return owner.make<PlatformImpl>(owner);
 }

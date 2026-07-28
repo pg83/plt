@@ -22,6 +22,7 @@ else:
 
 common_sources = [
     "$(S)/input.cpp",
+    "$(S)/poller.cpp",
     "$(S)/pointer_grab.cpp",
     "$(S)/platform.cpp",
     "$(S)/window.cpp",

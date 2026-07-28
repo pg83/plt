@@ -6,8 +6,12 @@
 
 #pragma once
 
-#include "platform.h"
+namespace stl {
+    class ObjPool;
+}
 
 namespace plt {
-    Platform* createWaylandPlatform(stl::ObjPool& owner, PlatformEvents& events);
+    struct Platform;
+
+    Platform* createWaylandPlatform(stl::ObjPool& owner);
 }

@@ -6,8 +6,12 @@
 
 #pragma once
 
-#include "platform.h"
+namespace stl {
+    class ObjPool;
+}
 
 namespace plt {
-    Platform* createCocoaPlatform(stl::ObjPool& owner, PlatformEvents& events);
+    struct Platform;
+
+    Platform* createCocoaPlatform(stl::ObjPool& owner);
 }
