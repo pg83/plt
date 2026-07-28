@@ -124,7 +124,7 @@ if build.target == build.host:
         name="plt_unit_tests",
         output="$(B)/plt_unit_tests",
         srcs=[
-            "$(S)/test_ut.cpp",
+            "$(S)/tests/test_ut.cpp",
             "$(S)/pointer_grab_ut.cpp",
         ],
         deps=[libplt, libstd],
@@ -133,13 +133,20 @@ if build.target == build.host:
     test_deps = [plt_unit_tests]
     test_commands = [["$(B)/plt_unit_tests"]]
     if system == "Linux":
+        wayland_test_sources = [
+            "$(S)/tests/test.cpp",
+            *sorted(build.glob("$(S)/tests/test_wayland_*.cpp")),
+        ]
         plt_wayland_integration_tests = program(
             name="plt_wayland_integration_tests",
             output="$(B)/plt_wayland_integration_tests",
-            srcs=[{
-                "src": "$(S)/test_wayland.cpp",
-                "inputs": server_protocol_outputs,
-            }],
+            srcs=[
+                {
+                    "src": source,
+                    "inputs": server_protocol_outputs,
+                }
+                for source in wayland_test_sources
+            ],
             deps=[
                 libplt,
                 libstd,

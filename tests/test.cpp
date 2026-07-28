@@ -1,7 +1,4 @@
-#include "platform.h"
-#include "poller.h"
-#include "input.h"
-#include "window.h"
+#include "test.h"
 
 #include "cursor-shape-v1-server-protocol.h"
 #include "fractional-scale-v1-server-protocol.h"
@@ -38,58 +35,7 @@
 
 using namespace stl;
 
-namespace {
-    enum class Command : u32 {
-        DeferInitialConfigure,
-        ReleaseInitialConfigure,
-        QueryInitialConfigure,
-        PointerEnter,
-        PreferredScale,
-        QuerySelection,
-        QueryMinimum,
-        OfferSelection,
-        ReleaseRead,
-        RequestSourceData,
-        RequestBrokenSourceData,
-        ReleaseWrite,
-        QueryWrite,
-        AwaitTitles,
-        ConfigureWindowState,
-        ConfigureWindowResize,
-        CloseWindow,
-        QueryWindowRequests,
-        QueryWindowGeometry,
-        QueryFrames,
-        CompleteFrames,
-        PointerSequence,
-        QueryCursor,
-        KeyboardEnter,
-        KeyboardPress,
-        KeyboardRelease,
-        KeyboardLeave,
-        QueryActivation,
-        QueryPrimarySelection,
-        OfferPrimarySelection,
-        RequestPrimarySourceData,
-        Quit,
-    };
-
-    struct Reply {
-        u32 count = 0;
-        i32 first = 0;
-        i32 second = 0;
-    };
-
-    enum WindowRequest : u32 {
-        UpdatedTitle = 1 << 0,
-        InitialAppId = 1 << 1,
-        Move = 1 << 2,
-        Maximize = 1 << 3,
-        Unmaximize = 1 << 4,
-        Fullscreen = 1 << 5,
-        Unfullscreen = 1 << 6,
-        Minimize = 1 << 7,
-    };
+namespace plt::test {
 
     bool transfer(int fd, void* data, size_t size, bool writeData) {
         auto* cursor = static_cast<unsigned char*>(data);
@@ -136,6 +82,7 @@ namespace {
 
         bool run(int controlFd, pid_t child);
         void handle(Command command, int controlFd);
+        bool offerSelection(const char* mime);
         void sendInitialConfigure(Surface& surface);
         void sendConfigure(
             Surface& surface,
@@ -324,6 +271,28 @@ namespace {
         }
         if (context != nullptr) {
             xkb_context_unref(context);
+        }
+    }
+
+    void sendInvalidKeymap(Server& server) {
+        static constexpr char text[] = "not an xkb keymap";
+        const int fd = memfd_create("plt-invalid-keymap", MFD_CLOEXEC);
+        if (fd >= 0 && transfer(
+                fd,
+                const_cast<char*>(text),
+                sizeof(text),
+                true
+            )
+            && lseek(fd, 0, SEEK_SET) == 0) {
+            wl_keyboard_send_keymap(
+                server.keyboard,
+                WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
+                fd,
+                sizeof(text)
+            );
+        }
+        if (fd >= 0) {
+            close(fd);
         }
     }
 
@@ -1101,6 +1070,29 @@ namespace {
         wl_display_flush_clients(display);
     }
 
+    bool Server::offerSelection(const char* mime) {
+        if (dataDevice == nullptr) {
+            return false;
+        }
+        dataOffer = wl_resource_create(
+            client,
+            &wl_data_offer_interface,
+            wl_resource_get_version(dataDevice),
+            0
+        );
+        wl_resource_set_implementation(
+            dataOffer,
+            &dataOfferImplementation,
+            this,
+            nullptr
+        );
+        wl_data_device_send_data_offer(dataDevice, dataOffer);
+        wl_data_offer_send_offer(dataOffer, mime);
+        wl_data_device_send_selection(dataDevice, dataOffer);
+        wl_display_flush_clients(display);
+        return true;
+    }
+
     void Server::handle(Command command, int controlFd) {
         Reply reply;
         switch (command) {
@@ -1149,28 +1141,13 @@ namespace {
                 reply.second = minimumHeight;
                 break;
             case Command::OfferSelection:
-                if (dataDevice != nullptr) {
-                    dataOffer = wl_resource_create(
-                        client,
-                        &wl_data_offer_interface,
-                        wl_resource_get_version(dataDevice),
-                        0
-                    );
-                    wl_resource_set_implementation(
-                        dataOffer,
-                        &dataOfferImplementation,
-                        this,
-                        nullptr
-                    );
-                    wl_data_device_send_data_offer(dataDevice, dataOffer);
-                    wl_data_offer_send_offer(
-                        dataOffer,
-                        "text/plain;charset=utf-8"
-                    );
-                    wl_data_device_send_selection(dataDevice, dataOffer);
-                    wl_display_flush_clients(display);
-                    reply.count = 1;
-                }
+                reply.count = offerSelection("text/plain;charset=utf-8");
+                break;
+            case Command::OfferPlainSelection:
+                reply.count = offerSelection("text/plain");
+                break;
+            case Command::OfferUnsupportedSelection:
+                reply.count = offerSelection("application/octet-stream");
                 break;
             case Command::ReleaseRead:
                 reply.count = readWriteFd != -1;
@@ -1218,6 +1195,19 @@ namespace {
                         reply.count = 1;
                     }
                 }
+                break;
+            case Command::CancelSources:
+                if (dataSource != nullptr) {
+                    wl_data_source_send_cancelled(dataSource);
+                    reply.count |= 1;
+                }
+                if (primarySource != nullptr) {
+                    zwp_primary_selection_source_v1_send_cancelled(
+                        primarySource
+                    );
+                    reply.count |= 2;
+                }
+                wl_display_flush_clients(display);
                 break;
             case Command::ReleaseWrite:
                 if (writeReadFd != -1 && writeSource == nullptr) {
@@ -1451,6 +1441,13 @@ namespace {
                     reply.count = 1;
                 }
                 break;
+            case Command::InvalidKeymap:
+                if (keyboard != nullptr) {
+                    sendInvalidKeymap(*this);
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
             case Command::QueryActivation:
                 reply.count = activationCount;
                 break;
@@ -1583,1115 +1580,44 @@ namespace {
         platform.run();
     }
 
-    struct Client {
-        explicit Client(
-            int controlFd_,
-            u32 width = 800,
-            u32 minimum = 1,
-            plt::WindowEvents* events = nullptr,
-            plt::InputSink* input = nullptr,
-            bool waitForConfigure = true
-        )
-            : controlFd(controlFd_)
-            , owner(stl::ObjPool::fromMemory())
-        {
-            platform = plt::Platform::create(*owner);
-            window = platform->createWindow(
-                *owner,
-                {
-                    .appId = stl::StringView(u8"plt.integration"),
-                    .title = stl::StringView(u8"plt integration"),
-                    .width = width,
-                    .height = 600,
-                    .minimumWidth = minimum,
-                    .minimumHeight = minimum,
-                    .input = input,
-                    .events = events,
-                }
-            );
-            window->show();
-            if (waitForConfigure) {
-                for (u32 attempt = 0; attempt != 10; ++attempt) {
-                    pump(*platform);
-                    if (command(
-                            controlFd,
-                            Command::QueryInitialConfigure
-                        ).count != 0) {
-                        break;
-                    }
-                }
+    Client::Client(
+        int controlFd_,
+        u32 width,
+        u32 minimum,
+        plt::WindowEvents* events,
+        plt::InputSink* input,
+        bool waitForConfigure
+    )
+        : controlFd(controlFd_)
+        , owner(stl::ObjPool::fromMemory())
+    {
+        platform = plt::Platform::create(*owner);
+        window = platform->createWindow(
+            *owner,
+            {
+                .appId = stl::StringView(u8"plt.integration"),
+                .title = stl::StringView(u8"plt integration"),
+                .width = width,
+                .height = 600,
+                .minimumWidth = minimum,
+                .minimumHeight = minimum,
+                .input = input,
+                .events = events,
+            }
+        );
+        window->show();
+        if (waitForConfigure) {
+            for (u32 attempt = 0; attempt != 10; ++attempt) {
                 pump(*platform);
+                if (command(
+                        controlFd,
+                        Command::QueryInitialConfigure
+                    ).count != 0) {
+                    break;
+                }
             }
+            pump(*platform);
         }
-
-        int controlFd;
-        stl::ObjPool::Ref owner;
-        plt::Platform* platform = nullptr;
-        plt::Window* window = nullptr;
-    };
-
-    bool deferredClipboard(int fd) {
-        Client client(fd);
-        client.window->writeClipboard(stl::StringView(u8"clipboard"));
-        const Reply before = command(fd, Command::PointerEnter);
-        pump(*client.platform);
-        const Reply after = command(fd, Command::QuerySelection);
-        if (before.count != 0 || after.count != 1) {
-            fprintf(
-                stderr,
-                "deferred clipboard: selection count before=%u after=%u, expected 0/1\n",
-                before.count,
-                after.count
-            );
-            return false;
-        }
-        return true;
-    }
-
-    bool fractionalRounding(int fd) {
-        Client client(fd, 802);
-        command(fd, Command::PreferredScale);
-        pump(*client.platform);
-        const u32 width = client.window->info().width;
-        if (width != 1003) {
-            fprintf(
-                stderr,
-                "fractional rounding: width=%u, expected 1003\n",
-                width
-            );
-            return false;
-        }
-        return true;
-    }
-
-    bool minimumAfterScale(int fd) {
-        Client client(fd, 800, 500);
-        const Reply before = command(fd, Command::QueryMinimum);
-        command(fd, Command::PreferredScale);
-        Reply after;
-        for (unsigned attempt = 0; attempt != 100; ++attempt) {
-            pump(*client.platform);
-            after = command(fd, Command::QueryMinimum);
-            if (after.count > before.count) {
-                break;
-            }
-        }
-        if (before.first != 500 || after.count <= before.count
-            || after.first != 400) {
-            fprintf(
-                stderr,
-                "minimum after scale: before=%dx%d count=%u, after=%dx%d count=%u; expected second 400x400\n",
-                before.first,
-                before.second,
-                before.count,
-                after.first,
-                after.second,
-                after.count
-            );
-            return false;
-        }
-        return true;
-    }
-
-    struct ReadSink final: plt::ClipboardRead {
-        bool data(StringView chunk) override {
-            content.append(chunk.data(), chunk.length());
-            return true;
-        }
-
-        void done(bool success_) override {
-            success = success_;
-            complete = true;
-        }
-
-        Buffer content;
-        bool complete = false;
-        bool success = false;
-    };
-
-    struct RejectSink final: plt::ClipboardRead {
-        bool data(StringView) override {
-            ++dataCount;
-            return false;
-        }
-
-        void done(bool success_) override {
-            ++doneCount;
-            success = success_;
-        }
-
-        u32 dataCount = 0;
-        u32 doneCount = 0;
-        bool success = true;
-    };
-
-    struct EventSink final: plt::WindowEvents {
-        void close() override {
-            ++closeCount;
-        }
-
-        void resized(const plt::WindowInfo& info) override {
-            ++resizeCount;
-            lastInfo = info;
-        }
-
-        void redraw() override {
-            ++redrawCount;
-        }
-
-        void frame() override {
-            ++frameCount;
-        }
-
-        plt::WindowInfo lastInfo;
-        u32 closeCount = 0;
-        u32 resizeCount = 0;
-        u32 redrawCount = 0;
-        u32 frameCount = 0;
-    };
-
-    bool nonblockingShow(int fd) {
-        if (command(fd, Command::DeferInitialConfigure).count != 1) {
-            fprintf(stderr, "nonblocking show: could not defer configure\n");
-            return false;
-        }
-
-        EventSink events;
-        Client client(fd, 800, 1, &events, nullptr, false);
-        pump(*client.platform);
-        if (events.resizeCount != 0) {
-            fprintf(stderr, "nonblocking show: configure was not deferred\n");
-            return false;
-        }
-        if (command(fd, Command::ReleaseInitialConfigure).count != 1) {
-            fprintf(stderr, "nonblocking show: window was not committed\n");
-            return false;
-        }
-        for (u32 attempt = 0;
-             attempt != 10 && events.resizeCount == 0;
-             ++attempt) {
-            pump(*client.platform);
-        }
-        if (events.resizeCount == 0) {
-            fprintf(stderr, "nonblocking show: configure was not delivered\n");
-            return false;
-        }
-        return true;
-    }
-
-    struct InputRecorder final: plt::InputSink {
-        void key(const plt::KeyInput& input) override {
-            lastKey = input;
-            if (input.action == plt::InputAction::Press) {
-                pressedKey = input;
-                ++pressCount;
-            } else if (input.action == plt::InputAction::Repeat) {
-                ++repeatCount;
-            } else {
-                ++releaseCount;
-            }
-        }
-
-        void text(const plt::TextInput& input) override {
-            lastText = input;
-            ++textCount;
-        }
-
-        void pointerMotion(const plt::PointerMotionInput& input) override {
-            lastMotion = input;
-            ++motionCount;
-        }
-
-        void pointerButton(const plt::PointerButtonInput& input) override {
-            lastButton = input;
-            if (input.pressed) {
-                ++buttonPressCount;
-            } else {
-                ++buttonReleaseCount;
-            }
-        }
-
-        void scroll(const plt::ScrollInput& input) override {
-            lastScroll = input;
-            ++scrollCount;
-        }
-
-        void focus(bool focused) override {
-            if (focused) {
-                ++focusCount;
-            } else {
-                ++blurCount;
-            }
-        }
-
-        void pointerPresence(bool present) override {
-            if (present) {
-                ++pointerEnterCount;
-            } else {
-                ++pointerLeaveCount;
-            }
-        }
-
-        void flush() override {
-            ++flushCount;
-        }
-
-        plt::KeyInput pressedKey;
-        plt::KeyInput lastKey;
-        plt::TextInput lastText;
-        plt::PointerMotionInput lastMotion;
-        plt::PointerButtonInput lastButton;
-        plt::ScrollInput lastScroll;
-        u32 pressCount = 0;
-        u32 repeatCount = 0;
-        u32 releaseCount = 0;
-        u32 textCount = 0;
-        u32 motionCount = 0;
-        u32 buttonPressCount = 0;
-        u32 buttonReleaseCount = 0;
-        u32 scrollCount = 0;
-        u32 focusCount = 0;
-        u32 blurCount = 0;
-        u32 pointerEnterCount = 0;
-        u32 pointerLeaveCount = 0;
-        u32 flushCount = 0;
-    };
-
-    bool windowApi(int fd) {
-        EventSink events;
-        Client client(fd, 800, 1, &events);
-        client.window->show();
-
-        const plt::RenderContext render = client.window->renderContext();
-        const plt::WindowInfo initial = client.window->info();
-        if (render.backend != plt::RenderBackend::Wayland
-            || render.connection == nullptr || render.window == nullptr
-            || initial.width != 800 || initial.height != 600
-            || initial.screenPixelWidth != 1920
-            || initial.screenPixelHeight != 1080
-            || initial.contentScale != 1
-            || initial.focused || initial.maximized || initial.fullscreen
-            || initial.tiled || initial.iconified
-            || events.resizeCount == 0 || events.redrawCount == 0) {
-            fprintf(stderr, "window API: invalid initial state or render context\n");
-            return false;
-        }
-
-        const u32 redraws = events.redrawCount;
-        client.window->requestRedraw();
-        client.window->requestClose();
-        client.window->requestClose();
-        if (events.redrawCount != redraws + 1 || events.closeCount != 1) {
-            fprintf(stderr, "window API: direct callbacks were not idempotent\n");
-            return false;
-        }
-
-        client.window->setTitle(StringView(u8"updated title"));
-        client.window->setMinimumSize(320, 240);
-        client.window->setResizeUnit(10, 20, 3, 7);
-        command(fd, Command::PointerEnter);
-        pump(*client.platform);
-        client.window->move(11, 22);
-        client.window->setMaximized(true);
-        client.window->setMaximized(false);
-        client.window->setFullscreen(true);
-        client.window->setFullscreen(false);
-        client.window->restore();
-        client.window->iconify();
-        client.window->requestAttention();
-        pump(*client.platform);
-        if (command(fd, Command::QueryActivation).count != 1) {
-            fprintf(stderr, "window API: requestAttention did not activate\n");
-            return false;
-        }
-        client.window->focus();
-        pump(*client.platform);
-        if (command(fd, Command::QueryActivation).count != 2) {
-            fprintf(stderr, "window API: focus did not activate\n");
-            return false;
-        }
-
-        const u32 expectedRequests =
-            UpdatedTitle | InitialAppId | Move | Maximize | Unmaximize
-            | Fullscreen | Unfullscreen | Minimize;
-        const Reply requests = command(fd, Command::QueryWindowRequests);
-        const Reply minimum = command(fd, Command::QueryMinimum);
-        if ((requests.count & expectedRequests) != expectedRequests
-            || minimum.first != 320 || minimum.second != 240) {
-            fprintf(
-                stderr,
-                "window API: request mask=%x minimum=%dx%d\n",
-                requests.count,
-                minimum.first,
-                minimum.second
-            );
-            return false;
-        }
-
-        command(fd, Command::ConfigureWindowState);
-        pump(*client.platform);
-        const plt::WindowInfo state = client.window->info();
-        if (state.width != 900 || state.height != 700 || !state.focused
-            || !state.maximized || !state.fullscreen || !state.tiled) {
-            fprintf(stderr, "window API: configured state was not exposed\n");
-            return false;
-        }
-
-        command(fd, Command::ConfigureWindowResize);
-        pump(*client.platform);
-        const plt::WindowInfo resized = client.window->info();
-        if (resized.width != 813 || resized.height != 627
-            || resized.focused || resized.maximized
-            || resized.fullscreen || resized.tiled) {
-            fprintf(
-                stderr,
-                "window API: snapped size=%ux%u expected 813x627\n",
-                resized.width,
-                resized.height
-            );
-            return false;
-        }
-
-        client.window->resize(640, 480);
-        pump(*client.platform);
-        const Reply geometry = command(fd, Command::QueryWindowGeometry);
-        if (geometry.first != 640 || geometry.second != 480
-            || client.window->info().width != 640
-            || client.window->info().height != 480) {
-            fprintf(stderr, "window API: explicit resize failed\n");
-            return false;
-        }
-
-        command(fd, Command::CloseWindow);
-        pump(*client.platform);
-        if (events.closeCount != 1) {
-            fprintf(stderr, "window API: duplicate close callback\n");
-            return false;
-        }
-        return true;
-    }
-
-    bool frameApi(int fd) {
-        EventSink events;
-        Client client(fd, 800, 1, &events);
-        if (!client.window->requestFrame() || !client.window->requestFrame()) {
-            fprintf(stderr, "frame API: requestFrame failed\n");
-            return false;
-        }
-        pump(*client.platform);
-        Reply frames = command(fd, Command::QueryFrames);
-        if (frames.count != 1 || frames.first != 1) {
-            fprintf(stderr, "frame API: duplicate request was sent\n");
-            return false;
-        }
-
-        client.window->cancelFrame();
-        command(fd, Command::CompleteFrames);
-        pump(*client.platform);
-        if (events.frameCount != 0) {
-            fprintf(stderr, "frame API: cancelled callback was delivered\n");
-            return false;
-        }
-
-        if (!client.window->requestFrame()) {
-            fprintf(stderr, "frame API: second request failed\n");
-            return false;
-        }
-        pump(*client.platform);
-        frames = command(fd, Command::QueryFrames);
-        if (frames.count != 2 || frames.first != 1) {
-            fprintf(stderr, "frame API: second request was not sent\n");
-            return false;
-        }
-        command(fd, Command::CompleteFrames);
-        pump(*client.platform);
-        client.window->cancelFrame();
-        if (events.frameCount != 1) {
-            fprintf(stderr, "frame API: completion was not delivered\n");
-            return false;
-        }
-        return true;
-    }
-
-    bool pointerInput(int fd) {
-        InputRecorder input;
-        Client client(fd, 800, 1, nullptr, &input);
-        command(fd, Command::PointerEnter);
-        pump(*client.platform);
-        client.window->pointerIcon(plt::PointerIcon::Link);
-        pump(*client.platform);
-        const Reply cursor = command(fd, Command::QueryCursor);
-        if (cursor.count < 2
-            || cursor.first != WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER) {
-            fprintf(stderr, "pointer input: cursor shape was not updated\n");
-            return false;
-        }
-
-        command(fd, Command::PointerSequence);
-        pump(*client.platform);
-        client.window->pointerIcon(plt::PointerIcon::Text);
-        if (input.motionCount != 3
-            || input.lastMotion.pixelX != 30
-            || input.lastMotion.pixelY != 40
-            || input.buttonPressCount != 1
-            || input.buttonReleaseCount != 1
-            || input.lastButton.button != plt::PointerButton::Primary
-            || input.lastButton.pressed
-            || input.scrollCount != 1
-            || input.lastScroll.x != -2
-            || input.lastScroll.y != 3
-            || input.lastScroll.pixelX != 30
-            || input.lastScroll.pixelY != 40
-            || input.pointerEnterCount != 2
-            || input.pointerLeaveCount != 1
-            || input.flushCount != 2) {
-            fprintf(stderr, "pointer input: event translation mismatch\n");
-            return false;
-        }
-        return true;
-    }
-
-    bool keyboardInput(int fd) {
-        InputRecorder input;
-        Client client(fd, 800, 1, nullptr, &input);
-        command(fd, Command::KeyboardEnter);
-        pump(*client.platform);
-        if (input.focusCount != 1 || !client.window->info().focused) {
-            fprintf(stderr, "keyboard input: focus enter failed\n");
-            return false;
-        }
-
-        command(fd, Command::KeyboardPress);
-        pump(*client.platform);
-        for (u32 attempt = 0; attempt != 20 && input.repeatCount == 0; ++attempt) {
-            pump(*client.platform);
-        }
-        if (input.pressCount != 1 || input.repeatCount == 0
-            || input.textCount == 0
-            || input.pressedKey.key != plt::InputKey::Printable
-            || input.pressedKey.layoutCodepoint != 'a'
-            || input.pressedKey.baseCodepoint != 'a'
-            || input.lastText.codepoint != 'a') {
-            fprintf(stderr, "keyboard input: key/text/repeat translation failed\n");
-            return false;
-        }
-
-        command(fd, Command::KeyboardRelease);
-        pump(*client.platform);
-        const u32 repeats = input.repeatCount;
-        for (u32 attempt = 0; attempt != 5; ++attempt) {
-            pump(*client.platform);
-        }
-        if (input.releaseCount != 1 || input.repeatCount != repeats) {
-            fprintf(stderr, "keyboard input: release did not stop repeat\n");
-            return false;
-        }
-
-        command(fd, Command::KeyboardLeave);
-        pump(*client.platform);
-        if (input.blurCount != 1 || client.window->info().focused) {
-            fprintf(stderr, "keyboard input: focus leave failed\n");
-            return false;
-        }
-        return true;
-    }
-
-    bool localSelections(int fd) {
-        Client client(fd);
-        command(fd, Command::PointerEnter);
-        pump(*client.platform);
-
-        client.window->writePrimary(StringView(u8"primary content"));
-        client.window->writeClipboard(StringView(u8"clipboard content"));
-        pump(*client.platform);
-        if (command(fd, Command::QueryPrimarySelection).count != 1
-            || command(fd, Command::QuerySelection).count != 1) {
-            fprintf(stderr, "local selections: ownership was not published\n");
-            return false;
-        }
-
-        ReadSink primary;
-        ReadSink clipboard;
-        client.window->readPrimary(primary);
-        client.window->readClipboard(clipboard);
-        if (primary.complete || clipboard.complete) {
-            fprintf(stderr, "local selections: callback was synchronous\n");
-            return false;
-        }
-        pump(*client.platform);
-        if (!primary.complete || !primary.success
-            || StringView(primary.content) != StringView(u8"primary content")
-            || !clipboard.complete || !clipboard.success
-            || StringView(clipboard.content) != StringView(u8"clipboard content")) {
-            fprintf(stderr, "local selections: contents mismatch\n");
-            return false;
-        }
-
-        ReadSink cancelled;
-        client.window->readPrimary(cancelled);
-        client.window->cancelClipboardRead(cancelled);
-        pump(*client.platform);
-        if (cancelled.complete || !cancelled.content.empty()) {
-            fprintf(stderr, "local selections: cancelled callback was delivered\n");
-            return false;
-        }
-        return true;
-    }
-
-    bool missingSelections(int fd) {
-        Client client(fd);
-        ReadSink primary;
-        ReadSink clipboard;
-        client.window->readPrimary(primary);
-        client.window->readClipboard(clipboard);
-        if (primary.complete || clipboard.complete) {
-            fprintf(stderr, "missing selections: callback was synchronous\n");
-            return false;
-        }
-        pump(*client.platform);
-        if (!primary.complete || primary.success || !primary.content.empty()
-            || !clipboard.complete || clipboard.success
-            || !clipboard.content.empty()) {
-            fprintf(stderr, "missing selections: failure was not reported\n");
-            return false;
-        }
-        return true;
-    }
-
-    bool rejectedSelection(int fd) {
-        Client client(fd);
-        command(fd, Command::OfferSelection);
-        pump(*client.platform);
-        RejectSink read;
-        client.window->readClipboard(read);
-        if (command(fd, Command::ReleaseRead).count != 1) {
-            fprintf(stderr, "rejected selection: no transfer fd\n");
-            return false;
-        }
-        pump(*client.platform);
-        if (read.dataCount != 1 || read.doneCount != 1 || read.success) {
-            fprintf(stderr, "rejected selection: cancellation contract failed\n");
-            return false;
-        }
-        return true;
-    }
-
-    struct FdCallback final: plt::PollCallback {
-        explicit FdCallback(plt::Platform& platform_): platform(platform_) {}
-
-        void ready(PollFD event_) override {
-            event = event_;
-            called = true;
-            u8 byte;
-            read(event.fd, &byte, 1);
-            platform.stop();
-        }
-
-        plt::Platform& platform;
-        PollFD event{};
-        bool called = false;
-    };
-
-    struct DeadlineCallback final: plt::TimerCallback {
-        explicit DeadlineCallback(plt::Platform& platform_): platform(platform_) {}
-
-        void ready() override {
-            called = true;
-            platform.stop();
-        }
-
-        plt::Platform& platform;
-        bool called = false;
-    };
-
-    struct CrossCancelFD final: plt::PollCallback {
-        CrossCancelFD(
-            plt::Platform& platform_,
-            int cancelled_,
-            u32& callCount_
-        )
-            : platform(platform_)
-            , cancelled(cancelled_)
-            , callCount(callCount_)
-        {
-        }
-
-        void ready(PollFD) override {
-            ++callCount;
-            platform.poller()->disarm(cancelled);
-            platform.stop();
-        }
-
-        plt::Platform& platform;
-        int cancelled;
-        u32& callCount;
-    };
-
-    struct CancelTimerCallback final: plt::TimerCallback {
-        CancelTimerCallback(
-            plt::Platform& platform_,
-            plt::TimerCallback& cancelled_
-        )
-            : platform(platform_)
-            , cancelled(cancelled_)
-        {
-        }
-
-        void ready() override {
-            called = true;
-            platform.poller()->cancel(cancelled);
-            platform.stop();
-        }
-
-        plt::Platform& platform;
-        plt::TimerCallback& cancelled;
-        bool called = false;
-    };
-
-    bool pollerApi(int fd) {
-        Client client(fd);
-        int pipes[2];
-        if (pipe2(pipes, O_CLOEXEC | O_NONBLOCK) != 0) {
-            perror("pipe2");
-            return false;
-        }
-
-        FdCallback ready(*client.platform);
-        client.platform->poller()->arm(
-            {.fd = pipes[0], .flags = PollFlag::In},
-            ready
-        );
-        u8 byte = 1;
-        if (write(pipes[1], &byte, 1) != 1) {
-            close(pipes[0]);
-            close(pipes[1]);
-            return false;
-        }
-        client.platform->run();
-        if (!ready.called || !(ready.event.flags & PollFlag::In)) {
-            fprintf(stderr, "poller API: fd callback failed\n");
-            close(pipes[0]);
-            close(pipes[1]);
-            return false;
-        }
-
-        FdCallback disarmed(*client.platform);
-        client.platform->poller()->arm(
-            {.fd = pipes[0], .flags = PollFlag::In},
-            disarmed
-        );
-        client.platform->poller()->disarm(pipes[0]);
-        write(pipes[1], &byte, 1);
-        pump(*client.platform);
-        read(pipes[0], &byte, 1);
-        if (disarmed.called) {
-            fprintf(stderr, "poller API: disarm failed\n");
-            close(pipes[0]);
-            close(pipes[1]);
-            return false;
-        }
-
-        DeadlineCallback cancelled(*client.platform);
-        client.platform->poller()->timeout(0, cancelled);
-        client.platform->poller()->cancel(cancelled);
-        pump(*client.platform);
-        if (cancelled.called) {
-            fprintf(stderr, "poller API: timer cancel failed\n");
-            close(pipes[0]);
-            close(pipes[1]);
-            return false;
-        }
-
-        DeadlineCallback cancelledByReady(*client.platform);
-        CancelTimerCallback cancelFromReady(
-            *client.platform,
-            cancelledByReady
-        );
-        client.platform->poller()->timeout(0, cancelFromReady);
-        client.platform->poller()->timeout(0, cancelledByReady);
-        client.platform->run();
-        if (!cancelFromReady.called || cancelledByReady.called) {
-            fprintf(
-                stderr,
-                "poller API: ready timer cancellation failed\n"
-            );
-            close(pipes[0]);
-            close(pipes[1]);
-            return false;
-        }
-
-        int crossPipes[2][2];
-        if (pipe2(crossPipes[0], O_CLOEXEC | O_NONBLOCK) != 0
-            || pipe2(crossPipes[1], O_CLOEXEC | O_NONBLOCK) != 0) {
-            perror("pipe2");
-            close(pipes[0]);
-            close(pipes[1]);
-            return false;
-        }
-        u32 crossCallCount = 0;
-        CrossCancelFD first(
-            *client.platform,
-            crossPipes[1][0],
-            crossCallCount
-        );
-        CrossCancelFD second(
-            *client.platform,
-            crossPipes[0][0],
-            crossCallCount
-        );
-        client.platform->poller()->arm(
-            {.fd = crossPipes[0][0], .flags = PollFlag::In},
-            first
-        );
-        client.platform->poller()->arm(
-            {.fd = crossPipes[1][0], .flags = PollFlag::In},
-            second
-        );
-        write(crossPipes[0][1], &byte, 1);
-        write(crossPipes[1][1], &byte, 1);
-        client.platform->run();
-        for (auto& crossPipe : crossPipes) {
-            close(crossPipe[0]);
-            close(crossPipe[1]);
-        }
-        if (crossCallCount != 1) {
-            fprintf(
-                stderr,
-                "poller API: ready fd cancellation invoked %u callbacks\n",
-                crossCallCount
-            );
-            close(pipes[0]);
-            close(pipes[1]);
-            return false;
-        }
-
-        DeadlineCallback deadline(*client.platform);
-        client.platform->poller()->deadline(monotonicNowUs(), deadline);
-        client.platform->run();
-        close(pipes[0]);
-        close(pipes[1]);
-        if (!deadline.called) {
-            fprintf(stderr, "poller API: deadline failed\n");
-            return false;
-        }
-        return true;
-    }
-
-    bool asynchronousRead(int fd) {
-        Client client(fd);
-        if (command(fd, Command::OfferSelection).count != 1) {
-            fprintf(stderr, "async read: data device was not ready\n");
-            return false;
-        }
-        pump(*client.platform);
-
-        ReadSink read;
-        client.window->readClipboard(read);
-        const Reply released = command(fd, Command::ReleaseRead);
-        if (released.count != 1) {
-            fprintf(
-                stderr,
-                "async read: readClipboard returned before server received receive, but no transfer fd was available\n"
-            );
-            return false;
-        }
-        for (unsigned attempt = 0; attempt != 10 && !read.complete; ++attempt) {
-            pump(*client.platform);
-        }
-        if (!read.complete || !read.success
-            || StringView(read.content) != StringView(u8"hermetic Wayland clipboard")) {
-            fprintf(
-                stderr,
-                "async read: complete=%d success=%d bytes=%zu\n",
-                read.complete,
-                read.success,
-                read.content.length()
-            );
-            return false;
-        }
-        return true;
-    }
-
-    bool asynchronousPrimary(int fd) {
-        Client client(fd);
-        if (command(fd, Command::OfferPrimarySelection).count != 1) {
-            fprintf(stderr, "async primary: primary device was not ready\n");
-            return false;
-        }
-        pump(*client.platform);
-
-        ReadSink read;
-        client.window->readPrimary(read);
-        if (command(fd, Command::ReleaseRead).count != 1) {
-            fprintf(stderr, "async primary: no read transfer fd\n");
-            return false;
-        }
-        for (u32 attempt = 0; attempt != 10 && !read.complete; ++attempt) {
-            pump(*client.platform);
-        }
-        if (!read.complete || !read.success
-            || StringView(read.content)
-                != StringView(u8"hermetic Wayland clipboard")) {
-            fprintf(stderr, "async primary: read failed\n");
-            return false;
-        }
-
-        command(fd, Command::PointerEnter);
-        pump(*client.platform);
-        client.window->writePrimary(StringView(u8"primary source"));
-        pump(*client.platform);
-        if (command(fd, Command::RequestPrimarySourceData).count != 1) {
-            fprintf(stderr, "async primary: source was not published\n");
-            return false;
-        }
-        pump(*client.platform);
-        if (command(fd, Command::ReleaseWrite).count != 1) {
-            fprintf(stderr, "async primary: source callback blocked\n");
-            return false;
-        }
-        Reply state;
-        for (u32 attempt = 0; attempt != 20; ++attempt) {
-            pump(*client.platform);
-            state = command(fd, Command::QueryWrite);
-            if (state.first != 0) {
-                break;
-            }
-        }
-        if (state.count != sizeof("primary source") - 1 || state.first == 0) {
-            fprintf(stderr, "async primary: source contents mismatch\n");
-            return false;
-        }
-        return true;
-    }
-
-    bool cancelAsynchronousRead(int fd) {
-        Client client(fd);
-        command(fd, Command::OfferSelection);
-        pump(*client.platform);
-
-        ReadSink read;
-        client.window->readClipboard(read);
-        client.window->cancelClipboardRead(read);
-        const bool completeAfterCancel = read.complete;
-        const bool successAfterCancel = read.success;
-        const size_t bytesAfterCancel = read.content.length();
-        if (command(fd, Command::ReleaseRead).count != 1) {
-            fprintf(stderr, "cancel read: no transfer fd was available\n");
-            return false;
-        }
-        pump(*client.platform);
-        if (read.complete != completeAfterCancel
-            || read.success != successAfterCancel
-            || read.content.length() != bytesAfterCancel) {
-            fprintf(
-                stderr,
-                "cancel read: callback arrived after cancel returned\n"
-            );
-            return false;
-        }
-        return true;
-    }
-
-    struct CancelReadOnReady final: plt::ClipboardRead {
-        CancelReadOnReady(
-            plt::Platform& platform_,
-            plt::Window& window_,
-            plt::ClipboardRead& read_
-        )
-            : platform(platform_)
-            , window(window_)
-            , read(read_)
-        {
-        }
-
-        bool data(StringView) override {
-            dataCalled = true;
-            window.cancelClipboardRead(read);
-            return true;
-        }
-
-        void done(bool success_) override {
-            complete = true;
-            success = success_;
-            platform.stop();
-        }
-
-        plt::Platform& platform;
-        plt::Window& window;
-        plt::ClipboardRead& read;
-        bool dataCalled = false;
-        bool complete = false;
-        bool success = false;
-    };
-
-    bool cancelReadyClipboardRead(int fd) {
-        Client client(fd);
-        client.window->writeClipboard(StringView(u8"local clipboard"));
-        command(fd, Command::PointerEnter);
-        pump(*client.platform);
-
-        ReadSink cancelled;
-        CancelReadOnReady cancel(
-            *client.platform,
-            *client.window,
-            cancelled
-        );
-        client.window->readClipboard(cancel);
-        client.window->readClipboard(cancelled);
-        client.platform->run();
-
-        if (!cancel.dataCalled || !cancel.complete || !cancel.success
-            || cancelled.complete || !cancelled.content.empty()) {
-            fprintf(
-                stderr,
-                "cancel ready read: stale transfer callback was delivered\n"
-            );
-            return false;
-        }
-        return true;
-    }
-
-    bool asynchronousWrite(int fd) {
-        static constexpr size_t contentSize = 2 * 1024 * 1024;
-        Buffer content = repeated(contentSize, 'w');
-        Client client(fd);
-        client.window->writeClipboard(StringView(content));
-        command(fd, Command::PointerEnter);
-        pump(*client.platform);
-        if (command(fd, Command::RequestSourceData).count != 1) {
-            fprintf(stderr, "async write: selection source was not ready\n");
-            return false;
-        }
-
-        // The server deliberately does not drain the pipe. A synchronous
-        // source callback blocks here after the pipe buffer fills.
-        pump(*client.platform);
-        if (command(fd, Command::ReleaseWrite).count != 1) {
-            fprintf(stderr, "async write: source send did not return\n");
-            return false;
-        }
-        Reply state;
-        for (unsigned attempt = 0; attempt != 100; ++attempt) {
-            pump(*client.platform);
-            state = command(fd, Command::QueryWrite);
-            if (state.first != 0) {
-                break;
-            }
-        }
-        if (state.count != contentSize || state.first == 0) {
-            fprintf(
-                stderr,
-                "async write: bytes=%u complete=%d, expected %zu/1\n",
-                state.count,
-                state.first,
-                contentSize
-            );
-            return false;
-        }
-        return true;
-    }
-
-    bool brokenClipboardConsumer(int fd) {
-        Client client(fd);
-        client.window->writeClipboard(stl::StringView(u8"broken consumer"));
-        command(fd, Command::PointerEnter);
-        pump(*client.platform);
-        if (command(fd, Command::RequestBrokenSourceData).count != 1) {
-            fprintf(
-                stderr,
-                "broken clipboard consumer: selection source was not ready\n"
-            );
-            return false;
-        }
-
-        // The compositor has already closed the pipe's read end. Dispatching
-        // wl_data_source.send must handle EPIPE without terminating the client.
-        pump(*client.platform);
-        command(fd, Command::QuerySelection);
-        return true;
-    }
-
-    struct StopOnClose final: plt::WindowEvents {
-        explicit StopOnClose(plt::Platform*& platform_): platform(platform_) {}
-
-        void close() override {
-            closed = true;
-            platform->stop();
-        }
-
-        void resized(const plt::WindowInfo&) override {}
-        void redraw() override {}
-        void frame() override {}
-
-        plt::Platform*& platform;
-        bool closed = false;
-    };
-
-    bool queuedWaylandEvent(int fd) {
-        plt::Platform* platform = nullptr;
-        StopOnClose events(platform);
-        Client client(fd, 800, 1, &events);
-        platform = client.platform;
-        if (command(fd, Command::CloseWindow).count != 1) {
-            fprintf(stderr, "queued event: close was not sent\n");
-            return false;
-        }
-
-        auto* const display = static_cast<wl_display*>(
-            client.window->renderContext().connection
-        );
-        if (wl_display_prepare_read(display) != 0) {
-            fprintf(stderr, "queued event: client queue was not empty\n");
-            return false;
-        }
-        pollfd source{
-            .fd = wl_display_get_fd(display),
-            .events = POLLIN,
-            .revents = 0,
-        };
-        int result;
-        do {
-            result = poll(&source, 1, 1000);
-        } while (result < 0 && errno == EINTR);
-        if (result <= 0 || !(source.revents & POLLIN)
-            || wl_display_read_events(display) < 0) {
-            wl_display_cancel_read(display);
-            fprintf(stderr, "queued event: could not queue close event\n");
-            return false;
-        }
-
-        // The socket is drained, but xdg_toplevel.close is already queued in
-        // libwayland. run() must dispatch it before blocking in poll().
-        client.platform->run();
-        if (!events.closed) {
-            fprintf(stderr, "queued event: close callback stalled\n");
-            return false;
-        }
-        return true;
-    }
-
-    bool flushBackpressure(int fd) {
-        plt::Platform* platform = nullptr;
-        StopOnClose events(platform);
-        Client client(fd, 800, 1, &events);
-        platform = client.platform;
-        Buffer title = repeated(4000, 't');
-        for (unsigned index = 0; index != 2048; ++index) {
-            static_cast<u8*>(title.mutData())[0] =
-                static_cast<u8>('a' + index % 26);
-            client.window->setTitle(StringView(title));
-        }
-        command(fd, Command::AwaitTitles);
-
-        // There is no timer: completion requires POLLOUT after the server
-        // drains the initially full Wayland socket. The final title request
-        // makes the server send xdg_toplevel.close, which stops the loop.
-        client.platform->run();
-        if (!events.closed) {
-            fprintf(stderr, "flush backpressure: close was not delivered\n");
-            return false;
-        }
-        return true;
     }
 
     using Scenario = bool (*)(int);
@@ -2734,15 +1660,21 @@ namespace {
 }
 
 int main() {
+    using namespace plt::test;
+
     bool success = true;
     success = runScenario("nonblocking show", nonblockingShow) && success;
     success = runScenario("window API", windowApi) && success;
+    success = runScenario("multiple windows", multipleWindows) && success;
     success = runScenario("frame API", frameApi) && success;
     success = runScenario("pointer input", pointerInput) && success;
     success = runScenario("keyboard input", keyboardInput) && success;
     success = runScenario("local selections", localSelections) && success;
     success = runScenario("missing selections", missingSelections) && success;
     success = runScenario("rejected selection", rejectedSelection) && success;
+    success = runScenario("plain MIME selection", plainMimeSelection) && success;
+    success = runScenario("unsupported MIME selection", unsupportedMimeSelection) && success;
+    success = runScenario("selection source cancellation", sourceCancellation) && success;
     success = runScenario("poller API", pollerApi) && success;
     success = runScenario("deferred clipboard", deferredClipboard) && success;
     success = runScenario("fractional rounding", fractionalRounding) && success;
@@ -2755,5 +1687,6 @@ int main() {
     success = runScenario("broken clipboard consumer", brokenClipboardConsumer) && success;
     success = runScenario("Wayland flush backpressure", flushBackpressure) && success;
     success = runScenario("queued Wayland event", queuedWaylandEvent) && success;
+    success = runScenario("invalid keymap", invalidKeymap) && success;
     return success ? 0 : 1;
 }

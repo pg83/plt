@@ -1,0 +1,215 @@
+#include "test.h"
+
+#include <std/sys/crt.h>
+#include <std/thr/poll_fd.h>
+
+#include <fcntl.h>
+#include <stdio.h>
+#include <unistd.h>
+
+using namespace stl;
+
+namespace plt::test {
+    namespace {
+        struct FdCallback final: PollCallback {
+            explicit FdCallback(Platform& platform_): platform(platform_) {}
+
+            void ready(PollFD event_) override {
+                event = event_;
+                called = true;
+                u8 byte;
+                read(event.fd, &byte, 1);
+                platform.stop();
+            }
+
+            Platform& platform;
+            PollFD event{};
+            bool called = false;
+        };
+
+        struct DeadlineCallback final: TimerCallback {
+            explicit DeadlineCallback(Platform& platform_): platform(platform_) {}
+
+            void ready() override {
+                called = true;
+                platform.stop();
+            }
+
+            Platform& platform;
+            bool called = false;
+        };
+
+        struct CrossCancelFD final: PollCallback {
+            CrossCancelFD(
+                Platform& platform_,
+                int cancelled_,
+                u32& callCount_
+            )
+                : platform(platform_)
+                , cancelled(cancelled_)
+                , callCount(callCount_)
+            {
+            }
+
+            void ready(PollFD) override {
+                ++callCount;
+                platform.poller()->disarm(cancelled);
+                platform.stop();
+            }
+
+            Platform& platform;
+            int cancelled;
+            u32& callCount;
+        };
+
+        struct CancelTimerCallback final: TimerCallback {
+            CancelTimerCallback(
+                Platform& platform_,
+                TimerCallback& cancelled_
+            )
+                : platform(platform_)
+                , cancelled(cancelled_)
+            {
+            }
+
+            void ready() override {
+                called = true;
+                platform.poller()->cancel(cancelled);
+                platform.stop();
+            }
+
+            Platform& platform;
+            TimerCallback& cancelled;
+            bool called = false;
+        };
+    }
+
+    bool pollerApi(int fd) {
+        Client client(fd);
+        int pipes[2];
+        if (pipe2(pipes, O_CLOEXEC | O_NONBLOCK) != 0) {
+            perror("pipe2");
+            return false;
+        }
+
+        FdCallback ready(*client.platform);
+        client.platform->poller()->arm(
+            {.fd = pipes[0], .flags = PollFlag::In},
+            ready
+        );
+        u8 byte = 1;
+        if (write(pipes[1], &byte, 1) != 1) {
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
+        client.platform->run();
+        if (!ready.called || !(ready.event.flags & PollFlag::In)) {
+            fprintf(stderr, "poller API: fd callback failed\n");
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
+
+        FdCallback disarmed(*client.platform);
+        client.platform->poller()->arm(
+            {.fd = pipes[0], .flags = PollFlag::In},
+            disarmed
+        );
+        client.platform->poller()->disarm(pipes[0]);
+        write(pipes[1], &byte, 1);
+        pump(*client.platform);
+        read(pipes[0], &byte, 1);
+        if (disarmed.called) {
+            fprintf(stderr, "poller API: disarm failed\n");
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
+
+        DeadlineCallback cancelled(*client.platform);
+        client.platform->poller()->timeout(0, cancelled);
+        client.platform->poller()->cancel(cancelled);
+        pump(*client.platform);
+        if (cancelled.called) {
+            fprintf(stderr, "poller API: timer cancel failed\n");
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
+
+        DeadlineCallback cancelledByReady(*client.platform);
+        CancelTimerCallback cancelFromReady(
+            *client.platform,
+            cancelledByReady
+        );
+        client.platform->poller()->timeout(0, cancelFromReady);
+        client.platform->poller()->timeout(0, cancelledByReady);
+        client.platform->run();
+        if (!cancelFromReady.called || cancelledByReady.called) {
+            fprintf(
+                stderr,
+                "poller API: ready timer cancellation failed\n"
+            );
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
+
+        int crossPipes[2][2];
+        if (pipe2(crossPipes[0], O_CLOEXEC | O_NONBLOCK) != 0
+            || pipe2(crossPipes[1], O_CLOEXEC | O_NONBLOCK) != 0) {
+            perror("pipe2");
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
+        u32 crossCallCount = 0;
+        CrossCancelFD first(
+            *client.platform,
+            crossPipes[1][0],
+            crossCallCount
+        );
+        CrossCancelFD second(
+            *client.platform,
+            crossPipes[0][0],
+            crossCallCount
+        );
+        client.platform->poller()->arm(
+            {.fd = crossPipes[0][0], .flags = PollFlag::In},
+            first
+        );
+        client.platform->poller()->arm(
+            {.fd = crossPipes[1][0], .flags = PollFlag::In},
+            second
+        );
+        write(crossPipes[0][1], &byte, 1);
+        write(crossPipes[1][1], &byte, 1);
+        client.platform->run();
+        for (auto& crossPipe : crossPipes) {
+            close(crossPipe[0]);
+            close(crossPipe[1]);
+        }
+        if (crossCallCount != 1) {
+            fprintf(
+                stderr,
+                "poller API: ready fd cancellation invoked %u callbacks\n",
+                crossCallCount
+            );
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
+
+        DeadlineCallback deadline(*client.platform);
+        client.platform->poller()->deadline(monotonicNowUs(), deadline);
+        client.platform->run();
+        close(pipes[0]);
+        close(pipes[1]);
+        if (!deadline.called) {
+            fprintf(stderr, "poller API: deadline failed\n");
+            return false;
+        }
+        return true;
+    }
+}
