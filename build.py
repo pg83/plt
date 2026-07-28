@@ -1,4 +1,3 @@
-import os
 import platform as host
 
 import build
@@ -12,13 +11,7 @@ build.cxxflags += [
     "-Werror",
 ]
 
-std_build = os.path.join("third_party", "libstd", "build.py")
-if "-lstd" in build.ldflags:
-    libstd = dependency(ldflags=["-lstd"])
-elif os.path.isfile(os.path.join(os.path.dirname(__file__), std_build)):
-    libstd = import_build(std_build, "libstd.a", extra_cflags=["-Wno-error"])
-else:
-    libstd = dependency(ldflags=["-lstd"])
+libstd = dependency(ldflags=[] if "-Dno_vendored_std" in build.cppflags else ["-lstd"])
 
 common_sources = [
     "$(S)/input.cpp",
@@ -115,7 +108,7 @@ platform_unit_tests = program(
     name="platform_unit_tests",
     output="$(B)/platform_unit_tests",
     srcs=[
-        "$(S)/third_party/libstd/tst/test.cpp",
+        "$(S)/main_ut.cpp",
         "$(S)/pointer_grab_ut.cpp",
     ],
     deps=[libplatform, libstd],

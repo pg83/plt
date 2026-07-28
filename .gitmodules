@@ -1,3 +1,0 @@
-[submodule "third_party/libstd"]
-	path = third_party/libstd
-	url = https://github.com/pg83/std.git
