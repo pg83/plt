@@ -59,16 +59,23 @@ namespace {
     struct ArmedFD {
         PollFD fd;
         PollCallback* callback = nullptr;
+        u64 generation = 0;
     };
 
     struct ReadyFD {
         PollFD fd;
         PollCallback* callback = nullptr;
+        u64 generation = 0;
     };
 
     struct Timer {
         TimerCallback* callback = nullptr;
         u64 deadline = 0;
+        u64 generation = 0;
+    };
+
+    struct ReadyTimer {
+        u64 generation = 0;
     };
 
     struct PollerImpl final: public Poller {
@@ -88,7 +95,10 @@ namespace {
         Vector<struct pollfd> pollFDs;
         Vector<ReadyFD> readyFDs;
         Vector<Timer> timers;
-        Vector<TimerCallback*> readyTimers;
+        Vector<ReadyTimer> readyTimers;
+        u64 nextGeneration = 1;
+
+        u64 allocateGeneration();
     };
 
     struct Offer {
@@ -1193,10 +1203,19 @@ PollerImpl::PollerImpl(ObjPool& owner)
 {
 }
 
+u64 PollerImpl::allocateGeneration() {
+    const u64 result = nextGeneration++;
+    if (nextGeneration == 0) {
+        nextGeneration = 1;
+    }
+    return result;
+}
+
 void PollerImpl::arm(PollFD fd, PollCallback& callback) {
     armed[fd.fd] = {
         .fd = fd,
         .callback = &callback,
+        .generation = allocateGeneration(),
     };
 }
 
@@ -1215,12 +1234,14 @@ void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
     for (Timer* timer = timers.mutBegin(); timer != timers.mutEnd(); ++timer) {
         if (timer->callback == &callback) {
             timer->deadline = monotonicMicroseconds;
+            timer->generation = allocateGeneration();
             return;
         }
     }
     timers.pushBack({
         .callback = &callback,
         .deadline = monotonicMicroseconds,
+        .generation = allocateGeneration(),
     });
 }
 
@@ -1250,12 +1271,20 @@ void PollerImpl::dispatchTimers() {
             ++index;
             continue;
         }
-        readyTimers.pushBack(timers[index].callback);
-        timers.mut(index) = timers.back();
-        timers.popBack();
+        readyTimers.pushBack({.generation = timers[index].generation});
+        ++index;
     }
-    for (TimerCallback* callback : readyTimers) {
-        callback->ready();
+    for (const ReadyTimer& ready : readyTimers) {
+        for (size_t index = 0; index != timers.length(); ++index) {
+            if (timers[index].generation != ready.generation) {
+                continue;
+            }
+            TimerCallback* const callback = timers[index].callback;
+            timers.mut(index) = timers.back();
+            timers.popBack();
+            callback->ready();
+            break;
+        }
     }
     readyTimers.clear();
 }
@@ -1298,10 +1327,17 @@ void PollerImpl::wait(u64 monotonicDeadline) {
                     .flags = PollFD::fromPollEvents(source.revents),
                 },
             .callback = registration->callback,
+            .generation = registration->generation,
         });
-        armed.erase(source.fd);
     }
     for (const ReadyFD& ready : readyFDs) {
+        ArmedFD* const registration = armed.find(ready.fd.fd);
+        if (registration == nullptr
+            || registration->callback != ready.callback
+            || registration->generation != ready.generation) {
+            continue;
+        }
+        armed.erase(ready.fd.fd);
         ready.callback->ready(ready.fd);
     }
     readyFDs.clear();
@@ -1330,14 +1366,14 @@ void PlatformImpl::dispatch() {
 void PlatformImpl::run() {
     running = true;
     while (running) {
+        dispatch();
+        if (!running) {
+            break;
+        }
         if (!flushDisplay()) {
             break;
         }
         poller_->wait(nextDeadline());
-        if (!running) {
-            break;
-        }
-        dispatch();
     }
 }
 
@@ -1830,11 +1866,6 @@ void WindowImpl::show() {
     }
     shown = true;
     wl_surface_commit(surface);
-    while (!configured) {
-        if (wl_display_roundtrip(platform.display) < 0) {
-            fail(u8"initial Wayland configure failed");
-        }
-    }
 }
 
 void WindowImpl::requestClose() {

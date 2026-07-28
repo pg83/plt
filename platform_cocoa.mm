@@ -8,6 +8,7 @@
 #include <std/sys/crt.h>
 #include <std/sym/i_map.h>
 #include <std/alg/minmax.h>
+#include <std/lib/buffer.h>
 #include <std/lib/vector.h>
 #include <std/thr/poll_fd.h>
 #include <std/mem/obj_pool.h>
@@ -23,6 +24,54 @@
 
 using namespace stl;
 using namespace plt;
+
+namespace plt::cocoa_detail {
+    struct Generation {
+        u64 advance() {
+            ++value;
+            if (value == 0) {
+                ++value;
+            }
+            return value;
+        }
+
+        bool matches(u64 candidate) const {
+            return candidate != 0 && candidate == value;
+        }
+
+        u64 value = 0;
+    };
+
+    bool readyGenerationMatches(u64 current, u64 ready) {
+        return current != 0 && current == ready;
+    }
+
+    struct CallbackGate {
+        void attach(void* value) {
+            __atomic_store_n(&owner_, value, __ATOMIC_RELEASE);
+        }
+
+        void detach() {
+            __atomic_store_n(&owner_, nullptr, __ATOMIC_RELEASE);
+        }
+
+        void* owner() {
+            return __atomic_load_n(&owner_, __ATOMIC_ACQUIRE);
+        }
+
+        void publish(u64 value) {
+            __atomic_store_n(&generation_, value, __ATOMIC_RELEASE);
+        }
+
+        u64 generation() {
+            return __atomic_load_n(&generation_, __ATOMIC_ACQUIRE);
+        }
+
+    private:
+        void* owner_ = nullptr;
+        u64 generation_ = 0;
+    };
+}
 
 void cocoaCloseImpl(void* owner);
 void cocoaResizeImpl(void* owner);
@@ -42,6 +91,12 @@ void cocoaPointerPresenceImpl(void* owner, bool present);
 @interface PltView: NSView
 @property(nonatomic, assign) void* owner;
 @property(nonatomic, strong) NSTrackingArea* tracking;
+@end
+
+@interface PltDisplayLinkTarget: NSObject {
+@public
+    cocoa_detail::CallbackGate gate;
+}
 @end
 
 @implementation PltWindowDelegate
@@ -170,24 +225,34 @@ void cocoaPointerPresenceImpl(void* owner, bool present);
 
 @end
 
+@implementation PltDisplayLinkTarget
+@end
+
 namespace {
     struct PlatformImpl;
     struct PollerImpl;
     struct WindowImpl;
+    struct ClipboardOperation;
 
     struct ArmedFD {
         PollFD fd;
         PollCallback* callback = nullptr;
+        u64 generation = 0;
     };
 
     struct ReadyFD {
         PollFD fd;
-        PollCallback* callback = nullptr;
+        u64 generation = 0;
     };
 
     struct Timer {
         TimerCallback* callback = nullptr;
         u64 deadline = 0;
+        u64 generation = 0;
+    };
+
+    struct ReadyTimer {
+        u64 generation = 0;
     };
 
     struct PollerImpl final: public Poller {
@@ -207,7 +272,37 @@ namespace {
         Vector<struct pollfd> pollFDs;
         Vector<ReadyFD> readyFDs;
         Vector<Timer> timers;
-        Vector<TimerCallback*> readyTimers;
+        Vector<ReadyTimer> readyTimers;
+        cocoa_detail::Generation registrations;
+    };
+
+    enum class ClipboardOperationKind : u8 {
+        ReadPrimary,
+        ReadClipboard,
+        WritePrimary,
+        WriteClipboard,
+    };
+
+    struct ClipboardOperation final: public TimerCallback {
+        ClipboardOperation(
+            WindowImpl& window,
+            ClipboardOperationKind kind,
+            ClipboardRead* read,
+            StringView content
+        );
+
+        void ready() override;
+        void cancel();
+        void dispose();
+
+        WindowImpl& window;
+        ClipboardOperationKind kind;
+        ClipboardRead* read = nullptr;
+        Buffer content;
+        ClipboardOperation* next = nullptr;
+        bool timerArmed = true;
+        bool dispatching = false;
+        bool cancelled = false;
     };
 
     struct WindowImpl final: public Window {
@@ -249,15 +344,14 @@ namespace {
         void button(NSEvent* event, bool pressed);
         void scroll(NSEvent* event);
         void pointerPresence(bool present);
-        void deliverFrame();
+        void deliverFrame(u64 generation);
         u16 modifiers(NSEventModifierFlags flags) const;
         InputKey inputKey(NSEvent* event) const;
         u32 firstCodepoint(NSString* string) const;
         void emitText(NSString* string, u16 modifiers);
         NSPoint pointerPosition(NSEvent* event) const;
-        void completeClipboardRead(ClipboardRead& sink, StringView content, bool success);
-        void readPasteboard(NSPasteboard* pasteboard, ClipboardRead& sink);
         void writePasteboard(NSPasteboard* pasteboard, StringView content);
+        void removeClipboardOperation(ClipboardOperation& operation);
         void applySizeConstraints();
 
         PlatformImpl& platform;
@@ -267,13 +361,16 @@ namespace {
         PltView* view = nil;
         PltWindowDelegate* delegate = nil;
         CVDisplayLinkRef displayLink = nullptr;
+        PltDisplayLinkTarget* displayLinkTarget = nil;
+        void* displayLinkContext = nullptr;
         u32 minimumWidth = 1;
         u32 minimumHeight = 1;
         u32 resizeUnitWidth = 1;
         u32 resizeUnitHeight = 1;
         u32 resizeBaseWidth = 0;
         u32 resizeBaseHeight = 0;
-        Vector<ClipboardRead*> clipboardReads;
+        ClipboardOperation* clipboardOperations = nullptr;
+        cocoa_detail::Generation frameGeneration;
         bool framePending = false;
     };
 
@@ -296,9 +393,13 @@ namespace {
     }
 
     CVReturn displayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*, void* context) {
-        WindowImpl* const window = (WindowImpl*)(context);
+        PltDisplayLinkTarget* const target = (__bridge PltDisplayLinkTarget*)(context);
+        const u64 generation = target->gate.generation();
         CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
-          window->deliverFrame();
+          void* const owner = target->gate.owner();
+          if (owner != nullptr) {
+              ((WindowImpl*)(owner))->deliverFrame(generation);
+          }
         });
         CFRunLoopWakeUp(CFRunLoopGetMain());
         return kCVReturnSuccess;
@@ -330,6 +431,7 @@ void PollerImpl::arm(PollFD fd, PollCallback& callback) {
     armed[fd.fd] = {
         .fd = fd,
         .callback = &callback,
+        .generation = registrations.advance(),
     };
 }
 
@@ -360,12 +462,14 @@ void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
     for (Timer* timer = timers.mutBegin(); timer != timers.mutEnd(); ++timer) {
         if (timer->callback == &callback) {
             timer->deadline = monotonicMicroseconds;
+            timer->generation = registrations.advance();
             return;
         }
     }
     timers.pushBack({
         .callback = &callback,
         .deadline = monotonicMicroseconds,
+        .generation = registrations.advance(),
     });
 }
 
@@ -395,12 +499,20 @@ void PollerImpl::dispatchTimers() {
             ++index;
             continue;
         }
-        readyTimers.pushBack(timers[index].callback);
-        timers.mut(index) = timers.back();
-        timers.popBack();
+        readyTimers.pushBack({.generation = timers[index].generation});
+        ++index;
     }
-    for (TimerCallback* callback : readyTimers) {
-        callback->ready();
+    for (const ReadyTimer& ready : readyTimers) {
+        for (size_t index = 0; index != timers.length(); ++index) {
+            if (!cocoa_detail::readyGenerationMatches(timers[index].generation, ready.generation)) {
+                continue;
+            }
+            TimerCallback* const callback = timers[index].callback;
+            timers.mut(index) = timers.back();
+            timers.popBack();
+            callback->ready();
+            break;
+        }
     }
     readyTimers.clear();
 }
@@ -423,13 +535,18 @@ void PollerImpl::dispatch() {
                         .fd = source.fd,
                         .flags = PollFD::fromPollEvents(source.revents),
                     },
-                .callback = registration->callback,
+                .generation = registration->generation,
             });
-            armed.erase(source.fd);
         }
     }
     for (const ReadyFD& ready : readyFDs) {
-        ready.callback->ready(ready.fd);
+        ArmedFD* registration = armed.find(ready.fd.fd);
+        if (registration == nullptr || !cocoa_detail::readyGenerationMatches(registration->generation, ready.generation)) {
+            continue;
+        }
+        PollCallback* const callback = registration->callback;
+        armed.erase(ready.fd.fd);
+        callback->ready(ready.fd);
     }
     readyFDs.clear();
     dispatchTimers();
@@ -455,6 +572,89 @@ void PlatformImpl::stop() {
     [NSApp postEvent:event atStart:NO];
 }
 
+ClipboardOperation::ClipboardOperation(
+    WindowImpl& window_,
+    ClipboardOperationKind kind_,
+    ClipboardRead* read_,
+    StringView content_
+)
+    : window(window_)
+    , kind(kind_)
+    , read(read_)
+    , content(content_)
+{
+    next = window.clipboardOperations;
+    window.clipboardOperations = this;
+    window.platform.poller_->timeout(0, *this);
+}
+
+void ClipboardOperation::ready() {
+    timerArmed = false;
+    if (cancelled) {
+        dispose();
+        return;
+    }
+
+    const bool primary =
+        kind == ClipboardOperationKind::ReadPrimary
+        || kind == ClipboardOperationKind::WritePrimary;
+    NSPasteboard* const pasteboard =
+        primary
+        ? [NSPasteboard pasteboardWithName:NSPasteboardNameFind]
+        : [NSPasteboard generalPasteboard];
+    if (kind == ClipboardOperationKind::WritePrimary
+        || kind == ClipboardOperationKind::WriteClipboard) {
+        window.writePasteboard(pasteboard, StringView(content));
+        dispose();
+        return;
+    }
+
+    NSString* value = [pasteboard stringForType:NSPasteboardTypeString];
+    NSData* data =
+        value == nil
+        ? nil
+        : [value dataUsingEncoding:NSUTF8StringEncoding];
+    bool success = data != nil;
+    ClipboardRead* const target = read;
+    if (success && data.length != 0) {
+        dispatching = true;
+        success =
+            target != nullptr
+            && target->data(
+                StringView((const u8*)(data.bytes), data.length)
+            );
+        dispatching = false;
+    }
+    if (cancelled) {
+        dispose();
+        return;
+    }
+
+    read = nullptr;
+    dispose();
+    if (target != nullptr) {
+        target->done(success);
+    }
+}
+
+void ClipboardOperation::cancel() {
+    read = nullptr;
+    if (dispatching) {
+        cancelled = true;
+        return;
+    }
+    dispose();
+}
+
+void ClipboardOperation::dispose() {
+    if (timerArmed) {
+        window.platform.poller_->cancel(*this);
+        timerArmed = false;
+    }
+    window.removeClipboardOperation(*this);
+    delete this;
+}
+
 WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     : platform(platform_)
     , input(options.input)
@@ -475,14 +675,26 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     setMinimumSize(options.minimumWidth, options.minimumHeight);
     CVDisplayLinkCreateWithActiveCGDisplays(&displayLink);
     if (displayLink != nullptr) {
-        CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback, this);
+        displayLinkTarget = [PltDisplayLinkTarget new];
+        displayLinkTarget->gate.attach(this);
+        displayLinkContext = (__bridge_retained void*)(displayLinkTarget);
+        CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback, displayLinkContext);
     }
 }
 
 WindowImpl::~WindowImpl() {
+    while (clipboardOperations != nullptr) {
+        clipboardOperations->cancel();
+    }
     cancelFrame();
+    if (displayLinkTarget != nil) {
+        displayLinkTarget->gate.detach();
+    }
     if (displayLink != nullptr) {
         CVDisplayLinkRelease(displayLink);
+    }
+    if (displayLinkContext != nullptr) {
+        CFBridgingRelease(displayLinkContext);
     }
     window.delegate = nil;
     view.owner = nullptr;
@@ -505,9 +717,14 @@ bool WindowImpl::requestFrame() {
     if (framePending) {
         return true;
     }
+    if (displayLink == nullptr) {
+        return false;
+    }
     framePending = true;
-    if (displayLink == nullptr || CVDisplayLinkStart(displayLink) != kCVReturnSuccess) {
+    displayLinkTarget->gate.publish(frameGeneration.advance());
+    if (CVDisplayLinkStart(displayLink) != kCVReturnSuccess) {
         framePending = false;
+        displayLinkTarget->gate.publish(frameGeneration.advance());
         return false;
     }
     return true;
@@ -515,13 +732,16 @@ bool WindowImpl::requestFrame() {
 
 void WindowImpl::cancelFrame() {
     framePending = false;
+    if (displayLinkTarget != nil) {
+        displayLinkTarget->gate.publish(frameGeneration.advance());
+    }
     if (displayLink != nullptr && CVDisplayLinkIsRunning(displayLink)) {
         CVDisplayLinkStop(displayLink);
     }
 }
 
-void WindowImpl::deliverFrame() {
-    if (!framePending) {
+void WindowImpl::deliverFrame(u64 generation) {
+    if (!framePending || !frameGeneration.matches(generation)) {
         return;
     }
     cancelFrame();
@@ -628,29 +848,6 @@ WindowInfo WindowImpl::info() const {
     };
 }
 
-void WindowImpl::completeClipboardRead(ClipboardRead& sink, StringView content, bool success) {
-    const size_t slot = clipboardReads.length();
-    clipboardReads.pushBack(&sink);
-    if (success && !content.empty() && !sink.data(content)) {
-        success = false;
-    }
-    ClipboardRead* const completion = clipboardReads[slot];
-    clipboardReads.popBack();
-    if (completion != nullptr) {
-        completion->done(success);
-    }
-}
-
-void WindowImpl::readPasteboard(NSPasteboard* pasteboard, ClipboardRead& sink) {
-    NSString* value = [pasteboard stringForType:NSPasteboardTypeString];
-    NSData* data = value == nil ? nil : [value dataUsingEncoding:NSUTF8StringEncoding];
-    completeClipboardRead(
-        sink,
-        data == nil ? StringView{} : StringView((const u8*)(data.bytes), data.length),
-        data != nil
-    );
-}
-
 void WindowImpl::writePasteboard(NSPasteboard* pasteboard, StringView content) {
     [pasteboard clearContents];
     NSString* value = stringFromView(content);
@@ -658,27 +855,61 @@ void WindowImpl::writePasteboard(NSPasteboard* pasteboard, StringView content) {
 }
 
 void WindowImpl::readPrimary(ClipboardRead& sink) {
-    readPasteboard([NSPasteboard pasteboardWithName:NSPasteboardNameFind], sink);
+    new ClipboardOperation(
+        *this,
+        ClipboardOperationKind::ReadPrimary,
+        &sink,
+        {}
+    );
 }
 
 void WindowImpl::readClipboard(ClipboardRead& sink) {
-    readPasteboard([NSPasteboard generalPasteboard], sink);
+    new ClipboardOperation(
+        *this,
+        ClipboardOperationKind::ReadClipboard,
+        &sink,
+        {}
+    );
 }
 
 void WindowImpl::cancelClipboardRead(ClipboardRead& sink) {
-    for (size_t index = 0; index != clipboardReads.length(); ++index) {
-        if (clipboardReads[index] == &sink) {
-            clipboardReads.mut(index) = nullptr;
+    for (ClipboardOperation* operation = clipboardOperations;
+         operation != nullptr;) {
+        ClipboardOperation* const next = operation->next;
+        if (operation->read == &sink) {
+            operation->cancel();
         }
+        operation = next;
     }
 }
 
 void WindowImpl::writePrimary(StringView content) {
-    writePasteboard([NSPasteboard pasteboardWithName:NSPasteboardNameFind], content);
+    new ClipboardOperation(
+        *this,
+        ClipboardOperationKind::WritePrimary,
+        nullptr,
+        content
+    );
 }
 
 void WindowImpl::writeClipboard(StringView content) {
-    writePasteboard([NSPasteboard generalPasteboard], content);
+    new ClipboardOperation(
+        *this,
+        ClipboardOperationKind::WriteClipboard,
+        nullptr,
+        content
+    );
+}
+
+void WindowImpl::removeClipboardOperation(ClipboardOperation& operation) {
+    ClipboardOperation** current = &clipboardOperations;
+    while (*current != nullptr) {
+        if (*current == &operation) {
+            *current = operation.next;
+            return;
+        }
+        current = &(*current)->next;
+    }
 }
 
 void WindowImpl::pointerIcon(PointerIcon icon) {

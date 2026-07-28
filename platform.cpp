@@ -2,8 +2,6 @@
 
 #if defined(__APPLE__)
     #include "platform_cocoa.h"
-#elif defined(_WIN32)
-    #include "platform_win32.h"
 #elif defined(__linux__)
     #include "platform_wayland.h"
 #else
@@ -15,9 +13,9 @@ using namespace plt;
 Platform* Platform::create(stl::ObjPool& owner) {
 #if defined(__APPLE__)
     return createCocoaPlatform(owner);
-#elif defined(_WIN32)
-    return createWin32Platform(owner);
-#else
+#elif defined(__linux__)
     return createWaylandPlatform(owner);
+#else
+    #error Unsupported platform
 #endif
 }

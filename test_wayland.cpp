@@ -33,12 +33,16 @@
 #include <unistd.h>
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
+#include <wayland-client-core.h>
 #include <xkbcommon/xkbcommon.h>
 
 using namespace stl;
 
 namespace {
     enum class Command : u32 {
+        DeferInitialConfigure,
+        ReleaseInitialConfigure,
+        QueryInitialConfigure,
         PointerEnter,
         PreferredScale,
         QuerySelection,
@@ -174,6 +178,7 @@ namespace {
         i32 minimumWidth = 0;
         i32 minimumHeight = 0;
         u32 minimumCount = 0;
+        bool deferInitialConfigure = false;
     };
 
     void destroyResource(wl_client*, wl_resource* resource) {
@@ -206,7 +211,8 @@ namespace {
         Surface* const surface =
             static_cast<Surface*>(wl_resource_get_user_data(resource));
         if (surface->xdgSurface != nullptr && surface->toplevel != nullptr
-            && !surface->configured) {
+            && !surface->configured
+            && !surface->server->deferInitialConfigure) {
             surface->server->sendInitialConfigure(*surface);
         }
     }
@@ -1098,6 +1104,20 @@ namespace {
     void Server::handle(Command command, int controlFd) {
         Reply reply;
         switch (command) {
+            case Command::DeferInitialConfigure:
+                deferInitialConfigure = true;
+                reply.count = 1;
+                break;
+            case Command::ReleaseInitialConfigure:
+                deferInitialConfigure = false;
+                if (window != nullptr && !window->configured) {
+                    sendInitialConfigure(*window);
+                    reply.count = 1;
+                }
+                break;
+            case Command::QueryInitialConfigure:
+                reply.count = window != nullptr && window->configured;
+                break;
             case Command::PointerEnter:
                 reply.count = selectionCount;
                 if (pointer != nullptr && window != nullptr) {
@@ -1569,7 +1589,8 @@ namespace {
             u32 width = 800,
             u32 minimum = 1,
             plt::WindowEvents* events = nullptr,
-            plt::InputSink* input = nullptr
+            plt::InputSink* input = nullptr,
+            bool waitForConfigure = true
         )
             : controlFd(controlFd_)
             , owner(stl::ObjPool::fromMemory())
@@ -1589,6 +1610,18 @@ namespace {
                 }
             );
             window->show();
+            if (waitForConfigure) {
+                for (u32 attempt = 0; attempt != 10; ++attempt) {
+                    pump(*platform);
+                    if (command(
+                            controlFd,
+                            Command::QueryInitialConfigure
+                        ).count != 0) {
+                        break;
+                    }
+                }
+                pump(*platform);
+            }
         }
 
         int controlFd;
@@ -1716,6 +1749,35 @@ namespace {
         u32 redrawCount = 0;
         u32 frameCount = 0;
     };
+
+    bool nonblockingShow(int fd) {
+        if (command(fd, Command::DeferInitialConfigure).count != 1) {
+            fprintf(stderr, "nonblocking show: could not defer configure\n");
+            return false;
+        }
+
+        EventSink events;
+        Client client(fd, 800, 1, &events, nullptr, false);
+        pump(*client.platform);
+        if (events.resizeCount != 0) {
+            fprintf(stderr, "nonblocking show: configure was not deferred\n");
+            return false;
+        }
+        if (command(fd, Command::ReleaseInitialConfigure).count != 1) {
+            fprintf(stderr, "nonblocking show: window was not committed\n");
+            return false;
+        }
+        for (u32 attempt = 0;
+             attempt != 10 && events.resizeCount == 0;
+             ++attempt) {
+            pump(*client.platform);
+        }
+        if (events.resizeCount == 0) {
+            fprintf(stderr, "nonblocking show: configure was not delivered\n");
+            return false;
+        }
+        return true;
+    }
 
     struct InputRecorder final: plt::InputSink {
         void key(const plt::KeyInput& input) override {
@@ -2142,6 +2204,50 @@ namespace {
         bool called = false;
     };
 
+    struct CrossCancelFD final: plt::PollCallback {
+        CrossCancelFD(
+            plt::Platform& platform_,
+            int cancelled_,
+            u32& callCount_
+        )
+            : platform(platform_)
+            , cancelled(cancelled_)
+            , callCount(callCount_)
+        {
+        }
+
+        void ready(PollFD) override {
+            ++callCount;
+            platform.poller()->disarm(cancelled);
+            platform.stop();
+        }
+
+        plt::Platform& platform;
+        int cancelled;
+        u32& callCount;
+    };
+
+    struct CancelTimerCallback final: plt::TimerCallback {
+        CancelTimerCallback(
+            plt::Platform& platform_,
+            plt::TimerCallback& cancelled_
+        )
+            : platform(platform_)
+            , cancelled(cancelled_)
+        {
+        }
+
+        void ready() override {
+            called = true;
+            platform.poller()->cancel(cancelled);
+            platform.stop();
+        }
+
+        plt::Platform& platform;
+        plt::TimerCallback& cancelled;
+        bool called = false;
+    };
+
     bool pollerApi(int fd) {
         Client client(fd);
         int pipes[2];
@@ -2191,6 +2297,69 @@ namespace {
         pump(*client.platform);
         if (cancelled.called) {
             fprintf(stderr, "poller API: timer cancel failed\n");
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
+
+        DeadlineCallback cancelledByReady(*client.platform);
+        CancelTimerCallback cancelFromReady(
+            *client.platform,
+            cancelledByReady
+        );
+        client.platform->poller()->timeout(0, cancelFromReady);
+        client.platform->poller()->timeout(0, cancelledByReady);
+        client.platform->run();
+        if (!cancelFromReady.called || cancelledByReady.called) {
+            fprintf(
+                stderr,
+                "poller API: ready timer cancellation failed\n"
+            );
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
+
+        int crossPipes[2][2];
+        if (pipe2(crossPipes[0], O_CLOEXEC | O_NONBLOCK) != 0
+            || pipe2(crossPipes[1], O_CLOEXEC | O_NONBLOCK) != 0) {
+            perror("pipe2");
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
+        u32 crossCallCount = 0;
+        CrossCancelFD first(
+            *client.platform,
+            crossPipes[1][0],
+            crossCallCount
+        );
+        CrossCancelFD second(
+            *client.platform,
+            crossPipes[0][0],
+            crossCallCount
+        );
+        client.platform->poller()->arm(
+            {.fd = crossPipes[0][0], .flags = PollFlag::In},
+            first
+        );
+        client.platform->poller()->arm(
+            {.fd = crossPipes[1][0], .flags = PollFlag::In},
+            second
+        );
+        write(crossPipes[0][1], &byte, 1);
+        write(crossPipes[1][1], &byte, 1);
+        client.platform->run();
+        for (auto& crossPipe : crossPipes) {
+            close(crossPipe[0]);
+            close(crossPipe[1]);
+        }
+        if (crossCallCount != 1) {
+            fprintf(
+                stderr,
+                "poller API: ready fd cancellation invoked %u callbacks\n",
+                crossCallCount
+            );
             close(pipes[0]);
             close(pipes[1]);
             return false;
@@ -2323,6 +2492,65 @@ namespace {
         return true;
     }
 
+    struct CancelReadOnReady final: plt::ClipboardRead {
+        CancelReadOnReady(
+            plt::Platform& platform_,
+            plt::Window& window_,
+            plt::ClipboardRead& read_
+        )
+            : platform(platform_)
+            , window(window_)
+            , read(read_)
+        {
+        }
+
+        bool data(StringView) override {
+            dataCalled = true;
+            window.cancelClipboardRead(read);
+            return true;
+        }
+
+        void done(bool success_) override {
+            complete = true;
+            success = success_;
+            platform.stop();
+        }
+
+        plt::Platform& platform;
+        plt::Window& window;
+        plt::ClipboardRead& read;
+        bool dataCalled = false;
+        bool complete = false;
+        bool success = false;
+    };
+
+    bool cancelReadyClipboardRead(int fd) {
+        Client client(fd);
+        client.window->writeClipboard(StringView(u8"local clipboard"));
+        command(fd, Command::PointerEnter);
+        pump(*client.platform);
+
+        ReadSink cancelled;
+        CancelReadOnReady cancel(
+            *client.platform,
+            *client.window,
+            cancelled
+        );
+        client.window->readClipboard(cancel);
+        client.window->readClipboard(cancelled);
+        client.platform->run();
+
+        if (!cancel.dataCalled || !cancel.complete || !cancel.success
+            || cancelled.complete || !cancelled.content.empty()) {
+            fprintf(
+                stderr,
+                "cancel ready read: stale transfer callback was delivered\n"
+            );
+            return false;
+        }
+        return true;
+    }
+
     bool asynchronousWrite(int fd) {
         static constexpr size_t contentSize = 2 * 1024 * 1024;
         Buffer content = repeated(contentSize, 'w');
@@ -2399,6 +2627,49 @@ namespace {
         bool closed = false;
     };
 
+    bool queuedWaylandEvent(int fd) {
+        plt::Platform* platform = nullptr;
+        StopOnClose events(platform);
+        Client client(fd, 800, 1, &events);
+        platform = client.platform;
+        if (command(fd, Command::CloseWindow).count != 1) {
+            fprintf(stderr, "queued event: close was not sent\n");
+            return false;
+        }
+
+        auto* const display = static_cast<wl_display*>(
+            client.window->renderContext().connection
+        );
+        if (wl_display_prepare_read(display) != 0) {
+            fprintf(stderr, "queued event: client queue was not empty\n");
+            return false;
+        }
+        pollfd source{
+            .fd = wl_display_get_fd(display),
+            .events = POLLIN,
+            .revents = 0,
+        };
+        int result;
+        do {
+            result = poll(&source, 1, 1000);
+        } while (result < 0 && errno == EINTR);
+        if (result <= 0 || !(source.revents & POLLIN)
+            || wl_display_read_events(display) < 0) {
+            wl_display_cancel_read(display);
+            fprintf(stderr, "queued event: could not queue close event\n");
+            return false;
+        }
+
+        // The socket is drained, but xdg_toplevel.close is already queued in
+        // libwayland. run() must dispatch it before blocking in poll().
+        client.platform->run();
+        if (!events.closed) {
+            fprintf(stderr, "queued event: close callback stalled\n");
+            return false;
+        }
+        return true;
+    }
+
     bool flushBackpressure(int fd) {
         plt::Platform* platform = nullptr;
         StopOnClose events(platform);
@@ -2464,6 +2735,7 @@ namespace {
 
 int main() {
     bool success = true;
+    success = runScenario("nonblocking show", nonblockingShow) && success;
     success = runScenario("window API", windowApi) && success;
     success = runScenario("frame API", frameApi) && success;
     success = runScenario("pointer input", pointerInput) && success;
@@ -2478,8 +2750,10 @@ int main() {
     success = runScenario("asynchronous clipboard read", asynchronousRead) && success;
     success = runScenario("asynchronous primary selection", asynchronousPrimary) && success;
     success = runScenario("cancel asynchronous clipboard read", cancelAsynchronousRead) && success;
+    success = runScenario("cancel ready clipboard read", cancelReadyClipboardRead) && success;
     success = runScenario("asynchronous clipboard write", asynchronousWrite) && success;
     success = runScenario("broken clipboard consumer", brokenClipboardConsumer) && success;
     success = runScenario("Wayland flush backpressure", flushBackpressure) && success;
+    success = runScenario("queued Wayland event", queuedWaylandEvent) && success;
     return success ? 0 : 1;
 }

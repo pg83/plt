@@ -27,8 +27,8 @@ common_sources = [
 target_platform = build.target
 if "apple-darwin" in target_platform:
     system = "Darwin"
-elif "mingw" in target_platform or "windows" in target_platform:
-    system = "Windows"
+elif build.target != build.host:
+    raise RuntimeError(f"unsupported target: {target_platform}")
 else:
     system = host.system()
 
@@ -107,11 +107,6 @@ elif system == "Darwin":
             "-framework", "QuartzCore",
         ]),
     ]
-elif system == "Windows":
-    backend_source = "$(S)/platform_win32.cpp"
-    backend_deps = [
-        dependency(ldflags=["-luser32", "-lshell32", "-limm32", "-lole32", "-ldwmapi"]),
-    ]
 else:
     raise RuntimeError(f"unsupported platform: {system}")
 
@@ -131,7 +126,6 @@ if build.target == build.host:
         srcs=[
             "$(S)/test_ut.cpp",
             "$(S)/pointer_grab_ut.cpp",
-            "$(S)/platform_win32_logic_ut.cpp",
         ],
         deps=[libplt, libstd],
     )
