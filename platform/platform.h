@@ -15,7 +15,7 @@ namespace stl {
 }
 
 namespace plt {
-    enum PollMode: u8 {
+    enum PollMode : u8 {
         PollRead = 1 << 0,
         PollWrite = 1 << 1,
         PollError = 1 << 2,

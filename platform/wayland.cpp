@@ -398,11 +398,7 @@ namespace plt {
             if (mapping == MAP_FAILED) {
                 return;
             }
-            struct xkb_keymap* const keymap = xkb_keymap_new_from_string(
-                platform.xkbContext,
-                (const char*)(mapping),
-                XKB_KEYMAP_FORMAT_TEXT_V1,
-                XKB_KEYMAP_COMPILE_NO_FLAGS);
+            struct xkb_keymap* const keymap = xkb_keymap_new_from_string(platform.xkbContext, (const char*)(mapping), XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
             munmap(mapping, size);
             if (keymap == nullptr) {
                 return;
@@ -540,8 +536,8 @@ namespace plt {
             .axis_value120 = [](void*, struct wl_pointer*, u32, i32) {},
             .axis_relative_direction = [](void*, struct wl_pointer*, u32, u32) {},
             .warp = [](void* data, struct wl_pointer*, wl_fixed_t x, wl_fixed_t y) {
-                pointerMotion(data, nullptr, 0, x, y);
-            },
+            pointerMotion(data, nullptr, 0, x, y);
+        },
         };
 
         void seatCapabilities(void* data, struct wl_seat*, u32 capabilities) {
@@ -585,8 +581,8 @@ namespace plt {
 
         const struct xdg_wm_base_listener wmBaseListener{
             .ping = [](void*, struct xdg_wm_base* wmBase, u32 serial) {
-                xdg_wm_base_pong(wmBase, serial);
-            },
+            xdg_wm_base_pong(wmBase, serial);
+        },
         };
 
         void surfaceEnter(void* data, struct wl_surface*, struct wl_output*) {
@@ -599,12 +595,13 @@ namespace plt {
         const struct wl_surface_listener surfaceListener{
             .enter = surfaceEnter,
             .leave = [](void*, struct wl_surface*, struct wl_output*) {},
-            .preferred_buffer_scale = [](void* data, struct wl_surface*, i32 scale) {
-                WindowImpl& window = *(WindowImpl*)(data);
-                if (window.fractionalScale == nullptr) {
-                    window.contentScale((u32)(max(1, scale)) * scaleDenominator);
-                }
-            },
+            .preferred_buffer_scale =
+                [](void* data, struct wl_surface*, i32 scale) {
+            WindowImpl& window = *(WindowImpl*)(data);
+            if (window.fractionalScale == nullptr) {
+                window.contentScale((u32)(max(1, scale)) * scaleDenominator);
+            }
+        },
             .preferred_buffer_transform = [](void*, struct wl_surface*, u32) {},
         };
 
@@ -643,49 +640,50 @@ namespace plt {
 
         const struct xdg_toplevel_listener toplevelListener{
             .configure = toplevelConfigure,
-            .close = [](void* data, struct xdg_toplevel*) {
-                WindowImpl& window = *(WindowImpl*)(data);
-                window.closeRequested = true;
-                if (window.events != nullptr) {
-                    window.events->close();
-                }
-            },
+            .close =
+                [](void* data, struct xdg_toplevel*) {
+            WindowImpl& window = *(WindowImpl*)(data);
+            window.closeRequested = true;
+            if (window.events != nullptr) {
+                window.events->close();
+            }
+        },
             .configure_bounds = [](void*, struct xdg_toplevel*, i32, i32) {},
             .wm_capabilities = [](void*, struct xdg_toplevel*, struct wl_array*) {},
         };
 
         const struct xdg_surface_listener xdgSurfaceListener{
             .configure = [](void* data, struct xdg_surface* surface, u32 serial) {
-                xdg_surface_ack_configure(surface, serial);
-                ((WindowImpl*)(data))->configure();
-            },
+            xdg_surface_ack_configure(surface, serial);
+            ((WindowImpl*)(data))->configure();
+        },
         };
 
         const struct wp_fractional_scale_v1_listener fractionalScaleListener{
             .preferred_scale = [](void* data, struct wp_fractional_scale_v1*, u32 numerator) {
-                ((WindowImpl*)(data))->contentScale(numerator);
-            },
+            ((WindowImpl*)(data))->contentScale(numerator);
+        },
         };
 
         const struct wl_callback_listener frameListener{
             .done = [](void* data, struct wl_callback* callback, u32) {
-                ((WindowImpl*)(data))->frameReady(callback);
-            },
+            ((WindowImpl*)(data))->frameReady(callback);
+        },
         };
 
         const struct xdg_activation_token_v1_listener activationTokenListener{
             .done = [](void* data, struct xdg_activation_token_v1* token, const char* value) {
-                WindowImpl& window = *(WindowImpl*)(data);
-                if (window.activationToken != token) {
-                    xdg_activation_token_v1_destroy(token);
-                    return;
-                }
-                if (window.platform.activation != nullptr) {
-                    xdg_activation_v1_activate(window.platform.activation, value, window.surface);
-                }
+            WindowImpl& window = *(WindowImpl*)(data);
+            if (window.activationToken != token) {
                 xdg_activation_token_v1_destroy(token);
-                window.activationToken = nullptr;
-            },
+                return;
+            }
+            if (window.platform.activation != nullptr) {
+                xdg_activation_v1_activate(window.platform.activation, value, window.surface);
+            }
+            xdg_activation_token_v1_destroy(token);
+            window.activationToken = nullptr;
+        },
         };
     }
 
@@ -1438,28 +1436,28 @@ namespace plt {
     }
 
     u32 WindowImpl::pixelWidth() const {
-        return max(1u, (u32)(((u64)(logicalWidth) * scaleNumerator) / scaleDenominator));
+        return max(1u, (u32)(((u64)(logicalWidth)*scaleNumerator) / scaleDenominator));
     }
 
     u32 WindowImpl::pixelHeight() const {
-        return max(1u, (u32)(((u64)(logicalHeight) * scaleNumerator) / scaleDenominator));
+        return max(1u, (u32)(((u64)(logicalHeight)*scaleNumerator) / scaleDenominator));
     }
 
     u32 WindowImpl::logicalForPixel(u32 pixels) const {
-        return max(1u, (u32)(((u64)(pixels) * scaleDenominator + scaleNumerator - 1) / scaleNumerator));
+        return max(1u, (u32)(((u64)(pixels)*scaleDenominator + scaleNumerator - 1) / scaleNumerator));
     }
 
     u32 WindowImpl::snappedLogical(u32 suggested, u32 unit, u32 base) const {
         if (unit <= 1 || suggested == 0) {
             return suggested;
         }
-        const u32 pixels = max(1u, (u32)(((u64)(suggested) * scaleNumerator) / scaleDenominator));
+        const u32 pixels = max(1u, (u32)(((u64)(suggested)*scaleNumerator) / scaleDenominator));
         if (pixels <= base) {
             return logicalForPixel(base + unit);
         }
         const u32 target = base + ((pixels - base) / unit) * unit;
         for (u32 logical = logicalForPixel(target); logical != 0; --logical) {
-            if (((u64)(logical) * scaleNumerator) / scaleDenominator == target) {
+            if (((u64)(logical)*scaleNumerator) / scaleDenominator == target) {
                 return logical;
             }
             if (logical + 2 < logicalForPixel(target)) {

@@ -50,25 +50,13 @@ namespace plt {
                 result.zero(sizeof(wchar_t));
                 return result;
             }
-            const int length = MultiByteToWideChar(
-                CP_UTF8,
-                MB_ERR_INVALID_CHARS,
-                (const char*)(value.data()),
-                (int)(value.length()),
-                nullptr,
-                0);
+            const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char*)(value.data()), (int)(value.length()), nullptr, 0);
             if (length <= 0) {
                 result.zero(sizeof(wchar_t));
                 return result;
             }
             result.grow((length + 1) * sizeof(wchar_t));
-            MultiByteToWideChar(
-                CP_UTF8,
-                MB_ERR_INVALID_CHARS,
-                (const char*)(value.data()),
-                (int)(value.length()),
-                (wchar_t*)(result.mutData()),
-                length);
+            MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char*)(value.data()), (int)(value.length()), (wchar_t*)(result.mutData()), length);
             ((wchar_t*)(result.mutData()))[length] = 0;
             result.seekAbsolute((length + 1) * sizeof(wchar_t));
             return result;
@@ -293,12 +281,7 @@ namespace plt {
                     handleFDs.pushBack(source.fd);
                 }
             });
-            const DWORD result = MsgWaitForMultipleObjectsEx(
-                (DWORD)(handles.length()),
-                handles.data(),
-                waitMilliseconds(),
-                QS_ALLINPUT,
-                MWMO_INPUTAVAILABLE);
+            const DWORD result = MsgWaitForMultipleObjectsEx((DWORD)(handles.length()), handles.data(), waitMilliseconds(), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             dispatchHandles(result);
             dispatchMessages();
             dispatchTimeout();
@@ -323,19 +306,7 @@ namespace plt {
         RECT area{0, 0, (LONG)(max(1u, options.width)), (LONG)(max(1u, options.height))};
         const DWORD style = WS_OVERLAPPEDWINDOW;
         AdjustWindowRectExForDpi(&area, style, FALSE, 0, USER_DEFAULT_SCREEN_DPI);
-        handle = CreateWindowExW(
-            0,
-            className,
-            (const wchar_t*)(title.data()),
-            style,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            area.right - area.left,
-            area.bottom - area.top,
-            nullptr,
-            nullptr,
-            platform.instance,
-            this);
+        handle = CreateWindowExW(0, className, (const wchar_t*)(title.data()), style, CW_USEDEFAULT, CW_USEDEFAULT, area.right - area.left, area.bottom - area.top, nullptr, nullptr, platform.instance, this);
         cursor = loadCursor(cursorIBeam);
     }
 
@@ -423,14 +394,7 @@ namespace plt {
             monitor.cbSize = sizeof(monitor);
             GetMonitorInfoW(MonitorFromWindow(handle, MONITOR_DEFAULTTONEAREST), &monitor);
             SetWindowLongPtrW(handle, GWL_STYLE, windowedStyle & ~WS_OVERLAPPEDWINDOW);
-            SetWindowPos(
-                handle,
-                HWND_TOP,
-                monitor.rcMonitor.left,
-                monitor.rcMonitor.top,
-                monitor.rcMonitor.right - monitor.rcMonitor.left,
-                monitor.rcMonitor.bottom - monitor.rcMonitor.top,
-                SWP_FRAMECHANGED | SWP_NOACTIVATE);
+            SetWindowPos(handle, HWND_TOP, monitor.rcMonitor.left, monitor.rcMonitor.top, monitor.rcMonitor.right - monitor.rcMonitor.left, monitor.rcMonitor.bottom - monitor.rcMonitor.top, SWP_FRAMECHANGED | SWP_NOACTIVATE);
         } else {
             SetWindowLongPtrW(handle, GWL_STYLE, windowedStyle);
             SetWindowPlacement(handle, &placement);
@@ -828,12 +792,7 @@ namespace plt {
 
     void WindowImpl::snapRect(RECT& rect, UINT edge) {
         RECT frame{0, 0, 0, 0};
-        AdjustWindowRectExForDpi(
-            &frame,
-            (DWORD)(GetWindowLongPtrW(handle, GWL_STYLE)),
-            FALSE,
-            (DWORD)(GetWindowLongPtrW(handle, GWL_EXSTYLE)),
-            GetDpiForWindow(handle));
+        AdjustWindowRectExForDpi(&frame, (DWORD)(GetWindowLongPtrW(handle, GWL_STYLE)), FALSE, (DWORD)(GetWindowLongPtrW(handle, GWL_EXSTYLE)), GetDpiForWindow(handle));
         const i32 decorationWidth = frame.right - frame.left;
         const i32 decorationHeight = frame.bottom - frame.top;
         i32 width = rect.right - rect.left - decorationWidth;
@@ -937,12 +896,7 @@ namespace plt {
             case WM_GETMINMAXINFO: {
                 MINMAXINFO& bounds = *(MINMAXINFO*)(lparam);
                 RECT area{0, 0, (LONG)(minimumWidth), (LONG)(minimumHeight)};
-                AdjustWindowRectExForDpi(
-                    &area,
-                    (DWORD)(GetWindowLongPtrW(handle, GWL_STYLE)),
-                    FALSE,
-                    (DWORD)(GetWindowLongPtrW(handle, GWL_EXSTYLE)),
-                    GetDpiForWindow(handle));
+                AdjustWindowRectExForDpi(&area, (DWORD)(GetWindowLongPtrW(handle, GWL_STYLE)), FALSE, (DWORD)(GetWindowLongPtrW(handle, GWL_EXSTYLE)), GetDpiForWindow(handle));
                 bounds.ptMinTrackSize.x = area.right - area.left;
                 bounds.ptMinTrackSize.y = area.bottom - area.top;
                 return 0;

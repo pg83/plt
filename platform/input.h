@@ -9,7 +9,7 @@
 #include <std/sys/types.h>
 
 namespace plt {
-    enum class InputKey: u8 {
+    enum class InputKey : u8 {
         Unknown,
         Printable,
         Escape,
@@ -80,13 +80,13 @@ namespace plt {
         Count
     };
 
-    enum class InputAction: u8 {
+    enum class InputAction : u8 {
         Press,
         Repeat,
         Release
     };
 
-    enum InputModifier: u16 {
+    enum InputModifier : u16 {
         InputShift = 1 << 0,
         InputControl = 1 << 1,
         InputAlt = 1 << 2,
@@ -109,7 +109,7 @@ namespace plt {
         u16 modifiers = 0;
     };
 
-    enum class PointerButton: u8 {
+    enum class PointerButton : u8 {
         Primary,
         Secondary,
         Middle,

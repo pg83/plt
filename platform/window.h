@@ -12,7 +12,7 @@
 #include <std/sys/types.h>
 
 namespace plt {
-    enum class RenderBackend: u8 {
+    enum class RenderBackend : u8 {
         Wayland,
         Cocoa,
         Win32
@@ -24,7 +24,7 @@ namespace plt {
         void* window;
     };
 
-    enum class PointerIcon: u8 {
+    enum class PointerIcon : u8 {
         Text,
         Link
     };
