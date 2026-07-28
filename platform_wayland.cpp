@@ -443,6 +443,7 @@ namespace {
             platform.keyboardFocus->focused = true;
             if (platform.keyboardFocus->input != nullptr) {
                 platform.keyboardFocus->input->focus(true);
+                platform.keyboardFocus->input->flush();
             }
         }
     }
@@ -455,6 +456,7 @@ namespace {
             window->focused = false;
             if (window->input != nullptr) {
                 window->input->focus(false);
+                window->input->flush();
             }
         }
         if (platform.keyboardFocus == window) {
@@ -1071,13 +1073,6 @@ void PlatformImpl::dispatch() {
         return;
     }
     dispatchTimeouts();
-    if (keyboardFocus != nullptr && keyboardFocus->input != nullptr) {
-        keyboardFocus->input->flush();
-    }
-    WindowImpl* const pointerTarget = (WindowImpl*)(pointerGrab.eventTarget());
-    if (pointerTarget != nullptr && pointerTarget != keyboardFocus && pointerTarget->input != nullptr) {
-        pointerTarget->input->flush();
-    }
 }
 
 void PlatformImpl::run() {
@@ -1280,6 +1275,7 @@ void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool re
             .modifiers = modifiers(),
         });
     }
+    keyboardFocus->input->flush();
 
     if (!repeated && state == WL_KEYBOARD_KEY_STATE_PRESSED && repeatRate != 0 && keymap != nullptr && xkb_keymap_key_repeats(keymap, keycode)) {
         repeatWindow = keyboardFocus;
@@ -1824,14 +1820,17 @@ void WindowImpl::pointerAxis(u32 axis, wl_fixed_t value) {
 }
 
 void WindowImpl::pointerFrame() {
-    if (input != nullptr && (scrollX != 0 || scrollY != 0)) {
-        input->scroll({
-            .x = -scrollX / 10.0,
-            .y = -scrollY / 10.0,
-            .pixelX = pointerX,
-            .pixelY = pointerY,
-            .modifiers = platform.modifiers(),
-        });
+    if (input != nullptr) {
+        if (scrollX != 0 || scrollY != 0) {
+            input->scroll({
+                .x = -scrollX / 10.0,
+                .y = -scrollY / 10.0,
+                .pixelX = pointerX,
+                .pixelY = pointerY,
+                .modifiers = platform.modifiers(),
+            });
+        }
+        input->flush();
     }
     scrollX = 0;
     scrollY = 0;
