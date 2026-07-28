@@ -56,7 +56,15 @@ if system == "Linux":
             ["wayland-scanner", "client-header", source, header],
             ["wayland-scanner", "private-code", source, code],
         ]
-        if protocol in {"xdg-shell", "viewporter", "fractional-scale-v1"}:
+        if protocol in {
+            "xdg-shell",
+            "viewporter",
+            "fractional-scale-v1",
+            "xdg-decoration-unstable-v1",
+            "xdg-activation-v1",
+            "primary-selection-unstable-v1",
+            "cursor-shape-v1",
+        }:
             server_header = f"$(B)/protocol/{protocol}-server-protocol.h"
             server_protocol_outputs.append(server_header)
             protocol_outputs.append(server_header)
@@ -121,7 +129,7 @@ if build.target == build.host:
         name="plt_unit_tests",
         output="$(B)/plt_unit_tests",
         srcs=[
-            "$(S)/main_ut.cpp",
+            "$(S)/test_ut.cpp",
             "$(S)/pointer_grab_ut.cpp",
             "$(S)/platform_win32_logic_ut.cpp",
         ],
@@ -142,6 +150,7 @@ if build.target == build.host:
                 libplt,
                 libstd,
                 pkg_config("wayland-server >= 1.20"),
+                pkg_config("xkbcommon >= 1.0"),
             ],
         )
         test_deps.append(plt_wayland_integration_tests)

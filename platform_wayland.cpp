@@ -72,7 +72,7 @@ namespace {
     };
 
     struct PollerImpl final: public Poller {
-        PollerImpl(ObjPool& owner, PlatformImpl& platform);
+        explicit PollerImpl(ObjPool& owner);
 
         void arm(PollFD fd, PollCallback& callback) override;
         void disarm(int fd) override;
@@ -84,7 +84,6 @@ namespace {
         void dispatchTimers();
         u64 nextDeadline() const;
 
-        PlatformImpl& platform;
         IntMap<ArmedFD> armed;
         Vector<struct pollfd> pollFDs;
         Vector<ReadyFD> readyFDs;
@@ -189,7 +188,7 @@ namespace {
         bool pendingTiled = false;
     };
 
-    struct PlatformImpl final: public Platform {
+    struct PlatformImpl final: public Platform, public PollCallback {
         explicit PlatformImpl(ObjPool& owner);
         ~PlatformImpl();
 
@@ -197,10 +196,13 @@ namespace {
         Poller* poller() override;
         void run() override;
         void stop() override;
+        void ready(PollFD event) override;
 
         void bindRegistry(u32 name, const char* interface, u32 version);
         void seatCapabilities(u32 capabilities);
         void createSelectionDevices();
+        void armDisplay(bool write);
+        bool flushDisplay();
         void dispatch();
         void dispatchTimeouts();
         u64 nextDeadline() const;
@@ -732,11 +734,7 @@ namespace {
         .configure = toplevelConfigure,
         .close =
             [](void* data, struct xdg_toplevel*) {
-        WindowImpl& window = *(WindowImpl*)(data);
-        window.closeRequested = true;
-        if (window.events != nullptr) {
-            window.events->close();
-        }
+        ((WindowImpl*)(data))->requestClose();
     },
         .configure_bounds = [](void*, struct xdg_toplevel*, i32, i32) {},
         .wm_capabilities = [](void*, struct xdg_toplevel*, struct wl_array*) {},
@@ -965,7 +963,7 @@ void SelectionTransfer::dispose() {
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
-    : poller_(owner.make<PollerImpl>(owner, *this))
+    : poller_(owner.make<PollerImpl>(owner))
 {
     display = wl_display_connect(nullptr);
     if (display == nullptr) {
@@ -984,9 +982,11 @@ PlatformImpl::PlatformImpl(ObjPool& owner)
         fail(u8"Wayland compositor lacks required globals");
     }
     createSelectionDevices();
+    flushDisplay();
 }
 
 PlatformImpl::~PlatformImpl() {
+    poller_->disarm(wl_display_get_fd(display));
     while (transfers != nullptr) {
         transfers->cancel();
     }
@@ -1074,6 +1074,49 @@ Poller* PlatformImpl::poller() {
     return poller_;
 }
 
+void PlatformImpl::armDisplay(bool write) {
+    poller_->arm(
+        {
+            .fd = wl_display_get_fd(display),
+            .flags = PollFlag::In | (write ? PollFlag::Out : 0),
+        },
+        *this
+    );
+}
+
+bool PlatformImpl::flushDisplay() {
+    int result;
+    do {
+        result = wl_display_flush(display);
+    } while (result < 0 && errno == EINTR);
+    if (result >= 0) {
+        armDisplay(false);
+        return true;
+    }
+    if (errno == EAGAIN) {
+        armDisplay(true);
+        return true;
+    }
+    poller_->disarm(wl_display_get_fd(display));
+    stop();
+    return false;
+}
+
+void PlatformImpl::ready(PollFD event) {
+    if (event.flags & (PollFlag::Err | PollFlag::Hup)
+        || !(event.flags & (PollFlag::In | PollFlag::Out))) {
+        stop();
+        return;
+    }
+    if (event.flags & PollFlag::In) {
+        if (wl_display_dispatch(display) < 0) {
+            stop();
+            return;
+        }
+    }
+    flushDisplay();
+}
+
 void PlatformImpl::bindRegistry(u32 name, const char* interface, u32 version) {
     if (StringView(interface) == StringView(wl_compositor_interface.name)) {
         compositor = (struct wl_compositor*)(wl_registry_bind(registry, name, &wl_compositor_interface, min(version, 6u)));
@@ -1145,9 +1188,8 @@ void PlatformImpl::createSelectionDevices() {
     }
 }
 
-PollerImpl::PollerImpl(ObjPool& owner, PlatformImpl& platform_)
-    : platform(platform_)
-    , armed(ObjPool::create(&owner))
+PollerImpl::PollerImpl(ObjPool& owner)
+    : armed(ObjPool::create(&owner))
 {
 }
 
@@ -1219,29 +1261,7 @@ void PollerImpl::dispatchTimers() {
 }
 
 void PollerImpl::wait(u64 monotonicDeadline) {
-    while (wl_display_prepare_read(platform.display) != 0) {
-        if (wl_display_dispatch_pending(platform.display) < 0) {
-            platform.stop();
-            return;
-        }
-    }
-    int flushResult;
-    do {
-        flushResult = wl_display_flush(platform.display);
-    } while (flushResult < 0 && errno == EINTR);
-    const bool needsWrite = flushResult < 0 && errno == EAGAIN;
-    if (flushResult < 0 && !needsWrite) {
-        wl_display_cancel_read(platform.display);
-        platform.stop();
-        return;
-    }
-
     pollFDs.clear();
-    pollFDs.pushBack({
-        .fd = wl_display_get_fd(platform.display),
-        .events = (short)(POLLIN | (needsWrite ? POLLOUT : 0)),
-        .revents = 0,
-    });
     armed.visit([this](const ArmedFD& source) {
         pollFDs.pushBack({
             .fd = source.fd.fd,
@@ -1261,37 +1281,11 @@ void PollerImpl::wait(u64 monotonicDeadline) {
         result = ::poll(pollFDs.mutData(), pollFDs.length(), timeoutMilliseconds);
     } while (result < 0 && errno == EINTR);
     if (result < 0) {
-        wl_display_cancel_read(platform.display);
         fail(u8"poll failed");
     }
 
-    const short displayEvents = pollFDs[0].revents;
-    if (displayEvents & POLLIN) {
-        if (wl_display_read_events(platform.display) < 0) {
-            platform.stop();
-            return;
-        }
-    } else {
-        wl_display_cancel_read(platform.display);
-    }
-    if (displayEvents & (POLLERR | POLLHUP | POLLNVAL)) {
-        platform.stop();
-    }
-    if (displayEvents & POLLOUT) {
-        do {
-            flushResult = wl_display_flush(platform.display);
-        } while (flushResult < 0 && errno == EINTR);
-        if (flushResult < 0 && errno != EAGAIN) {
-            platform.stop();
-        }
-    }
-    if (wl_display_dispatch_pending(platform.display) < 0) {
-        platform.stop();
-        return;
-    }
-
     readyFDs.clear();
-    for (size_t index = 1; index != pollFDs.length(); ++index) {
+    for (size_t index = 0; index != pollFDs.length(); ++index) {
         const struct pollfd& source = pollFDs[index];
         ArmedFD* registration = armed.find(source.fd);
         if (source.revents == 0 || registration == nullptr) {
@@ -1336,6 +1330,9 @@ void PlatformImpl::dispatch() {
 void PlatformImpl::run() {
     running = true;
     while (running) {
+        if (!flushDisplay()) {
+            break;
+        }
         poller_->wait(nextDeadline());
         if (!running) {
             break;
@@ -1619,7 +1616,7 @@ void PlatformImpl::applyClipboardSelection() {
     wl_data_source_offer(clipboardSource, "text/plain");
     wl_data_device_set_selection(dataDevice, clipboardSource, latestSerial);
     clipboardPending = false;
-    wl_display_flush(display);
+    flushDisplay();
 }
 
 void PlatformImpl::applyPrimarySelection() {
@@ -1635,7 +1632,7 @@ void PlatformImpl::applyPrimarySelection() {
     zwp_primary_selection_source_v1_offer(primarySource, "text/plain");
     zwp_primary_selection_device_v1_set_selection(primaryDevice, primarySource, latestSerial);
     primaryPending = false;
-    wl_display_flush(display);
+    flushDisplay();
 }
 
 void PlatformImpl::setClipboard(StringView content) {
@@ -1808,8 +1805,8 @@ void WindowImpl::configure() {
         height = snappedLogical(height, resizeUnitHeight, resizeBaseHeight);
     }
     const bool first = !configured;
-    configured = true;
     setLogicalSize(width, height, true);
+    configured = true;
     if (first || shown) {
         requestRedraw();
     }
@@ -1979,11 +1976,7 @@ void WindowImpl::receive(Offer& offer, bool primary, ClipboardRead& read) {
         wl_data_offer_receive(offer.data, mime, pipes[1]);
     }
     close(pipes[1]);
-    int flushed;
-    do {
-        flushed = wl_display_flush(platform.display);
-    } while (flushed < 0 && errno == EINTR);
-    if (flushed < 0 && errno != EAGAIN) {
+    if (!platform.flushDisplay()) {
         close(pipes[0]);
         platform.completeSelection(*this, read, {}, false);
         return;
