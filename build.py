@@ -98,7 +98,7 @@ else:
 libplatform = library(
     name="platform",
     srcs=[*common_sources, backend_source],
-    public_cflags=["-I$(S)"],
+    public_cflags=["-I$(S)", "-I$(S)/.."],
     cxxflags=locals().get("backend_cxxflags", []),
     deps=[libstd, *backend_deps],
     output="$(B)/libplatform.a",
