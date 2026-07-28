@@ -23,6 +23,7 @@ else:
 common_sources = [
     "$(S)/platform/input.cpp",
     "$(S)/platform/platform.cpp",
+    "$(S)/platform/pointer_grab.cpp",
     "$(S)/platform/window.cpp",
 ]
 target_platform = build.target
@@ -107,4 +108,30 @@ libplatform = library(
     output="$(B)/libplatform.a",
 )
 
+platform_unit_tests = program(
+    name="platform_unit_tests",
+    output="$(B)/platform_unit_tests",
+    srcs=[
+        "$(S)/third_party/libstd/tst/test.cpp",
+        "$(S)/platform/pointer_grab_ut.cpp",
+    ],
+    deps=[libplatform, libstd],
+)
+
+platform_tests = command(
+    name="platform_tests",
+    outputs=["$(B)/platform_tests.stamp"],
+    deps=[platform_unit_tests],
+    cmd=[
+        ["$(B)/platform_unit_tests"],
+        [
+            "python3", "-c",
+            "from pathlib import Path; Path(r'$(B)/platform_tests.stamp').touch()",
+        ],
+    ],
+    descr="TS",
+    color="green",
+)
+
 install(libplatform)
+group("test", platform_tests)

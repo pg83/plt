@@ -6,6 +6,8 @@
 
 #include "platform.h"
 
+#include "pointer_grab.h"
+
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
 #include <std/lib/vector.h>
@@ -222,7 +224,7 @@ namespace plt {
             struct xkb_keymap* keymap = nullptr;
             struct xkb_state* xkbState = nullptr;
             WindowImpl* keyboardFocus = nullptr;
-            WindowImpl* pointerFocus = nullptr;
+            PointerGrab pointerGrab;
             WindowImpl* repeatWindow = nullptr;
             u32 repeatKeycode = 0;
             u32 repeatSerial = 0;
@@ -476,9 +478,10 @@ namespace plt {
         void pointerEnter(void* data, struct wl_pointer*, u32 serial, struct wl_surface* surface, wl_fixed_t x, wl_fixed_t y) {
             PlatformImpl& platform = *(PlatformImpl*)(data);
             platform.latestSerial = serial;
-            platform.pointerFocus = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
-            if (platform.pointerFocus != nullptr) {
-                platform.pointerFocus->pointerEntered(serial, x, y);
+            WindowImpl* const window = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
+            platform.pointerGrab.enter(window);
+            if (window != nullptr) {
+                window->pointerEntered(serial, x, y);
             }
         }
 
@@ -489,37 +492,39 @@ namespace plt {
             if (window != nullptr) {
                 window->pointerLeft();
             }
-            if (platform.pointerFocus == window) {
-                platform.pointerFocus = nullptr;
-            }
+            platform.pointerGrab.leave(window);
         }
 
         void pointerMotion(void* data, struct wl_pointer*, u32, wl_fixed_t x, wl_fixed_t y) {
             PlatformImpl& platform = *(PlatformImpl*)(data);
-            if (platform.pointerFocus != nullptr) {
-                platform.pointerFocus->pointerMoved(x, y);
+            WindowImpl* const window = (WindowImpl*)(platform.pointerGrab.eventTarget());
+            if (window != nullptr) {
+                window->pointerMoved(x, y);
             }
         }
 
         void pointerButton(void* data, struct wl_pointer*, u32 serial, u32 time, u32 button, u32 state) {
             PlatformImpl& platform = *(PlatformImpl*)(data);
             platform.latestSerial = serial;
-            if (platform.pointerFocus != nullptr) {
-                platform.pointerFocus->pointerButton(time, button, state);
+            WindowImpl* const window = (WindowImpl*)(platform.pointerGrab.buttonTarget(state == WL_POINTER_BUTTON_STATE_PRESSED));
+            if (window != nullptr) {
+                window->pointerButton(time, button, state);
             }
         }
 
         void pointerAxis(void* data, struct wl_pointer*, u32, u32 axis, wl_fixed_t value) {
             PlatformImpl& platform = *(PlatformImpl*)(data);
-            if (platform.pointerFocus != nullptr) {
-                platform.pointerFocus->pointerAxis(axis, value);
+            WindowImpl* const window = (WindowImpl*)(platform.pointerGrab.eventTarget());
+            if (window != nullptr) {
+                window->pointerAxis(axis, value);
             }
         }
 
         void pointerFrame(void* data, struct wl_pointer*) {
             PlatformImpl& platform = *(PlatformImpl*)(data);
-            if (platform.pointerFocus != nullptr) {
-                platform.pointerFocus->pointerFrame();
+            WindowImpl* const window = (WindowImpl*)(platform.pointerGrab.eventTarget());
+            if (window != nullptr) {
+                window->pointerFrame();
             }
         }
 
@@ -861,7 +866,7 @@ namespace plt {
             }
             wl_pointer_release(pointer);
             pointer = nullptr;
-            pointerFocus = nullptr;
+            pointerGrab.reset();
         }
         createSelectionDevices();
     }
@@ -1030,8 +1035,9 @@ namespace plt {
         if (keyboardFocus != nullptr && keyboardFocus->input != nullptr) {
             keyboardFocus->input->flush();
         }
-        if (pointerFocus != nullptr && pointerFocus != keyboardFocus && pointerFocus->input != nullptr) {
-            pointerFocus->input->flush();
+        WindowImpl* const pointerTarget = (WindowImpl*)(pointerGrab.eventTarget());
+        if (pointerTarget != nullptr && pointerTarget != keyboardFocus && pointerTarget->input != nullptr) {
+            pointerTarget->input->flush();
         }
         events.check();
     }
@@ -1340,7 +1346,7 @@ namespace plt {
     }
 
     void PlatformImpl::setCursor(WindowImpl& window) {
-        if (cursorShapeDevice == nullptr || pointerFocus != &window || latestSerial == 0) {
+        if (cursorShapeDevice == nullptr || pointerGrab.focusTarget() != &window || latestSerial == 0) {
             return;
         }
         const u32 shape = window.cursor == PointerIcon::Link ? WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER : WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT;
@@ -1408,9 +1414,7 @@ namespace plt {
             platform.keyboardFocus = nullptr;
             platform.stopRepeat();
         }
-        if (platform.pointerFocus == this) {
-            platform.pointerFocus = nullptr;
-        }
+        platform.pointerGrab.remove(this);
         cancelFrame();
         if (activationToken != nullptr) {
             xdg_activation_token_v1_destroy(activationToken);
