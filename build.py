@@ -99,39 +99,39 @@ elif system == "Windows":
 else:
     raise RuntimeError(f"unsupported platform: {system}")
 
-libplatform = library(
-    name="platform",
+libplt = library(
+    name="plt",
     srcs=[*common_sources, backend_source],
     public_cflags=["-I$(S)", "-I$(S)/.."],
     cxxflags=locals().get("backend_cxxflags", []),
     deps=[libstd, *backend_deps],
-    output="$(B)/libplatform.a",
+    output="$(B)/libplt.a",
 )
 
-platform_unit_tests = program(
-    name="platform_unit_tests",
-    output="$(B)/platform_unit_tests",
+plt_unit_tests = program(
+    name="plt_unit_tests",
+    output="$(B)/plt_unit_tests",
     srcs=[
         "$(S)/main_ut.cpp",
         "$(S)/pointer_grab_ut.cpp",
     ],
-    deps=[libplatform, libstd],
+    deps=[libplt, libstd],
 )
 
-platform_tests = command(
-    name="platform_tests",
-    outputs=["$(B)/platform_tests.stamp"],
-    deps=[platform_unit_tests],
+plt_tests = command(
+    name="plt_tests",
+    outputs=["$(B)/plt_tests.stamp"],
+    deps=[plt_unit_tests],
     cmd=[
-        ["$(B)/platform_unit_tests"],
+        ["$(B)/plt_unit_tests"],
         [
             "python3", "-c",
-            "from pathlib import Path; Path(r'$(B)/platform_tests.stamp').touch()",
+            "from pathlib import Path; Path(r'$(B)/plt_tests.stamp').touch()",
         ],
     ],
     descr="TS",
     color="green",
 )
 
-install(libplatform)
-group("test", platform_tests)
+install(libplt)
+group("test", plt_tests)

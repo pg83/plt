@@ -1,4 +1,4 @@
-# platform
+# plt
 
 Small native desktop platform layer built on libstd.
 

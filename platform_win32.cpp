@@ -192,7 +192,7 @@ namespace {
         bool running = false;
     };
 
-    const wchar_t* className = L"pg83.platform.window";
+    const wchar_t* className = L"pg83.plt.window";
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
