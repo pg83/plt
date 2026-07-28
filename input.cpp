@@ -4,4 +4,6 @@
  * See the file LICENSE for the full license.
  */
 
-#include "window.h"
+#include "input.h"
+
+using namespace plt;

@@ -21,10 +21,10 @@ else:
     libstd = dependency(ldflags=["-lstd"])
 
 common_sources = [
-    "$(S)/platform/input.cpp",
-    "$(S)/platform/platform.cpp",
-    "$(S)/platform/pointer_grab.cpp",
-    "$(S)/platform/window.cpp",
+    "$(S)/input.cpp",
+    "$(S)/pointer_grab.cpp",
+    "$(S)/platform.cpp",
+    "$(S)/window.cpp",
 ]
 target_platform = build.target
 if "apple-darwin" in target_platform:
@@ -35,19 +35,21 @@ else:
     system = host.system()
 
 if system == "Linux":
-    protocol_names = [
-        "viewporter",
-        "xdg-shell",
-        "fractional-scale-v1",
-        "xdg-decoration-unstable-v1",
-        "xdg-activation-v1",
-        "primary-selection-unstable-v1",
-        "cursor-shape-v1",
+    protocol_root = pkg_config_variable("wayland-protocols", "pkgdatadir")
+    protocol_paths = [
+        "stable/viewporter/viewporter",
+        "stable/xdg-shell/xdg-shell",
+        "staging/fractional-scale/fractional-scale-v1",
+        "unstable/xdg-decoration/xdg-decoration-unstable-v1",
+        "staging/xdg-activation/xdg-activation-v1",
+        "unstable/primary-selection/primary-selection-unstable-v1",
+        "staging/cursor-shape/cursor-shape-v1",
     ]
     protocol_outputs = []
     protocol_commands = []
-    for protocol in protocol_names:
-        source = f"$(S)/protocols/{protocol}.xml"
+    for path in protocol_paths:
+        protocol = path.rsplit("/", 1)[-1]
+        source = f"{protocol_root}/{path}.xml"
         header = f"$(B)/protocol/{protocol}-client-protocol.h"
         code = f"$(B)/protocol/{protocol}-client-protocol-code.h"
         protocol_outputs += [header, code]
@@ -56,7 +58,7 @@ if system == "Linux":
             ["wayland-scanner", "private-code", source, code],
         ]
     protocols = command(
-        inputs=[f"$(S)/protocols/{name}.xml" for name in protocol_names],
+        inputs=[f"{protocol_root}/{path}.xml" for path in protocol_paths],
         outputs=protocol_outputs,
         cmd=protocol_commands,
         cflags=["-I$(B)/protocol"],
@@ -64,7 +66,7 @@ if system == "Linux":
         color="blue",
     )
     backend_source = {
-        "src": "$(S)/platform/wayland.cpp",
+        "src": "$(S)/platform_wayland.cpp",
         "inputs": protocol_outputs,
     }
     backend_deps = [
@@ -74,7 +76,7 @@ if system == "Linux":
         dependency(ldflags=["-lrt"]),
     ]
 elif system == "Darwin":
-    backend_source = "$(S)/platform/cocoa.mm"
+    backend_source = "$(S)/platform_cocoa.mm"
     backend_cxxflags = [
         "-fobjc-arc",
         "-fblocks",
@@ -92,7 +94,7 @@ elif system == "Darwin":
         ]),
     ]
 elif system == "Windows":
-    backend_source = "$(S)/platform/win32.cpp"
+    backend_source = "$(S)/platform_win32.cpp"
     backend_deps = [
         dependency(ldflags=["-luser32", "-lshell32", "-limm32", "-lole32", "-ldwmapi"]),
     ]
@@ -113,7 +115,7 @@ platform_unit_tests = program(
     output="$(B)/platform_unit_tests",
     srcs=[
         "$(S)/third_party/libstd/tst/test.cpp",
-        "$(S)/platform/pointer_grab_ut.cpp",
+        "$(S)/pointer_grab_ut.cpp",
     ],
     deps=[libplatform, libstd],
 )
