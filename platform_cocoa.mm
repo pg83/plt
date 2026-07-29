@@ -16,7 +16,6 @@
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
-#import <CoreVideo/CoreVideo.h>
 #import <IOKit/hidsystem/IOLLEvent.h>
 #import <QuartzCore/CAMetalLayer.h>
 
@@ -24,9 +23,26 @@
 #include <float.h>
 #include <limits.h>
 #include <poll.h>
+#if defined(SHITTY_FRAME_TRACE)
+    #include <stdio.h>
+    #include <stdarg.h>
+#endif
 
 using namespace stl;
 using namespace plt;
+
+#if defined(SHITTY_FRAME_TRACE)
+void frameTrace(const char* format, ...) {
+    static u64 sequence = 0;
+    fprintf(stderr, "frame[%llu] %.6f ", (unsigned long long)(++sequence), CFAbsoluteTimeGetCurrent());
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+    fputc('\n', stderr);
+    fflush(stderr);
+}
+#endif
 
 namespace plt::cocoa_detail {
     struct Generation {
@@ -49,35 +65,12 @@ namespace plt::cocoa_detail {
         return current != 0 && current == ready;
     }
 
-    struct CallbackGate {
-        void attach(void* value) {
-            __atomic_store_n(&owner_, value, __ATOMIC_RELEASE);
-        }
-
-        void detach() {
-            __atomic_store_n(&owner_, nullptr, __ATOMIC_RELEASE);
-        }
-
-        void* owner() {
-            return __atomic_load_n(&owner_, __ATOMIC_ACQUIRE);
-        }
-
-        void publish(u64 value) {
-            __atomic_store_n(&generation_, value, __ATOMIC_RELEASE);
-        }
-
-        u64 generation() {
-            return __atomic_load_n(&generation_, __ATOMIC_ACQUIRE);
-        }
-
-    private:
-        void* owner_ = nullptr;
-        u64 generation_ = 0;
-    };
 }
 
 void cocoaCloseImpl(void* owner);
 void cocoaResizeImpl(void* owner);
+void cocoaFrameImpl(void* owner);
+void cocoaInvalidateImpl(void* owner);
 NSSize cocoaWillResizeImpl(void* owner, NSSize frameSize);
 void cocoaFocusImpl(void* owner, bool focused);
 void cocoaKeyImpl(void* owner, NSEvent* event, bool pressed);
@@ -103,12 +96,6 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 @property(nonatomic, strong) NSTrackingArea* tracking;
 @end
 
-@interface PltDisplayLinkTarget: NSObject {
-@public
-    cocoa_detail::CallbackGate gate;
-}
-@end
-
 @implementation PltWindowDelegate
 
 - (BOOL)windowShouldClose:(NSWindow*)sender {
@@ -119,6 +106,9 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 - (void)windowDidResize:(NSNotification*)notification {
     (void)notification;
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("delegate windowDidResize owner=%p", self.owner);
+#endif
     cocoaResizeImpl(self.owner);
 }
 
@@ -129,7 +119,30 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 - (void)windowDidChangeBackingProperties:(NSNotification*)notification {
     (void)notification;
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("delegate backingProperties owner=%p", self.owner);
+#endif
     cocoaResizeImpl(self.owner);
+}
+
+- (void)windowDidMove:(NSNotification*)notification {
+    (void)notification;
+    cocoaInvalidateImpl(self.owner);
+}
+
+- (void)windowDidChangeScreen:(NSNotification*)notification {
+    (void)notification;
+    cocoaInvalidateImpl(self.owner);
+}
+
+- (void)windowDidMiniaturize:(NSNotification*)notification {
+    (void)notification;
+    cocoaInvalidateImpl(self.owner);
+}
+
+- (void)windowDidDeminiaturize:(NSNotification*)notification {
+    (void)notification;
+    cocoaInvalidateImpl(self.owner);
 }
 
 - (void)windowDidBecomeKey:(NSNotification*)notification {
@@ -146,12 +159,16 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 @implementation PltView
 
-+ (Class)layerClass {
-    return [CAMetalLayer class];
+- (CALayer*)makeBackingLayer {
+    return [CAMetalLayer layer];
 }
 
 - (BOOL)wantsUpdateLayer {
     return YES;
+}
+
+- (void)updateLayer {
+    cocoaFrameImpl(self.owner);
 }
 
 - (BOOL)acceptsFirstResponder {
@@ -306,9 +323,6 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 @end
 
-@implementation PltDisplayLinkTarget
-@end
-
 namespace {
     struct PlatformImpl;
     struct PollerImpl;
@@ -345,7 +359,6 @@ namespace {
         void deadline(u64 monotonicMicroseconds, TimerCallback& callback) override;
         void cancel(TimerCallback& callback) override;
 
-        void dispatch();
         void descriptorReady(CFFileDescriptorRef descriptor);
         void dispatchTimers();
         void scheduleTimer();
@@ -388,21 +401,19 @@ namespace {
 
         void show() override;
         void requestClose() override;
-        bool requestFrame() override;
-        void cancelFrame() override;
+        void invalidate() override;
         void setTitle(StringView title) override;
         void requestAttention() override;
-        void requestRedraw() override;
         void restore() override;
         void iconify() override;
         void move(i32 x, i32 y) override;
         void focus() override;
         void setMaximized(bool maximized) override;
         void setFullscreen(bool fullscreen) override;
-        void resize(u32 width, u32 height) override;
+        void requestResize(u32 width, u32 height) override;
         void setMinimumSize(u32 width, u32 height) override;
         void setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
-        WindowInfo info() const override;
+        WindowInfo currentInfo() const;
         void readPrimary(ClipboardRead& sink) override;
         void readClipboard(ClipboardRead& sink) override;
         void cancelClipboardRead(ClipboardRead& sink) override;
@@ -413,6 +424,7 @@ namespace {
 
         void close();
         void resized();
+        void draw();
         NSSize willResize(NSSize frameSize) const;
         void focused(bool value);
         void key(NSEvent* event, bool pressed);
@@ -422,7 +434,6 @@ namespace {
         void button(NSEvent* event, bool pressed);
         void scroll(NSEvent* event);
         void pointerPresence(bool present);
-        void deliverFrame(u64 generation);
         u16 modifiers(NSEventModifierFlags flags) const;
         InputKey inputKey(NSEvent* event) const;
         u32 firstCodepoint(NSString* string) const;
@@ -435,12 +446,10 @@ namespace {
         PlatformImpl& platform;
         InputSink* input = nullptr;
         WindowEvents* events = nullptr;
+        FrameCallback* frame = nullptr;
         NSWindow* window = nil;
         PltView* view = nil;
         PltWindowDelegate* delegate = nil;
-        CVDisplayLinkRef displayLink = nullptr;
-        PltDisplayLinkTarget* displayLinkTarget = nil;
-        void* displayLinkContext = nullptr;
         u32 minimumWidth = 1;
         u32 minimumHeight = 1;
         u32 resizeUnitWidth = 1;
@@ -448,8 +457,7 @@ namespace {
         u32 resizeBaseWidth = 0;
         u32 resizeBaseHeight = 0;
         ClipboardOperation* clipboardOperations = nullptr;
-        cocoa_detail::Generation frameGeneration;
-        bool framePending = false;
+        bool frameRequested = false;
     };
 
     struct PlatformImpl final: public Platform {
@@ -460,28 +468,13 @@ namespace {
         void run() override;
         void stop() override;
 
-        NSDate* waitUntil() const;
-
         PollerImpl* poller_ = nullptr;
-        bool running = false;
     };
 
     NSString* stringFromView(StringView value) {
         return [[NSString alloc] initWithBytes:value.data() length:value.length() encoding:NSUTF8StringEncoding];
     }
 
-    CVReturn displayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*, void* context) {
-        PltDisplayLinkTarget* const target = (__bridge PltDisplayLinkTarget*)(context);
-        const u64 generation = target->gate.generation();
-        CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
-          void* const owner = target->gate.owner();
-          if (owner != nullptr) {
-              ((WindowImpl*)(owner))->deliverFrame(generation);
-          }
-        });
-        CFRunLoopWakeUp(CFRunLoopGetMain());
-        return kCVReturnSuccess;
-    }
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
@@ -543,6 +536,9 @@ ArmedFD::~ArmedFD() {
 }
 
 void PollerImpl::arm(PollFD fd, PollCallback& callback) {
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("poll arm fd=%d flags=%u callback=%p", fd.fd, (unsigned)(fd.flags), &callback);
+#endif
     disarm(fd.fd);
     CFFileDescriptorContext context{};
     context.info = this;
@@ -563,26 +559,23 @@ void PollerImpl::arm(PollFD fd, PollCallback& callback) {
 }
 
 void PollerImpl::disarm(int fd) {
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("poll disarm fd=%d", fd);
+#endif
     armed.erase(fd);
 }
 
-NSDate* PlatformImpl::waitUntil() const {
-    const u64 deadline = poller_->nextDeadline();
-    if (deadline == UINT64_MAX) {
-        return [NSDate distantFuture];
-    }
-    const u64 now = monotonicNowUs();
-    if (deadline <= now) {
-        return [NSDate date];
-    }
-    return [NSDate dateWithTimeIntervalSinceNow:(deadline - now) / 1'000'000.0];
-}
-
 void PollerImpl::timeout(u64 microseconds, TimerCallback& callback) {
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("timer timeout delay=%llu callback=%p", (unsigned long long)(microseconds), &callback);
+#endif
     deadline(monotonicNowUs() + microseconds, callback);
 }
 
 void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("timer deadline value=%llu callback=%p timers=%zu", (unsigned long long)(monotonicMicroseconds), &callback, timers.length());
+#endif
     if (monotonicMicroseconds == 0) {
         monotonicMicroseconds = monotonicNowUs();
     }
@@ -603,6 +596,9 @@ void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
 }
 
 void PollerImpl::cancel(TimerCallback& callback) {
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("timer cancel callback=%p timers=%zu", &callback, timers.length());
+#endif
     for (size_t index = 0; index != timers.length(); ++index) {
         if (timers[index].callback == &callback) {
             timers.mut(index) = timers.back();
@@ -623,6 +619,9 @@ u64 PollerImpl::nextDeadline() const {
 
 void PollerImpl::dispatchTimers() {
     const u64 now = monotonicNowUs();
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("timer dispatch begin now=%llu timers=%zu", (unsigned long long)(now), timers.length());
+#endif
     readyTimers.clear();
     for (size_t index = 0; index != timers.length();) {
         if (timers[index].deadline > now) {
@@ -638,6 +637,9 @@ void PollerImpl::dispatchTimers() {
                 continue;
             }
             TimerCallback* const callback = timers[index].callback;
+#if defined(SHITTY_FRAME_TRACE)
+            frameTrace("timer invoke callback=%p deadline=%llu generation=%llu", callback, (unsigned long long)(timers[index].deadline), (unsigned long long)(ready.generation));
+#endif
             timers.mut(index) = timers.back();
             timers.popBack();
             callback->ready();
@@ -646,6 +648,9 @@ void PollerImpl::dispatchTimers() {
     }
     readyTimers.clear();
     scheduleTimer();
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("timer dispatch end timers=%zu next=%llu", timers.length(), (unsigned long long)(nextDeadline()));
+#endif
 }
 
 void PollerImpl::scheduleTimer() {
@@ -661,12 +666,19 @@ void PollerImpl::scheduleTimer() {
 
 void PollerImpl::descriptorReady(CFFileDescriptorRef descriptor) {
     const int fd = CFFileDescriptorGetNativeDescriptor(descriptor);
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("fd source begin fd=%d descriptor=%p", fd, descriptor);
+#endif
     ArmedFD* registration = armed.find(fd);
     if (registration == nullptr || registration->descriptor != descriptor) {
         return;
     }
     struct pollfd event{fd, registration->fd.toPollEvents(), 0};
-    if (::poll(&event, 1, 0) <= 0 || event.revents == 0) {
+    const int pollResult = ::poll(&event, 1, 0);
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("fd source poll fd=%d result=%d events=%d revents=%d", fd, pollResult, event.events, event.revents);
+#endif
+    if (pollResult <= 0 || event.revents == 0) {
         CFOptionFlags types = 0;
         if (registration->fd.flags & (PollFlag::In | PollFlag::Err | PollFlag::Hup)) {
             types |= kCFFileDescriptorReadCallBack;
@@ -683,30 +695,29 @@ void PollerImpl::descriptorReady(CFFileDescriptorRef descriptor) {
         .flags = PollFD::fromPollEvents(event.revents),
     };
     armed.erase(fd);
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("fd invoke fd=%d flags=%u callback=%p", fd, (unsigned)(ready.flags), callback);
+#endif
     callback->ready(ready);
     NSEvent* wakeup = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
     [NSApp postEvent:wakeup atStart:NO];
-}
-
-void PollerImpl::dispatch() {
-    dispatchTimers();
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("fd source end fd=%d wakeup posted", fd);
+#endif
 }
 
 void PlatformImpl::run() {
-    running = true;
-    while (running) {
-        @autoreleasepool {
-            NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:waitUntil() inMode:NSDefaultRunLoopMode dequeue:YES];
-            if (event != nil) {
-                [NSApp sendEvent:event];
-            }
-            poller_->dispatch();
-        }
-    }
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("application run begin");
+#endif
+    [NSApp run];
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("application run end");
+#endif
 }
 
 void PlatformImpl::stop() {
-    running = false;
+    [NSApp stop:nil];
     NSEvent* event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
     [NSApp postEvent:event atStart:NO];
 }
@@ -780,6 +791,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     : platform(platform_)
     , input(options.input)
     , events(options.events)
+    , frame(options.frame)
 {
     const NSRect frame = NSMakeRect(0, 0, max(1u, options.width), max(1u, options.height));
     window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
@@ -789,34 +801,20 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     view = [[PltView alloc] initWithFrame:frame];
     view.owner = this;
     view.wantsLayer = YES;
-    view.layer = [CAMetalLayer layer];
-    ((CAMetalLayer*)(view.layer)).presentsWithTransaction = YES;
+    view.layerContentsRedrawPolicy = NSViewLayerContentsRedrawDuringViewResize;
+    ((CAMetalLayer*)(view.layer)).presentsWithTransaction = NO;
     window.contentView = view;
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("window constructed window=%p view=%p wantsLayer=%d layer=%p policy=%ld", window, view, view.wantsLayer, view.layer, (long)(view.layerContentsRedrawPolicy));
+#endif
     window.acceptsMouseMovedEvents = YES;
     setTitle(options.title);
     setMinimumSize(options.minimumWidth, options.minimumHeight);
-    CVDisplayLinkCreateWithActiveCGDisplays(&displayLink);
-    if (displayLink != nullptr) {
-        displayLinkTarget = [PltDisplayLinkTarget new];
-        displayLinkTarget->gate.attach(this);
-        displayLinkContext = (__bridge_retained void*)(displayLinkTarget);
-        CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback, displayLinkContext);
-    }
 }
 
 WindowImpl::~WindowImpl() {
     while (clipboardOperations != nullptr) {
         clipboardOperations->cancel();
-    }
-    cancelFrame();
-    if (displayLinkTarget != nil) {
-        displayLinkTarget->gate.detach();
-    }
-    if (displayLink != nullptr) {
-        CVDisplayLinkRelease(displayLink);
-    }
-    if (displayLinkContext != nullptr) {
-        CFBridgingRelease(displayLinkContext);
     }
     window.delegate = nil;
     view.owner = nullptr;
@@ -825,6 +823,9 @@ WindowImpl::~WindowImpl() {
 }
 
 void WindowImpl::show() {
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("window show window=%p view=%p layer=%p", window, view, view.layer);
+#endif
     [window center];
     [window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
@@ -835,40 +836,30 @@ void WindowImpl::requestClose() {
     close();
 }
 
-bool WindowImpl::requestFrame() {
-    if (framePending) {
-        return true;
-    }
-    if (displayLink == nullptr) {
-        return false;
-    }
-    framePending = true;
-    displayLinkTarget->gate.publish(frameGeneration.advance());
-    if (CVDisplayLinkStart(displayLink) != kCVReturnSuccess) {
-        framePending = false;
-        displayLinkTarget->gate.publish(frameGeneration.advance());
-        return false;
-    }
-    return true;
-}
-
-void WindowImpl::cancelFrame() {
-    framePending = false;
-    if (displayLinkTarget != nil) {
-        displayLinkTarget->gate.publish(frameGeneration.advance());
-    }
-    if (displayLink != nullptr && CVDisplayLinkIsRunning(displayLink)) {
-        CVDisplayLinkStop(displayLink);
-    }
-}
-
-void WindowImpl::deliverFrame(u64 generation) {
-    if (!framePending || !frameGeneration.matches(generation)) {
+void WindowImpl::invalidate() {
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("window invalidate visible=%d drawable=%d wantsLayer=%d layer=%p dirty=%d layerDirty=%d requested=%d", window.visible, view.canDraw, view.wantsLayer, view.layer, view.needsDisplay, [view.layer needsDisplay], frameRequested);
+#endif
+    if (frameRequested) {
         return;
     }
-    cancelFrame();
-    if (events != nullptr) {
-        events->frame();
+    frameRequested = true;
+    [view setNeedsDisplay:YES];
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("window invalidated requested=%d", frameRequested);
+#endif
+}
+
+void WindowImpl::draw() {
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("window draw requested=%d", frameRequested);
+#endif
+    if (!frameRequested || frame == nullptr) {
+        return;
+    }
+    frameRequested = false;
+    if (!frame->frame(currentInfo()) && frameRequested) {
+        [view setNeedsDisplay:YES];
     }
 }
 
@@ -879,13 +870,6 @@ void WindowImpl::setTitle(StringView value) {
 
 void WindowImpl::requestAttention() {
     [NSApp requestUserAttention:NSInformationalRequest];
-}
-
-void WindowImpl::requestRedraw() {
-    [view setNeedsDisplay:YES];
-    if (events != nullptr) {
-        events->redraw();
-    }
 }
 
 void WindowImpl::restore() {
@@ -925,7 +909,7 @@ void WindowImpl::setFullscreen(bool value) {
     }
 }
 
-void WindowImpl::resize(u32 width, u32 height) {
+void WindowImpl::requestResize(u32 width, u32 height) {
     const CGFloat scale = window.backingScaleFactor;
     NSSize size = NSMakeSize(max(1u, width) / scale, max(1u, height) / scale);
     [window setContentSize:size];
@@ -951,7 +935,7 @@ void WindowImpl::applySizeConstraints() {
     window.contentResizeIncrements = NSMakeSize(resizeUnitWidth / scale, resizeUnitHeight / scale);
 }
 
-WindowInfo WindowImpl::info() const {
+WindowInfo WindowImpl::currentInfo() const {
     const NSRect content = [view convertRectToBacking:view.bounds];
     NSScreen* screen = window.screen != nil ? window.screen : [NSScreen mainScreen];
     const NSRect screenFrame = [screen convertRectToBacking:screen.frame];
@@ -1036,11 +1020,15 @@ void WindowImpl::close() {
 }
 
 void WindowImpl::resized() {
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("window resized begin bounds=%gx%g backing=%g layer=%p", view.bounds.size.width, view.bounds.size.height, window.backingScaleFactor, view.layer);
+#endif
     applySizeConstraints();
     ((CAMetalLayer*)(view.layer)).contentsScale = window.backingScaleFactor;
-    if (events != nullptr) {
-        events->resized(info());
-    }
+    invalidate();
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("window resized end dirty=%d", view.needsDisplay);
+#endif
 }
 
 NSSize WindowImpl::willResize(NSSize frameSize) const {
@@ -1059,6 +1047,7 @@ NSSize WindowImpl::willResize(NSSize frameSize) const {
 }
 
 void WindowImpl::focused(bool value) {
+    invalidate();
     if (input != nullptr) {
         input->focus(value);
         input->flush();
@@ -1331,6 +1320,14 @@ void cocoaResizeImpl(void* owner) {
     ((WindowImpl*)(owner))->resized();
 }
 
+void cocoaFrameImpl(void* owner) {
+    ((WindowImpl*)(owner))->draw();
+}
+
+void cocoaInvalidateImpl(void* owner) {
+    ((WindowImpl*)(owner))->invalidate();
+}
+
 NSSize cocoaWillResizeImpl(void* owner, NSSize frameSize) {
     return ((WindowImpl*)(owner))->willResize(frameSize);
 }
@@ -1373,11 +1370,18 @@ void cocoaPointerPresenceImpl(void* owner, bool present) {
 }
 
 void cocoaFileDescriptorReady(CFFileDescriptorRef descriptor, CFOptionFlags types, void* owner) {
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("bridge fd descriptor=%p types=%lu owner=%p", descriptor, (unsigned long)(types), owner);
+#else
     (void)types;
+#endif
     ((PollerImpl*)(owner))->descriptorReady(descriptor);
 }
 
 void cocoaTimerReady(CFRunLoopTimerRef, void* owner) {
+#if defined(SHITTY_FRAME_TRACE)
+    frameTrace("bridge timer owner=%p", owner);
+#endif
     ((PollerImpl*)(owner))->dispatchTimers();
 }
 

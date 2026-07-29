@@ -5,11 +5,11 @@
 namespace plt::test {
     bool windowApi(int fd) {
         EventSink events;
-        Client client(fd, 800, 1, &events);
+        Client client(fd, 800, 1, &events, nullptr, true, &events);
         client.window->show();
 
         const RenderContext render = client.window->renderContext();
-        const WindowInfo initial = client.window->info();
+        const WindowInfo initial = events.lastInfo;
         if (render.backend != RenderBackend::Wayland
             || render.connection == nullptr || render.window == nullptr
             || initial.width != 800 || initial.height != 600
@@ -18,16 +18,19 @@ namespace plt::test {
             || initial.contentScale != 1
             || initial.focused || initial.maximized || initial.fullscreen
             || initial.tiled || initial.iconified
-            || events.resizeCount == 0 || events.redrawCount == 0) {
+            || events.frameCount == 0
+            || events.lastInfo.width != initial.width
+            || events.lastInfo.height != initial.height) {
             fprintf(stderr, "window API: invalid initial state or render context\n");
             return false;
         }
 
-        const u32 redraws = events.redrawCount;
-        client.window->requestRedraw();
+        const u32 frames = events.frameCount;
+        client.window->invalidate();
         client.window->requestClose();
         client.window->requestClose();
-        if (events.redrawCount != redraws + 1 || events.closeCount != 1) {
+        pump(*client.platform);
+        if (events.frameCount != frames + 1 || events.closeCount != 1) {
             fprintf(stderr, "window API: direct callbacks were not idempotent\n");
             return false;
         }
@@ -76,7 +79,7 @@ namespace plt::test {
 
         command(fd, Command::ConfigureWindowState);
         pump(*client.platform);
-        const WindowInfo state = client.window->info();
+        const WindowInfo state = events.lastInfo;
         if (state.width != 900 || state.height != 700 || !state.focused
             || !state.maximized || !state.fullscreen || !state.tiled) {
             fprintf(stderr, "window API: configured state was not exposed\n");
@@ -85,7 +88,7 @@ namespace plt::test {
 
         command(fd, Command::ConfigureWindowResize);
         pump(*client.platform);
-        const WindowInfo resized = client.window->info();
+        const WindowInfo resized = events.lastInfo;
         if (resized.width != 813 || resized.height != 627
             || resized.focused || resized.maximized
             || resized.fullscreen || resized.tiled) {
@@ -98,12 +101,12 @@ namespace plt::test {
             return false;
         }
 
-        client.window->resize(640, 480);
+        client.window->requestResize(640, 480);
         pump(*client.platform);
         const Reply geometry = command(fd, Command::QueryWindowGeometry);
         if (geometry.first != 640 || geometry.second != 480
-            || client.window->info().width != 640
-            || client.window->info().height != 480) {
+            || events.lastInfo.width != 640
+            || events.lastInfo.height != 480) {
             fprintf(stderr, "window API: explicit resize failed\n");
             return false;
         }

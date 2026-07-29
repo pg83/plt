@@ -5,10 +5,11 @@
 namespace plt::test {
     bool keyboardInput(int fd) {
         InputRecorder input;
-        Client client(fd, 800, 1, nullptr, &input);
+        EventSink events;
+        Client client(fd, 800, 1, nullptr, &input, true, &events);
         command(fd, Command::KeyboardEnter);
         pump(*client.platform);
-        if (input.focusCount != 1 || !client.window->info().focused) {
+        if (input.focusCount != 1 || !events.lastInfo.focused) {
             fprintf(stderr, "keyboard input: focus enter failed\n");
             return false;
         }
@@ -41,7 +42,7 @@ namespace plt::test {
 
         command(fd, Command::KeyboardLeave);
         pump(*client.platform);
-        if (input.blurCount != 1 || client.window->info().focused) {
+        if (input.blurCount != 1 || events.lastInfo.focused) {
             fprintf(stderr, "keyboard input: focus leave failed\n");
             return false;
         }

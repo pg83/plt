@@ -5,41 +5,46 @@
 namespace plt::test {
     bool frameApi(int fd) {
         EventSink events;
-        Client client(fd, 800, 1, &events);
-        if (!client.window->requestFrame() || !client.window->requestFrame()) {
-            fprintf(stderr, "frame API: requestFrame failed\n");
-            return false;
-        }
-        pump(*client.platform);
+        events.submitFrames = true;
+        Client client(fd, 800, 1, &events, nullptr, true, &events);
         Reply frames = command(fd, Command::QueryFrames);
-        if (frames.count != 1 || frames.first != 1) {
-            fprintf(stderr, "frame API: duplicate request was sent\n");
+        if (events.frameCount != 1 || frames.count != 1 || frames.first != 1) {
+            fprintf(stderr, "frame API: initial frame was not submitted\n");
             return false;
         }
-
-        client.window->cancelFrame();
         command(fd, Command::CompleteFrames);
         pump(*client.platform);
-        if (events.frameCount != 0) {
-            fprintf(stderr, "frame API: cancelled callback was delivered\n");
-            return false;
-        }
 
-        if (!client.window->requestFrame()) {
-            fprintf(stderr, "frame API: second request failed\n");
+        events.frameCount = 0;
+        client.window->invalidate();
+        client.window->invalidate();
+        pump(*client.platform);
+        if (events.frameCount != 1) {
+            fprintf(stderr, "frame API: invalidations were not coalesced\n");
             return false;
         }
-        pump(*client.platform);
         frames = command(fd, Command::QueryFrames);
         if (frames.count != 2 || frames.first != 1) {
-            fprintf(stderr, "frame API: second request was not sent\n");
+            fprintf(stderr, "frame API: presentation callback was not armed\n");
+            return false;
+        }
+
+        client.window->invalidate();
+        client.window->invalidate();
+        pump(*client.platform);
+        if (events.frameCount != 1) {
+            fprintf(stderr, "frame API: frame escaped presentation pacing\n");
             return false;
         }
         command(fd, Command::CompleteFrames);
         pump(*client.platform);
-        client.window->cancelFrame();
-        if (events.frameCount != 1) {
-            fprintf(stderr, "frame API: completion was not delivered\n");
+        if (events.frameCount != 2) {
+            fprintf(stderr, "frame API: pending invalidation was not delivered\n");
+            return false;
+        }
+        frames = command(fd, Command::QueryFrames);
+        if (frames.count != 3 || frames.first != 1) {
+            fprintf(stderr, "frame API: next presentation callback was not armed\n");
             return false;
         }
         return true;

@@ -39,9 +39,11 @@ namespace plt {
 
     struct WindowEvents {
         virtual void close() = 0;
-        virtual void resized(const WindowInfo& info) = 0;
-        virtual void redraw() = 0;
-        virtual void frame() = 0;
+    };
+
+    struct FrameCallback {
+        // Returns true when a frame was submitted for presentation.
+        virtual bool frame(const WindowInfo& info) = 0;
     };
 
     struct ClipboardRead {
@@ -61,27 +63,25 @@ namespace plt {
         u32 minimumHeight = 1;
         InputSink* input = nullptr;
         WindowEvents* events = nullptr;
+        FrameCallback* frame = nullptr;
     };
 
     struct Window {
         virtual void show() = 0;
         virtual void requestClose() = 0;
-        virtual bool requestFrame() = 0;
-        virtual void cancelFrame() = 0;
+        virtual void invalidate() = 0;
 
         virtual void setTitle(stl::StringView title) = 0;
         virtual void requestAttention() = 0;
-        virtual void requestRedraw() = 0;
         virtual void restore() = 0;
         virtual void iconify() = 0;
         virtual void move(i32 x, i32 y) = 0;
         virtual void focus() = 0;
         virtual void setMaximized(bool maximized) = 0;
         virtual void setFullscreen(bool fullscreen) = 0;
-        virtual void resize(u32 width, u32 height) = 0;
+        virtual void requestResize(u32 width, u32 height) = 0;
         virtual void setMinimumSize(u32 width, u32 height) = 0;
         virtual void setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) = 0;
-        virtual WindowInfo info() const = 0;
 
         virtual void readPrimary(ClipboardRead& read) = 0;
         virtual void readClipboard(ClipboardRead& read) = 0;

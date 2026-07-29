@@ -111,27 +111,26 @@ namespace {
         const char* mime() const;
     };
 
-    struct WindowImpl final: public Window {
+    struct WindowImpl final: public Window, public TimerCallback {
         WindowImpl(PlatformImpl& platform, const WindowOptions& options);
         ~WindowImpl();
 
         void show() override;
         void requestClose() override;
-        bool requestFrame() override;
-        void cancelFrame() override;
+        void invalidate() override;
+        void ready() override;
         void setTitle(StringView title) override;
         void requestAttention() override;
-        void requestRedraw() override;
         void restore() override;
         void iconify() override;
         void move(i32 x, i32 y) override;
         void focus() override;
         void setMaximized(bool maximized) override;
         void setFullscreen(bool fullscreen) override;
-        void resize(u32 width, u32 height) override;
+        void requestResize(u32 width, u32 height) override;
         void setMinimumSize(u32 width, u32 height) override;
         void setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
-        WindowInfo info() const override;
+        WindowInfo currentInfo() const;
         void readPrimary(ClipboardRead& read) override;
         void readClipboard(ClipboardRead& read) override;
         void cancelClipboardRead(ClipboardRead& read) override;
@@ -149,17 +148,19 @@ namespace {
         void pointerAxis(u32 axis, wl_fixed_t value);
         void pointerFrame();
         void frameReady(struct wl_callback* callback);
+        void cancelFrame();
         void updateCursor();
         u32 pixelWidth() const;
         u32 pixelHeight() const;
         u32 logicalForPixel(u32 pixels) const;
         u32 snappedLogical(u32 suggested, u32 unit, u32 base) const;
-        void setLogicalSize(u32 width, u32 height, bool notify);
+        void setLogicalSize(u32 width, u32 height);
         void receive(Offer& offer, bool primary, ClipboardRead& read);
 
         PlatformImpl& platform;
         InputSink* input = nullptr;
         WindowEvents* events = nullptr;
+        FrameCallback* frame = nullptr;
         struct wl_surface* surface = nullptr;
         struct xdg_surface* xdgSurface = nullptr;
         struct xdg_toplevel* toplevel = nullptr;
@@ -196,6 +197,8 @@ namespace {
         bool pendingMaximized = false;
         bool pendingFullscreen = false;
         bool pendingTiled = false;
+        bool frameRequested = false;
+        bool frameScheduled = false;
     };
 
     struct PlatformImpl final: public Platform, public PollCallback {
@@ -521,6 +524,7 @@ namespace {
         platform.keyboardFocus = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
         if (platform.keyboardFocus != nullptr) {
             platform.keyboardFocus->focused = true;
+            platform.keyboardFocus->invalidate();
             if (platform.keyboardFocus->input != nullptr) {
                 platform.keyboardFocus->input->focus(true);
                 platform.keyboardFocus->input->flush();
@@ -534,6 +538,7 @@ namespace {
         WindowImpl* const window = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
         if (window != nullptr) {
             window->focused = false;
+            window->invalidate();
             if (window->input != nullptr) {
                 window->input->focus(false);
                 window->input->flush();
@@ -1710,6 +1715,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     : platform(platform_)
     , input(options.input)
     , events(options.events)
+    , frame(options.frame)
     , logicalWidth(max(1u, options.width))
     , logicalHeight(max(1u, options.height))
     , minimumWidth(max(1u, options.minimumWidth))
@@ -1750,6 +1756,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
 }
 
 WindowImpl::~WindowImpl() {
+    platform.poller_->cancel(*this);
     platform.cancelSelection(*this, nullptr);
     if (platform.keyboardFocus == this) {
         platform.keyboardFocus = nullptr;
@@ -1812,10 +1819,9 @@ u32 WindowImpl::snappedLogical(u32 suggested, u32 unit, u32 base) const {
     return suggested;
 }
 
-void WindowImpl::setLogicalSize(u32 width, u32 height, bool notify) {
+void WindowImpl::setLogicalSize(u32 width, u32 height) {
     width = max(1u, width);
     height = max(1u, height);
-    const bool changed = logicalWidth != width || logicalHeight != height;
     logicalWidth = width;
     logicalHeight = height;
     xdg_surface_set_window_geometry(xdgSurface, 0, 0, logicalWidth, logicalHeight);
@@ -1823,9 +1829,6 @@ void WindowImpl::setLogicalSize(u32 width, u32 height, bool notify) {
         wp_viewport_set_destination(viewport, logicalWidth, logicalHeight);
     } else {
         wl_surface_set_buffer_scale(surface, max(1, (i32)(scaleNumerator / scaleDenominator)));
-    }
-    if (notify && (changed || !configured) && events != nullptr) {
-        events->resized(info());
     }
 }
 
@@ -1841,10 +1844,10 @@ void WindowImpl::configure() {
         height = snappedLogical(height, resizeUnitHeight, resizeBaseHeight);
     }
     const bool first = !configured;
-    setLogicalSize(width, height, true);
+    setLogicalSize(width, height);
     configured = true;
     if (first || shown) {
-        requestRedraw();
+        invalidate();
     }
 }
 
@@ -1857,7 +1860,8 @@ void WindowImpl::contentScale(u32 numerator) {
         wl_surface_set_buffer_scale(surface, 1);
     }
     xdg_toplevel_set_min_size(toplevel, logicalForPixel(minimumWidth), logicalForPixel(minimumHeight));
-    setLogicalSize(logicalWidth, logicalHeight, true);
+    setLogicalSize(logicalWidth, logicalHeight);
+    invalidate();
 }
 
 void WindowImpl::show() {
@@ -1877,16 +1881,31 @@ void WindowImpl::requestClose() {
     }
 }
 
-bool WindowImpl::requestFrame() {
-    if (frameCallback != nullptr) {
-        return true;
+void WindowImpl::invalidate() {
+    frameRequested = true;
+    if (!configured || frameCallback != nullptr || frameScheduled || frame == nullptr) {
+        return;
     }
+    frameScheduled = true;
+    platform.poller_->timeout(0, *this);
+}
+
+void WindowImpl::ready() {
+    frameScheduled = false;
+    if (!configured || !frameRequested || frameCallback != nullptr || frame == nullptr) {
+        return;
+    }
+    frameRequested = false;
     frameCallback = wl_surface_frame(surface);
-    if (frameCallback == nullptr) {
-        return false;
+    if (frameCallback != nullptr) {
+        wl_callback_add_listener(frameCallback, &frameListener, this);
     }
-    wl_callback_add_listener(frameCallback, &frameListener, this);
-    return true;
+    if (!frame->frame(currentInfo())) {
+        cancelFrame();
+        if (frameRequested) {
+            invalidate();
+        }
+    }
 }
 
 void WindowImpl::cancelFrame() {
@@ -1903,8 +1922,8 @@ void WindowImpl::frameReady(struct wl_callback* callback) {
     }
     wl_callback_destroy(frameCallback);
     frameCallback = nullptr;
-    if (events != nullptr) {
-        events->frame();
+    if (frameRequested) {
+        invalidate();
     }
 }
 
@@ -1916,12 +1935,6 @@ void WindowImpl::setTitle(StringView value) {
 
 void WindowImpl::requestAttention() {
     platform.activate(*this);
-}
-
-void WindowImpl::requestRedraw() {
-    if (events != nullptr) {
-        events->redraw();
-    }
 }
 
 void WindowImpl::restore() {
@@ -1959,8 +1972,9 @@ void WindowImpl::setFullscreen(bool value) {
     }
 }
 
-void WindowImpl::resize(u32 width, u32 height) {
-    setLogicalSize(logicalForPixel(width), logicalForPixel(height), true);
+void WindowImpl::requestResize(u32 width, u32 height) {
+    setLogicalSize(logicalForPixel(width), logicalForPixel(height));
+    invalidate();
 }
 
 void WindowImpl::setMinimumSize(u32 width, u32 height) {
@@ -1976,7 +1990,7 @@ void WindowImpl::setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHei
     resizeBaseHeight = baseHeight;
 }
 
-WindowInfo WindowImpl::info() const {
+WindowInfo WindowImpl::currentInfo() const {
     return {
         .width = pixelWidth(),
         .height = pixelHeight(),

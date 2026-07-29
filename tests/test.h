@@ -77,7 +77,8 @@ namespace plt::test {
             u32 minimum = 1,
             WindowEvents* events = nullptr,
             InputSink* input = nullptr,
-            bool waitForConfigure = true
+            bool waitForConfigure = true,
+            FrameCallback* frame = nullptr
         );
 
         int controlFd;
@@ -118,29 +119,21 @@ namespace plt::test {
         bool success = true;
     };
 
-    struct EventSink final: WindowEvents {
+    struct EventSink final: WindowEvents, FrameCallback {
         void close() override {
             ++closeCount;
         }
 
-        void resized(const WindowInfo& info) override {
-            ++resizeCount;
-            lastInfo = info;
-        }
-
-        void redraw() override {
-            ++redrawCount;
-        }
-
-        void frame() override {
+        bool frame(const WindowInfo& info) override {
             ++frameCount;
+            lastInfo = info;
+            return submitFrames;
         }
 
         WindowInfo lastInfo;
         u32 closeCount = 0;
-        u32 resizeCount = 0;
-        u32 redrawCount = 0;
         u32 frameCount = 0;
+        bool submitFrames = false;
     };
 
     struct InputRecorder final: InputSink {
@@ -228,10 +221,6 @@ namespace plt::test {
             closed = true;
             platform->stop();
         }
-
-        void resized(const WindowInfo&) override {}
-        void redraw() override {}
-        void frame() override {}
 
         Platform*& platform;
         bool closed = false;

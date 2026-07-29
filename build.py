@@ -1,3 +1,4 @@
+import os
 import platform as host
 
 import build
@@ -90,6 +91,9 @@ if system == "Linux":
         dependency(ldflags=["-lrt", "-lpthread"]),
     ]
 elif system == "Darwin":
+    darwin_frameworks = os.path.join(os.environ["OSX_SDK"], "System", "Library", "Frameworks") if "OSX_SDK" in os.environ else None
+    if darwin_frameworks:
+        build.cppflags += [f"-F{darwin_frameworks}"]
     backend_source = "$(S)/platform_cocoa.mm"
     backend_cxxflags = [
         "-fobjc-arc",
@@ -100,9 +104,9 @@ elif system == "Darwin":
     ]
     backend_deps = [
         dependency(ldflags=[
+            *([f"-F{darwin_frameworks}"] if darwin_frameworks else []),
             "-framework", "AppKit",
             "-framework", "CoreGraphics",
-            "-framework", "CoreVideo",
             "-framework", "Metal",
             "-framework", "QuartzCore",
         ]),

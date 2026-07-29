@@ -10,9 +10,9 @@ namespace plt::test {
         }
 
         EventSink events;
-        Client client(fd, 800, 1, &events, nullptr, false);
+        Client client(fd, 800, 1, &events, nullptr, false, &events);
         pump(*client.platform);
-        if (events.resizeCount != 0) {
+        if (events.frameCount != 0) {
             fprintf(stderr, "nonblocking show: configure was not deferred\n");
             return false;
         }
@@ -21,11 +21,11 @@ namespace plt::test {
             return false;
         }
         for (u32 attempt = 0;
-             attempt != 10 && events.resizeCount == 0;
+             attempt != 10 && events.frameCount == 0;
              ++attempt) {
             pump(*client.platform);
         }
-        if (events.resizeCount == 0) {
+        if (events.frameCount == 0) {
             fprintf(stderr, "nonblocking show: configure was not delivered\n");
             return false;
         }

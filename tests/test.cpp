@@ -1586,7 +1586,8 @@ namespace plt::test {
         u32 minimum,
         plt::WindowEvents* events,
         plt::InputSink* input,
-        bool waitForConfigure
+        bool waitForConfigure,
+        plt::FrameCallback* frame
     )
         : controlFd(controlFd_)
         , owner(stl::ObjPool::fromMemory())
@@ -1603,6 +1604,7 @@ namespace plt::test {
                 .minimumHeight = minimum,
                 .input = input,
                 .events = events,
+                .frame = frame,
             }
         );
         window->show();

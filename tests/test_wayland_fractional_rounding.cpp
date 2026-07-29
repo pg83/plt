@@ -4,10 +4,11 @@
 
 namespace plt::test {
     bool fractionalRounding(int fd) {
-        Client client(fd, 802);
+        EventSink events;
+        Client client(fd, 802, 1, nullptr, nullptr, true, &events);
         command(fd, Command::PreferredScale);
         pump(*client.platform);
-        const u32 width = client.window->info().width;
+        const u32 width = events.lastInfo.width;
         if (width != 1003) {
             fprintf(
                 stderr,

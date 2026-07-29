@@ -6,8 +6,8 @@ namespace plt::test {
     bool multipleWindows(int fd) {
         EventSink firstEvents;
         InputRecorder firstInput;
-        Client client(fd, 800, 1, &firstEvents, &firstInput);
-        const u32 firstResizes = firstEvents.resizeCount;
+        Client client(fd, 800, 1, &firstEvents, &firstInput, true, &firstEvents);
+        const u32 firstFrames = firstEvents.frameCount;
 
         EventSink secondEvents;
         InputRecorder secondInput;
@@ -22,17 +22,18 @@ namespace plt::test {
                 .minimumHeight = 1,
                 .input = &secondInput,
                 .events = &secondEvents,
+                .frame = &secondEvents,
             }
         );
         second->show();
         for (u32 attempt = 0; attempt != 10
-             && secondEvents.resizeCount == 0; ++attempt) {
+             && secondEvents.frameCount == 0; ++attempt) {
             pump(*client.platform);
         }
-        if (secondEvents.resizeCount == 0
-            || second->info().width != 640
-            || client.window->info().width != 800
-            || firstEvents.resizeCount != firstResizes) {
+        if (secondEvents.frameCount == 0
+            || secondEvents.lastInfo.width != 640
+            || firstEvents.lastInfo.width != 800
+            || firstEvents.frameCount != firstFrames) {
             fprintf(stderr, "multiple windows: initial state leaked\n");
             return false;
         }
@@ -40,15 +41,15 @@ namespace plt::test {
         command(fd, Command::ConfigureWindowResize);
         command(fd, Command::PointerEnter);
         pump(*client.platform);
-        if (second->info().width != 819
-            || client.window->info().width != 800
+        if (secondEvents.lastInfo.width != 819
+            || firstEvents.lastInfo.width != 800
             || secondInput.pointerEnterCount != 1
             || firstInput.pointerEnterCount != 0) {
             fprintf(
                 stderr,
                 "multiple windows: widths=%u/%u enters=%u/%u\n",
-                client.window->info().width,
-                second->info().width,
+                firstEvents.lastInfo.width,
+                secondEvents.lastInfo.width,
                 firstInput.pointerEnterCount,
                 secondInput.pointerEnterCount
             );
