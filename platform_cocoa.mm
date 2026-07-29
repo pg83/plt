@@ -6,6 +6,7 @@
 #include "platform.h"
 
 #include <std/sys/crt.h>
+#include <std/dbg/assert.h>
 #include <std/sym/i_map.h>
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
@@ -14,6 +15,7 @@
 #include <std/mem/obj_pool.h>
 
 #import <AppKit/AppKit.h>
+#import <Carbon/Carbon.h>
 #import <CoreVideo/CoreVideo.h>
 #import <IOKit/hidsystem/IOLLEvent.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -78,17 +80,23 @@ void cocoaResizeImpl(void* owner);
 NSSize cocoaWillResizeImpl(void* owner, NSSize frameSize);
 void cocoaFocusImpl(void* owner, bool focused);
 void cocoaKeyImpl(void* owner, NSEvent* event, bool pressed);
+void cocoaTextImpl(void* owner, NSString* text, NSEventModifierFlags modifiers);
+void cocoaFlushInputImpl(void* owner);
 void cocoaFlagsImpl(void* owner, NSEvent* event);
 void cocoaPointerImpl(void* owner, NSEvent* event);
 void cocoaButtonImpl(void* owner, NSEvent* event, bool pressed);
 void cocoaScrollImpl(void* owner, NSEvent* event);
 void cocoaPointerPresenceImpl(void* owner, bool present);
+void cocoaFileDescriptorReady(CFFileDescriptorRef descriptor, CFOptionFlags types, void* owner);
 
 @interface PltWindowDelegate: NSObject <NSWindowDelegate>
 @property(nonatomic, assign) void* owner;
 @end
 
-@interface PltView: NSView
+@interface PltView: NSView <NSTextInputClient> {
+    NSMutableAttributedString* markedText_;
+    NSRange selectedTextRange_;
+}
 @property(nonatomic, assign) void* owner;
 @property(nonatomic, strong) NSTrackingArea* tracking;
 @end
@@ -159,10 +167,13 @@ void cocoaPointerPresenceImpl(void* owner, bool present);
 
 - (void)keyDown:(NSEvent*)event {
     cocoaKeyImpl(self.owner, event, true);
+    [self interpretKeyEvents:@[ event ]];
+    cocoaFlushInputImpl(self.owner);
 }
 
 - (void)keyUp:(NSEvent*)event {
     cocoaKeyImpl(self.owner, event, false);
+    cocoaFlushInputImpl(self.owner);
 }
 
 - (void)flagsChanged:(NSEvent*)event {
@@ -213,6 +224,74 @@ void cocoaPointerPresenceImpl(void* owner, bool present);
     cocoaScrollImpl(self.owner, event);
 }
 
+- (void)insertText:(id)value replacementRange:(NSRange)replacementRange {
+    (void)replacementRange;
+    NSString* const text = [value isKindOfClass:[NSAttributedString class]] ? [value string] : (NSString*)(value);
+    [self unmarkText];
+    NSEvent* const event = NSApp.currentEvent;
+    cocoaTextImpl(self.owner, text, event == nil ? 0 : event.modifierFlags);
+}
+
+- (void)doCommandBySelector:(SEL)selector {
+    (void)selector;
+}
+
+- (BOOL)hasMarkedText {
+    return markedText_.length != 0;
+}
+
+- (NSRange)markedRange {
+    return markedText_.length == 0 ? NSMakeRange(NSNotFound, 0) : NSMakeRange(0, markedText_.length);
+}
+
+- (NSRange)selectedRange {
+    return markedText_.length == 0 ? NSMakeRange(NSNotFound, 0) : selectedTextRange_;
+}
+
+- (void)setMarkedText:(id)value selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange {
+    (void)replacementRange;
+    if ([value isKindOfClass:[NSAttributedString class]]) {
+        markedText_ = [[NSMutableAttributedString alloc] initWithAttributedString:value];
+    } else {
+        markedText_ = [[NSMutableAttributedString alloc] initWithString:value];
+    }
+    selectedTextRange_ = selectedRange;
+    if (markedText_.length == 0) {
+        [self unmarkText];
+    }
+}
+
+- (void)unmarkText {
+    markedText_ = nil;
+    selectedTextRange_ = NSMakeRange(NSNotFound, 0);
+}
+
+- (NSArray<NSAttributedStringKey>*)validAttributesForMarkedText {
+    return @[];
+}
+
+- (NSAttributedString*)attributedSubstringForProposedRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+    if (markedText_.length == 0 || range.location == NSNotFound || NSMaxRange(range) > markedText_.length) {
+        return nil;
+    }
+    if (actualRange != nullptr) {
+        *actualRange = range;
+    }
+    return [markedText_ attributedSubstringFromRange:range];
+}
+
+- (NSUInteger)characterIndexForPoint:(NSPoint)point {
+    (void)point;
+    return 0;
+}
+
+- (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+    if (actualRange != nullptr) {
+        *actualRange = range;
+    }
+    return [self.window convertRectToScreen:NSMakeRect(0, 0, 0, 0)];
+}
+
 - (void)mouseEntered:(NSEvent*)event {
     (void)event;
     cocoaPointerPresenceImpl(self.owner, true);
@@ -235,14 +314,13 @@ namespace {
     struct ClipboardOperation;
 
     struct ArmedFD {
+        ArmedFD(PollFD fd, PollCallback* callback, CFFileDescriptorRef descriptor, CFRunLoopSourceRef source);
+        ~ArmedFD();
+
         PollFD fd;
         PollCallback* callback = nullptr;
-        u64 generation = 0;
-    };
-
-    struct ReadyFD {
-        PollFD fd;
-        u64 generation = 0;
+        CFFileDescriptorRef descriptor = nullptr;
+        CFRunLoopSourceRef source = nullptr;
     };
 
     struct Timer {
@@ -265,12 +343,11 @@ namespace {
         void cancel(TimerCallback& callback) override;
 
         void dispatch();
+        void descriptorReady(CFFileDescriptorRef descriptor);
         void dispatchTimers();
         u64 nextDeadline() const;
 
         IntMap<ArmedFD> armed;
-        Vector<struct pollfd> pollFDs;
-        Vector<ReadyFD> readyFDs;
         Vector<Timer> timers;
         Vector<ReadyTimer> readyTimers;
         cocoa_detail::Generation registrations;
@@ -284,12 +361,7 @@ namespace {
     };
 
     struct ClipboardOperation final: public TimerCallback {
-        ClipboardOperation(
-            WindowImpl& window,
-            ClipboardOperationKind kind,
-            ClipboardRead* read,
-            StringView content
-        );
+        ClipboardOperation(WindowImpl& window, ClipboardOperationKind kind, ClipboardRead* read, StringView content);
 
         void ready() override;
         void cancel();
@@ -339,6 +411,7 @@ namespace {
         NSSize willResize(NSSize frameSize) const;
         void focused(bool value);
         void key(NSEvent* event, bool pressed);
+        void flushInput();
         void flags(NSEvent* event);
         void pointer(NSEvent* event);
         void button(NSEvent* event, bool pressed);
@@ -382,7 +455,7 @@ namespace {
         void run() override;
         void stop() override;
 
-        double waitSeconds() const;
+        NSDate* waitUntil() const;
 
         PollerImpl* poller_ = nullptr;
         bool running = false;
@@ -427,28 +500,59 @@ PollerImpl::PollerImpl(ObjPool& owner)
 {
 }
 
+ArmedFD::ArmedFD(PollFD fd_, PollCallback* callback_, CFFileDescriptorRef descriptor_, CFRunLoopSourceRef source_)
+    : fd(fd_)
+    , callback(callback_)
+    , descriptor(descriptor_)
+    , source(source_)
+{
+}
+
+ArmedFD::~ArmedFD() {
+    if (source != nullptr) {
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+        CFRelease(source);
+    }
+    if (descriptor != nullptr) {
+        CFFileDescriptorInvalidate(descriptor);
+        CFRelease(descriptor);
+    }
+}
+
 void PollerImpl::arm(PollFD fd, PollCallback& callback) {
-    armed[fd.fd] = {
-        .fd = fd,
-        .callback = &callback,
-        .generation = registrations.advance(),
-    };
+    disarm(fd.fd);
+    CFFileDescriptorContext context{};
+    context.info = this;
+    CFFileDescriptorRef descriptor = CFFileDescriptorCreate(kCFAllocatorDefault, fd.fd, false, cocoaFileDescriptorReady, &context);
+    STD_VERIFY(descriptor != nullptr);
+    CFRunLoopSourceRef source = CFFileDescriptorCreateRunLoopSource(kCFAllocatorDefault, descriptor, 0);
+    STD_VERIFY(source != nullptr);
+    armed.insert(fd.fd, fd, &callback, descriptor, source);
+    CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+    CFOptionFlags types = 0;
+    if (fd.flags & (PollFlag::In | PollFlag::Err | PollFlag::Hup)) {
+        types |= kCFFileDescriptorReadCallBack;
+    }
+    if (fd.flags & PollFlag::Out) {
+        types |= kCFFileDescriptorWriteCallBack;
+    }
+    CFFileDescriptorEnableCallBacks(descriptor, types);
 }
 
 void PollerImpl::disarm(int fd) {
     armed.erase(fd);
 }
 
-double PlatformImpl::waitSeconds() const {
+NSDate* PlatformImpl::waitUntil() const {
     const u64 deadline = poller_->nextDeadline();
     if (deadline == UINT64_MAX) {
-        return 0.01;
+        return [NSDate distantFuture];
     }
     const u64 now = monotonicNowUs();
     if (deadline <= now) {
-        return 0;
+        return [NSDate date];
     }
-    return min(0.01, (deadline - now) / 1'000'000.0);
+    return [NSDate dateWithTimeIntervalSinceNow:(deadline - now) / 1'000'000.0];
 }
 
 void PollerImpl::timeout(u64 microseconds, TimerCallback& callback) {
@@ -517,38 +621,36 @@ void PollerImpl::dispatchTimers() {
     readyTimers.clear();
 }
 
+void PollerImpl::descriptorReady(CFFileDescriptorRef descriptor) {
+    const int fd = CFFileDescriptorGetNativeDescriptor(descriptor);
+    ArmedFD* registration = armed.find(fd);
+    if (registration == nullptr || registration->descriptor != descriptor) {
+        return;
+    }
+    struct pollfd event{fd, registration->fd.toPollEvents(), 0};
+    if (::poll(&event, 1, 0) <= 0 || event.revents == 0) {
+        CFOptionFlags types = 0;
+        if (registration->fd.flags & (PollFlag::In | PollFlag::Err | PollFlag::Hup)) {
+            types |= kCFFileDescriptorReadCallBack;
+        }
+        if (registration->fd.flags & PollFlag::Out) {
+            types |= kCFFileDescriptorWriteCallBack;
+        }
+        CFFileDescriptorEnableCallBacks(descriptor, types);
+        return;
+    }
+    PollCallback* const callback = registration->callback;
+    PollFD ready{
+        .fd = fd,
+        .flags = PollFD::fromPollEvents(event.revents),
+    };
+    armed.erase(fd);
+    callback->ready(ready);
+    NSEvent* wakeup = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
+    [NSApp postEvent:wakeup atStart:NO];
+}
+
 void PollerImpl::dispatch() {
-    pollFDs.clear();
-    armed.visit([this](const ArmedFD& source) {
-        pollFDs.pushBack({source.fd.fd, source.fd.toPollEvents(), 0});
-    });
-    readyFDs.clear();
-    if (!pollFDs.empty() && ::poll(pollFDs.mutData(), pollFDs.length(), 0) > 0) {
-        for (const struct pollfd& source : pollFDs) {
-            ArmedFD* registration = armed.find(source.fd);
-            if (source.revents == 0 || registration == nullptr) {
-                continue;
-            }
-            readyFDs.pushBack({
-                .fd =
-                    {
-                        .fd = source.fd,
-                        .flags = PollFD::fromPollEvents(source.revents),
-                    },
-                .generation = registration->generation,
-            });
-        }
-    }
-    for (const ReadyFD& ready : readyFDs) {
-        ArmedFD* registration = armed.find(ready.fd.fd);
-        if (registration == nullptr || !cocoa_detail::readyGenerationMatches(registration->generation, ready.generation)) {
-            continue;
-        }
-        PollCallback* const callback = registration->callback;
-        armed.erase(ready.fd.fd);
-        callback->ready(ready.fd);
-    }
-    readyFDs.clear();
     dispatchTimers();
 }
 
@@ -556,8 +658,7 @@ void PlatformImpl::run() {
     running = true;
     while (running) {
         @autoreleasepool {
-            NSDate* until = [NSDate dateWithTimeIntervalSinceNow:waitSeconds()];
-            NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:until inMode:NSDefaultRunLoopMode dequeue:YES];
+            NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:waitUntil() inMode:NSDefaultRunLoopMode dequeue:YES];
             if (event != nil) {
                 [NSApp sendEvent:event];
             }
@@ -572,12 +673,7 @@ void PlatformImpl::stop() {
     [NSApp postEvent:event atStart:NO];
 }
 
-ClipboardOperation::ClipboardOperation(
-    WindowImpl& window_,
-    ClipboardOperationKind kind_,
-    ClipboardRead* read_,
-    StringView content_
-)
+ClipboardOperation::ClipboardOperation(WindowImpl& window_, ClipboardOperationKind kind_, ClipboardRead* read_, StringView content_)
     : window(window_)
     , kind(kind_)
     , read(read_)
@@ -595,34 +691,21 @@ void ClipboardOperation::ready() {
         return;
     }
 
-    const bool primary =
-        kind == ClipboardOperationKind::ReadPrimary
-        || kind == ClipboardOperationKind::WritePrimary;
-    NSPasteboard* const pasteboard =
-        primary
-        ? [NSPasteboard pasteboardWithName:NSPasteboardNameFind]
-        : [NSPasteboard generalPasteboard];
-    if (kind == ClipboardOperationKind::WritePrimary
-        || kind == ClipboardOperationKind::WriteClipboard) {
+    const bool primary = kind == ClipboardOperationKind::ReadPrimary || kind == ClipboardOperationKind::WritePrimary;
+    NSPasteboard* const pasteboard = primary ? [NSPasteboard pasteboardWithName:NSPasteboardNameFind] : [NSPasteboard generalPasteboard];
+    if (kind == ClipboardOperationKind::WritePrimary || kind == ClipboardOperationKind::WriteClipboard) {
         window.writePasteboard(pasteboard, StringView(content));
         dispose();
         return;
     }
 
     NSString* value = [pasteboard stringForType:NSPasteboardTypeString];
-    NSData* data =
-        value == nil
-        ? nil
-        : [value dataUsingEncoding:NSUTF8StringEncoding];
+    NSData* data = value == nil ? nil : [value dataUsingEncoding:NSUTF8StringEncoding];
     bool success = data != nil;
     ClipboardRead* const target = read;
     if (success && data.length != 0) {
         dispatching = true;
-        success =
-            target != nullptr
-            && target->data(
-                StringView((const u8*)(data.bytes), data.length)
-            );
+        success = target != nullptr && target->data(StringView((const u8*)(data.bytes), data.length));
         dispatching = false;
     }
     if (cancelled) {
@@ -855,26 +938,15 @@ void WindowImpl::writePasteboard(NSPasteboard* pasteboard, StringView content) {
 }
 
 void WindowImpl::readPrimary(ClipboardRead& sink) {
-    new ClipboardOperation(
-        *this,
-        ClipboardOperationKind::ReadPrimary,
-        &sink,
-        {}
-    );
+    new ClipboardOperation(*this, ClipboardOperationKind::ReadPrimary, &sink, {});
 }
 
 void WindowImpl::readClipboard(ClipboardRead& sink) {
-    new ClipboardOperation(
-        *this,
-        ClipboardOperationKind::ReadClipboard,
-        &sink,
-        {}
-    );
+    new ClipboardOperation(*this, ClipboardOperationKind::ReadClipboard, &sink, {});
 }
 
 void WindowImpl::cancelClipboardRead(ClipboardRead& sink) {
-    for (ClipboardOperation* operation = clipboardOperations;
-         operation != nullptr;) {
+    for (ClipboardOperation* operation = clipboardOperations; operation != nullptr;) {
         ClipboardOperation* const next = operation->next;
         if (operation->read == &sink) {
             operation->cancel();
@@ -884,21 +956,11 @@ void WindowImpl::cancelClipboardRead(ClipboardRead& sink) {
 }
 
 void WindowImpl::writePrimary(StringView content) {
-    new ClipboardOperation(
-        *this,
-        ClipboardOperationKind::WritePrimary,
-        nullptr,
-        content
-    );
+    new ClipboardOperation(*this, ClipboardOperationKind::WritePrimary, nullptr, content);
 }
 
 void WindowImpl::writeClipboard(StringView content) {
-    new ClipboardOperation(
-        *this,
-        ClipboardOperationKind::WriteClipboard,
-        nullptr,
-        content
-    );
+    new ClipboardOperation(*this, ClipboardOperationKind::WriteClipboard, nullptr, content);
 }
 
 void WindowImpl::removeClipboardOperation(ClipboardOperation& operation) {
@@ -996,6 +1058,46 @@ u32 WindowImpl::firstCodepoint(NSString* string) const {
 }
 
 InputKey WindowImpl::inputKey(NSEvent* event) const {
+    switch (event.keyCode) {
+        case kVK_ANSI_Keypad0:
+            return InputKey::Keypad0;
+        case kVK_ANSI_Keypad1:
+            return InputKey::Keypad1;
+        case kVK_ANSI_Keypad2:
+            return InputKey::Keypad2;
+        case kVK_ANSI_Keypad3:
+            return InputKey::Keypad3;
+        case kVK_ANSI_Keypad4:
+            return InputKey::Keypad4;
+        case kVK_ANSI_Keypad5:
+            return InputKey::Keypad5;
+        case kVK_ANSI_Keypad6:
+            return InputKey::Keypad6;
+        case kVK_ANSI_Keypad7:
+            return InputKey::Keypad7;
+        case kVK_ANSI_Keypad8:
+            return InputKey::Keypad8;
+        case kVK_ANSI_Keypad9:
+            return InputKey::Keypad9;
+        case kVK_ANSI_KeypadDecimal:
+            return InputKey::KeypadDecimal;
+        case kVK_ANSI_KeypadDivide:
+            return InputKey::KeypadDivide;
+        case kVK_ANSI_KeypadMultiply:
+            return InputKey::KeypadMultiply;
+        case kVK_ANSI_KeypadMinus:
+            return InputKey::KeypadSubtract;
+        case kVK_ANSI_KeypadPlus:
+            return InputKey::KeypadAdd;
+        case kVK_ANSI_KeypadEnter:
+            return InputKey::KeypadEnter;
+        case kVK_ANSI_KeypadEquals:
+            return InputKey::KeypadEqual;
+        case kVK_ANSI_KeypadClear:
+            return InputKey::NumLock;
+        default:
+            break;
+    }
     const u32 value = firstCodepoint(event.charactersIgnoringModifiers);
     switch (value) {
         case 0x1b:
@@ -1040,23 +1142,32 @@ void WindowImpl::key(NSEvent* event, bool pressed) {
         return;
     }
     const InputAction action = !pressed ? InputAction::Release : (event.isARepeat ? InputAction::Repeat : InputAction::Press);
-    const u16 mods = modifiers(event.modifierFlags);
+    u16 mods = modifiers(event.modifierFlags);
+    const InputKey key = inputKey(event);
+    if (key >= InputKey::Keypad0 && key <= InputKey::KeypadDecimal) {
+        mods |= InputNumLock;
+    }
     const u32 layout = firstCodepoint(event.characters);
     const u32 base = firstCodepoint(event.charactersIgnoringModifiers);
     input->key({
-        .key = inputKey(event),
+        .key = key,
         .action = action,
         .modifiers = mods,
         .layoutCodepoint = layout,
         .baseCodepoint = base,
     });
-    if (pressed && !(mods & (InputControl | InputSuper))) {
-        emitText(event.characters, mods);
+}
+
+void WindowImpl::flushInput() {
+    if (input != nullptr) {
+        input->flush();
     }
-    input->flush();
 }
 
 void WindowImpl::emitText(NSString* string, u16 mods) {
+    if (input == nullptr || (mods & (InputControl | InputSuper))) {
+        return;
+    }
     const NSUInteger length = string.length;
     for (NSUInteger index = 0; index < length;) {
         const unichar first = [string characterAtIndex:index++];
@@ -1074,10 +1185,11 @@ void WindowImpl::emitText(NSString* string, u16 mods) {
         } else if (CFStringIsSurrogateLowCharacter(first)) {
             continue;
         }
-        if (codepoint >= 0x20 && codepoint != 0x7f) {
+        if (codepoint >= 0x20 && codepoint != 0x7f && !(codepoint >= 0xf700 && codepoint <= 0xf7ff)) {
             input->text({codepoint, mods});
         }
     }
+    input->flush();
 }
 
 void WindowImpl::flags(NSEvent* event) {
@@ -1153,9 +1265,10 @@ void WindowImpl::button(NSEvent* event, bool pressed) {
 void WindowImpl::scroll(NSEvent* event) {
     if (input != nullptr) {
         const NSPoint point = pointerPosition(event);
+        const double scale = event.hasPreciseScrollingDeltas ? 0.1 : 1.0;
         input->scroll({
-            .x = event.scrollingDeltaX,
-            .y = event.scrollingDeltaY,
+            .x = event.scrollingDeltaX * scale,
+            .y = event.scrollingDeltaY * scale,
             .pixelX = (int)(point.x),
             .pixelY = (int)(point.y),
             .modifiers = modifiers(event.modifierFlags),
@@ -1191,6 +1304,15 @@ void cocoaKeyImpl(void* owner, NSEvent* event, bool pressed) {
     ((WindowImpl*)(owner))->key(event, pressed);
 }
 
+void cocoaTextImpl(void* owner, NSString* text, NSEventModifierFlags flags) {
+    WindowImpl* const window = (WindowImpl*)(owner);
+    window->emitText(text, window->modifiers(flags));
+}
+
+void cocoaFlushInputImpl(void* owner) {
+    ((WindowImpl*)(owner))->flushInput();
+}
+
 void cocoaFlagsImpl(void* owner, NSEvent* event) {
     ((WindowImpl*)(owner))->flags(event);
 }
@@ -1209,6 +1331,11 @@ void cocoaScrollImpl(void* owner, NSEvent* event) {
 
 void cocoaPointerPresenceImpl(void* owner, bool present) {
     ((WindowImpl*)(owner))->pointerPresence(present);
+}
+
+void cocoaFileDescriptorReady(CFFileDescriptorRef descriptor, CFOptionFlags types, void* owner) {
+    (void)types;
+    ((PollerImpl*)(owner))->descriptorReady(descriptor);
 }
 
 Platform* plt::createCocoaPlatform(ObjPool& owner) {
