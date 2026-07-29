@@ -12,7 +12,7 @@ namespace plt::test {
         pump(*client.platform);
 
         ReadSink read;
-        client.window->readPrimary(read);
+        client.window->requestReadPrimary(read);
         if (command(fd, Command::ReleaseRead).count != 1) {
             fprintf(stderr, "async primary: no read transfer fd\n");
             return false;
@@ -29,7 +29,7 @@ namespace plt::test {
 
         command(fd, Command::PointerEnter);
         pump(*client.platform);
-        client.window->writePrimary(stl::StringView(u8"primary source"));
+        client.window->requestWritePrimary(stl::StringView(u8"primary source"));
         pump(*client.platform);
         if (command(fd, Command::RequestPrimarySourceData).count != 1) {
             fprintf(stderr, "async primary: source was not published\n");

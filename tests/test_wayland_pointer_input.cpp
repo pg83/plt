@@ -10,7 +10,7 @@ namespace plt::test {
         Client client(fd, 800, 1, nullptr, &input);
         command(fd, Command::PointerEnter);
         pump(*client.platform);
-        client.window->pointerIcon(plt::PointerIcon::Link);
+        client.window->requestPointerIcon(plt::PointerIcon::Link);
         pump(*client.platform);
         const Reply cursor = command(fd, Command::QueryCursor);
         if (cursor.count < 2
@@ -21,7 +21,7 @@ namespace plt::test {
 
         command(fd, Command::PointerSequence);
         pump(*client.platform);
-        client.window->pointerIcon(plt::PointerIcon::Text);
+        client.window->requestPointerIcon(plt::PointerIcon::Text);
         if (input.motionCount != 3
             || input.lastMotion.pixelX != 30
             || input.lastMotion.pixelY != 40

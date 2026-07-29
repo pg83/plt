@@ -39,7 +39,7 @@ namespace plt::test {
 
     bool cancelReadyClipboardRead(int fd) {
         Client client(fd);
-        client.window->writeClipboard(stl::StringView(u8"local clipboard"));
+        client.window->requestWriteClipboard(stl::StringView(u8"local clipboard"));
         command(fd, Command::PointerEnter);
         pump(*client.platform);
 
@@ -49,8 +49,8 @@ namespace plt::test {
             *client.window,
             cancelled
         );
-        client.window->readClipboard(cancel);
-        client.window->readClipboard(cancelled);
+        client.window->requestReadClipboard(cancel);
+        client.window->requestReadClipboard(cancelled);
         client.platform->run();
 
         if (!cancel.dataCalled || !cancel.complete || !cancel.success

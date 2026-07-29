@@ -1607,7 +1607,7 @@ namespace plt::test {
                 .frame = frame,
             }
         );
-        window->show();
+        window->requestShow();
         if (waitForConfigure) {
             for (u32 attempt = 0; attempt != 10; ++attempt) {
                 pump(*platform);

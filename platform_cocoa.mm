@@ -407,27 +407,27 @@ namespace {
         WindowImpl(PlatformImpl& platform, const WindowOptions& options);
         ~WindowImpl();
 
-        void show() override;
+        void requestShow() override;
         void requestClose() override;
-        void invalidate() override;
-        void setTitle(StringView title) override;
+        void requestFrame() override;
+        void requestTitle(StringView title) override;
         void requestAttention() override;
-        void restore() override;
-        void iconify() override;
-        void move(i32 x, i32 y) override;
-        void focus() override;
-        void setMaximized(bool maximized) override;
-        void setFullscreen(bool fullscreen) override;
+        void requestRestore() override;
+        void requestIconify() override;
+        void requestMove(i32 x, i32 y) override;
+        void requestFocus() override;
+        void requestMaximized(bool maximized) override;
+        void requestFullscreen(bool fullscreen) override;
         void requestResize(u32 width, u32 height) override;
-        void setMinimumSize(u32 width, u32 height) override;
-        void setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
+        void requestMinimumSize(u32 width, u32 height) override;
+        void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
         WindowInfo currentInfo() const;
-        void readPrimary(ClipboardRead& sink) override;
-        void readClipboard(ClipboardRead& sink) override;
+        void requestReadPrimary(ClipboardRead& sink) override;
+        void requestReadClipboard(ClipboardRead& sink) override;
         void cancelClipboardRead(ClipboardRead& sink) override;
-        void writePrimary(StringView content) override;
-        void writeClipboard(StringView content) override;
-        void pointerIcon(PointerIcon icon) override;
+        void requestWritePrimary(StringView content) override;
+        void requestWriteClipboard(StringView content) override;
+        void requestPointerIcon(PointerIcon icon) override;
         RenderContext renderContext() const override;
 
         void close();
@@ -816,8 +816,8 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     frameTrace("window constructed window=%p view=%p wantsLayer=%d layer=%p policy=%ld", window, view, view.wantsLayer, view.layer, (long)(view.layerContentsRedrawPolicy));
 #endif
     window.acceptsMouseMovedEvents = YES;
-    setTitle(options.title);
-    setMinimumSize(options.minimumWidth, options.minimumHeight);
+    requestTitle(options.title);
+    requestMinimumSize(options.minimumWidth, options.minimumHeight);
 }
 
 WindowImpl::~WindowImpl() {
@@ -831,7 +831,7 @@ WindowImpl::~WindowImpl() {
     [window orderOut:nil];
 }
 
-void WindowImpl::show() {
+void WindowImpl::requestShow() {
 #if defined(SHITTY_FRAME_TRACE)
     frameTrace("window show window=%p view=%p layer=%p", window, view, view.layer);
 #endif
@@ -845,7 +845,7 @@ void WindowImpl::requestClose() {
     close();
 }
 
-void WindowImpl::invalidate() {
+void WindowImpl::requestFrame() {
 #if defined(SHITTY_FRAME_TRACE)
     frameTrace("window invalidate visible=%d drawable=%d wantsLayer=%d layer=%p dirty=%d layerDirty=%d requested=%d", window.visible, view.canDraw, view.wantsLayer, view.layer, view.needsDisplay, [view.layer needsDisplay], frameRequested);
 #endif
@@ -872,7 +872,7 @@ void WindowImpl::draw() {
     }
 }
 
-void WindowImpl::setTitle(StringView value) {
+void WindowImpl::requestTitle(StringView value) {
     NSString* title = stringFromView(value);
     window.title = title == nil ? @"" : title;
 }
@@ -881,7 +881,7 @@ void WindowImpl::requestAttention() {
     [NSApp requestUserAttention:NSInformationalRequest];
 }
 
-void WindowImpl::restore() {
+void WindowImpl::requestRestore() {
     [window deminiaturize:nil];
     if ((window.styleMask & NSWindowStyleMaskFullScreen) != 0) {
         [window toggleFullScreen:nil];
@@ -891,27 +891,27 @@ void WindowImpl::restore() {
     }
 }
 
-void WindowImpl::iconify() {
+void WindowImpl::requestIconify() {
     [window miniaturize:nil];
 }
 
-void WindowImpl::move(i32 x, i32 y) {
+void WindowImpl::requestMove(i32 x, i32 y) {
     NSPoint point = NSMakePoint(x, y);
     [window setFrameOrigin:point];
 }
 
-void WindowImpl::focus() {
+void WindowImpl::requestFocus() {
     [window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 }
 
-void WindowImpl::setMaximized(bool value) {
+void WindowImpl::requestMaximized(bool value) {
     if ([window isZoomed] != value) {
         [window zoom:nil];
     }
 }
 
-void WindowImpl::setFullscreen(bool value) {
+void WindowImpl::requestFullscreen(bool value) {
     const bool current = (window.styleMask & NSWindowStyleMaskFullScreen) != 0;
     if (current != value) {
         [window toggleFullScreen:nil];
@@ -924,13 +924,13 @@ void WindowImpl::requestResize(u32 width, u32 height) {
     [window setContentSize:size];
 }
 
-void WindowImpl::setMinimumSize(u32 width, u32 height) {
+void WindowImpl::requestMinimumSize(u32 width, u32 height) {
     minimumWidth = max(1u, width);
     minimumHeight = max(1u, height);
     applySizeConstraints();
 }
 
-void WindowImpl::setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) {
+void WindowImpl::requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) {
     resizeUnitWidth = max(1u, width);
     resizeUnitHeight = max(1u, height);
     resizeBaseWidth = baseWidth;
@@ -969,11 +969,11 @@ void WindowImpl::writePasteboard(NSPasteboard* pasteboard, StringView content) {
     [pasteboard setString:value == nil ? @"" : value forType:NSPasteboardTypeString];
 }
 
-void WindowImpl::readPrimary(ClipboardRead& sink) {
+void WindowImpl::requestReadPrimary(ClipboardRead& sink) {
     new ClipboardOperation(*this, ClipboardOperationKind::ReadPrimary, &sink, {});
 }
 
-void WindowImpl::readClipboard(ClipboardRead& sink) {
+void WindowImpl::requestReadClipboard(ClipboardRead& sink) {
     new ClipboardOperation(*this, ClipboardOperationKind::ReadClipboard, &sink, {});
 }
 
@@ -987,11 +987,11 @@ void WindowImpl::cancelClipboardRead(ClipboardRead& sink) {
     }
 }
 
-void WindowImpl::writePrimary(StringView content) {
+void WindowImpl::requestWritePrimary(StringView content) {
     new ClipboardOperation(*this, ClipboardOperationKind::WritePrimary, nullptr, content);
 }
 
-void WindowImpl::writeClipboard(StringView content) {
+void WindowImpl::requestWriteClipboard(StringView content) {
     new ClipboardOperation(*this, ClipboardOperationKind::WriteClipboard, nullptr, content);
 }
 
@@ -1006,7 +1006,7 @@ void WindowImpl::removeClipboardOperation(ClipboardOperation& operation) {
     }
 }
 
-void WindowImpl::pointerIcon(PointerIcon icon) {
+void WindowImpl::requestPointerIcon(PointerIcon icon) {
     if (icon == PointerIcon::Link) {
         [[NSCursor pointingHandCursor] set];
     } else {
@@ -1034,7 +1034,7 @@ void WindowImpl::resized() {
 #endif
     applySizeConstraints();
     ((CAMetalLayer*)(view.layer)).contentsScale = window.backingScaleFactor;
-    invalidate();
+    requestFrame();
 #if defined(SHITTY_FRAME_TRACE)
     frameTrace("window resized end dirty=%d", view.needsDisplay);
 #endif
@@ -1056,7 +1056,7 @@ NSSize WindowImpl::willResize(NSSize frameSize) const {
 }
 
 void WindowImpl::focused(bool value) {
-    invalidate();
+    requestFrame();
     if (input != nullptr) {
         input->focus(value);
         input->flush();
@@ -1334,7 +1334,7 @@ void cocoaFrameImpl(void* owner) {
 }
 
 void cocoaInvalidateImpl(void* owner) {
-    ((WindowImpl*)(owner))->invalidate();
+    ((WindowImpl*)(owner))->requestFrame();
 }
 
 NSSize cocoaWillResizeImpl(void* owner, NSSize frameSize) {

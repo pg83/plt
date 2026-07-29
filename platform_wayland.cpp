@@ -115,28 +115,28 @@ namespace {
         WindowImpl(PlatformImpl& platform, const WindowOptions& options);
         ~WindowImpl();
 
-        void show() override;
+        void requestShow() override;
         void requestClose() override;
-        void invalidate() override;
+        void requestFrame() override;
         void ready() override;
-        void setTitle(StringView title) override;
+        void requestTitle(StringView title) override;
         void requestAttention() override;
-        void restore() override;
-        void iconify() override;
-        void move(i32 x, i32 y) override;
-        void focus() override;
-        void setMaximized(bool maximized) override;
-        void setFullscreen(bool fullscreen) override;
+        void requestRestore() override;
+        void requestIconify() override;
+        void requestMove(i32 x, i32 y) override;
+        void requestFocus() override;
+        void requestMaximized(bool maximized) override;
+        void requestFullscreen(bool fullscreen) override;
         void requestResize(u32 width, u32 height) override;
-        void setMinimumSize(u32 width, u32 height) override;
-        void setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
+        void requestMinimumSize(u32 width, u32 height) override;
+        void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
         WindowInfo currentInfo() const;
-        void readPrimary(ClipboardRead& read) override;
-        void readClipboard(ClipboardRead& read) override;
+        void requestReadPrimary(ClipboardRead& read) override;
+        void requestReadClipboard(ClipboardRead& read) override;
         void cancelClipboardRead(ClipboardRead& read) override;
-        void writePrimary(StringView content) override;
-        void writeClipboard(StringView content) override;
-        void pointerIcon(PointerIcon icon) override;
+        void requestWritePrimary(StringView content) override;
+        void requestWriteClipboard(StringView content) override;
+        void requestPointerIcon(PointerIcon icon) override;
         RenderContext renderContext() const override;
 
         void configure();
@@ -524,7 +524,7 @@ namespace {
         platform.keyboardFocus = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
         if (platform.keyboardFocus != nullptr) {
             platform.keyboardFocus->focused = true;
-            platform.keyboardFocus->invalidate();
+            platform.keyboardFocus->requestFrame();
             if (platform.keyboardFocus->input != nullptr) {
                 platform.keyboardFocus->input->focus(true);
                 platform.keyboardFocus->input->flush();
@@ -538,7 +538,7 @@ namespace {
         WindowImpl* const window = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
         if (window != nullptr) {
             window->focused = false;
-            window->invalidate();
+            window->requestFrame();
             if (window->input != nullptr) {
                 window->input->focus(false);
                 window->input->flush();
@@ -1752,7 +1752,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     xdg_toplevel_set_app_id(toplevel, appId.cStr());
     xdg_toplevel_set_title(toplevel, initialTitle.cStr());
     title = initialTitle;
-    setMinimumSize(minimumWidth, minimumHeight);
+    requestMinimumSize(minimumWidth, minimumHeight);
 }
 
 WindowImpl::~WindowImpl() {
@@ -1847,7 +1847,7 @@ void WindowImpl::configure() {
     setLogicalSize(width, height);
     configured = true;
     if (first || shown) {
-        invalidate();
+        requestFrame();
     }
 }
 
@@ -1861,10 +1861,10 @@ void WindowImpl::contentScale(u32 numerator) {
     }
     xdg_toplevel_set_min_size(toplevel, logicalForPixel(minimumWidth), logicalForPixel(minimumHeight));
     setLogicalSize(logicalWidth, logicalHeight);
-    invalidate();
+    requestFrame();
 }
 
-void WindowImpl::show() {
+void WindowImpl::requestShow() {
     if (shown) {
         return;
     }
@@ -1881,7 +1881,7 @@ void WindowImpl::requestClose() {
     }
 }
 
-void WindowImpl::invalidate() {
+void WindowImpl::requestFrame() {
     frameRequested = true;
     if (!configured || frameCallback != nullptr || frameScheduled || frame == nullptr) {
         return;
@@ -1898,7 +1898,7 @@ void WindowImpl::ready() {
     frameRequested = false;
     if (!frame->frame(currentInfo())) {
         if (frameRequested) {
-            invalidate();
+            requestFrame();
         }
         return;
     }
@@ -1924,11 +1924,11 @@ void WindowImpl::frameReady(struct wl_callback* callback) {
     wl_callback_destroy(frameCallback);
     frameCallback = nullptr;
     if (frameRequested) {
-        invalidate();
+        requestFrame();
     }
 }
 
-void WindowImpl::setTitle(StringView value) {
+void WindowImpl::requestTitle(StringView value) {
     title.reset();
     title.append(value.data(), value.length());
     xdg_toplevel_set_title(toplevel, title.cStr());
@@ -1938,26 +1938,26 @@ void WindowImpl::requestAttention() {
     platform.activate(*this);
 }
 
-void WindowImpl::restore() {
+void WindowImpl::requestRestore() {
     xdg_toplevel_unset_maximized(toplevel);
     xdg_toplevel_unset_fullscreen(toplevel);
 }
 
-void WindowImpl::iconify() {
+void WindowImpl::requestIconify() {
     xdg_toplevel_set_minimized(toplevel);
 }
 
-void WindowImpl::move(i32, i32) {
+void WindowImpl::requestMove(i32, i32) {
     if (platform.seat != nullptr && platform.latestSerial != 0) {
         xdg_toplevel_move(toplevel, platform.seat, platform.latestSerial);
     }
 }
 
-void WindowImpl::focus() {
+void WindowImpl::requestFocus() {
     platform.activate(*this);
 }
 
-void WindowImpl::setMaximized(bool value) {
+void WindowImpl::requestMaximized(bool value) {
     if (value) {
         xdg_toplevel_set_maximized(toplevel);
     } else {
@@ -1965,7 +1965,7 @@ void WindowImpl::setMaximized(bool value) {
     }
 }
 
-void WindowImpl::setFullscreen(bool value) {
+void WindowImpl::requestFullscreen(bool value) {
     if (value) {
         xdg_toplevel_set_fullscreen(toplevel, nullptr);
     } else {
@@ -1975,16 +1975,16 @@ void WindowImpl::setFullscreen(bool value) {
 
 void WindowImpl::requestResize(u32 width, u32 height) {
     setLogicalSize(logicalForPixel(width), logicalForPixel(height));
-    invalidate();
+    requestFrame();
 }
 
-void WindowImpl::setMinimumSize(u32 width, u32 height) {
+void WindowImpl::requestMinimumSize(u32 width, u32 height) {
     minimumWidth = max(1u, width);
     minimumHeight = max(1u, height);
     xdg_toplevel_set_min_size(toplevel, logicalForPixel(minimumWidth), logicalForPixel(minimumHeight));
 }
 
-void WindowImpl::setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) {
+void WindowImpl::requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) {
     resizeUnitWidth = max(1u, width);
     resizeUnitHeight = max(1u, height);
     resizeBaseWidth = baseWidth;
@@ -2030,7 +2030,7 @@ void WindowImpl::receive(Offer& offer, bool primary, ClipboardRead& read) {
     platform.readSelection(pipes[0], *this, read);
 }
 
-void WindowImpl::readPrimary(ClipboardRead& read) {
+void WindowImpl::requestReadPrimary(ClipboardRead& read) {
     if (platform.primarySource != nullptr) {
         platform.completeSelection(
             *this,
@@ -2043,7 +2043,7 @@ void WindowImpl::readPrimary(ClipboardRead& read) {
     }
 }
 
-void WindowImpl::readClipboard(ClipboardRead& read) {
+void WindowImpl::requestReadClipboard(ClipboardRead& read) {
     if (platform.clipboardSource != nullptr) {
         platform.completeSelection(
             *this,
@@ -2060,15 +2060,15 @@ void WindowImpl::cancelClipboardRead(ClipboardRead& read) {
     platform.cancelSelection(*this, &read);
 }
 
-void WindowImpl::writePrimary(StringView content) {
+void WindowImpl::requestWritePrimary(StringView content) {
     platform.setPrimary(content);
 }
 
-void WindowImpl::writeClipboard(StringView content) {
+void WindowImpl::requestWriteClipboard(StringView content) {
     platform.setClipboard(content);
 }
 
-void WindowImpl::pointerIcon(PointerIcon icon) {
+void WindowImpl::requestPointerIcon(PointerIcon icon) {
     cursor = icon;
     updateCursor();
 }

@@ -9,7 +9,7 @@ namespace plt::test {
         pump(*client.platform);
 
         ReadSink read;
-        client.window->readClipboard(read);
+        client.window->requestReadClipboard(read);
         client.window->cancelClipboardRead(read);
         const bool completeAfterCancel = read.complete;
         const bool successAfterCancel = read.success;

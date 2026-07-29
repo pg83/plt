@@ -8,8 +8,8 @@ namespace plt::test {
         command(fd, Command::PointerEnter);
         pump(*client.platform);
 
-        client.window->writePrimary(stl::StringView(u8"primary content"));
-        client.window->writeClipboard(stl::StringView(u8"clipboard content"));
+        client.window->requestWritePrimary(stl::StringView(u8"primary content"));
+        client.window->requestWriteClipboard(stl::StringView(u8"clipboard content"));
         pump(*client.platform);
         if (command(fd, Command::QueryPrimarySelection).count != 1
             || command(fd, Command::QuerySelection).count != 1) {
@@ -19,8 +19,8 @@ namespace plt::test {
 
         ReadSink primary;
         ReadSink clipboard;
-        client.window->readPrimary(primary);
-        client.window->readClipboard(clipboard);
+        client.window->requestReadPrimary(primary);
+        client.window->requestReadClipboard(clipboard);
         if (primary.complete || clipboard.complete) {
             fprintf(stderr, "local selections: callback was synchronous\n");
             return false;
@@ -36,7 +36,7 @@ namespace plt::test {
         }
 
         ReadSink cancelled;
-        client.window->readPrimary(cancelled);
+        client.window->requestReadPrimary(cancelled);
         client.window->cancelClipboardRead(cancelled);
         pump(*client.platform);
         if (cancelled.complete || !cancelled.content.empty()) {

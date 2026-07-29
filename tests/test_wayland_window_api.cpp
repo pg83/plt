@@ -6,7 +6,7 @@ namespace plt::test {
     bool windowApi(int fd) {
         EventSink events;
         Client client(fd, 800, 1, &events, nullptr, true, &events);
-        client.window->show();
+        client.window->requestShow();
 
         const RenderContext render = client.window->renderContext();
         const WindowInfo initial = events.lastInfo;
@@ -26,7 +26,7 @@ namespace plt::test {
         }
 
         const u32 frames = events.frameCount;
-        client.window->invalidate();
+        client.window->requestFrame();
         client.window->requestClose();
         client.window->requestClose();
         pump(*client.platform);
@@ -35,25 +35,25 @@ namespace plt::test {
             return false;
         }
 
-        client.window->setTitle(stl::StringView(u8"updated title"));
-        client.window->setMinimumSize(320, 240);
-        client.window->setResizeUnit(10, 20, 3, 7);
+        client.window->requestTitle(stl::StringView(u8"updated title"));
+        client.window->requestMinimumSize(320, 240);
+        client.window->requestResizeUnit(10, 20, 3, 7);
         command(fd, Command::PointerEnter);
         pump(*client.platform);
-        client.window->move(11, 22);
-        client.window->setMaximized(true);
-        client.window->setMaximized(false);
-        client.window->setFullscreen(true);
-        client.window->setFullscreen(false);
-        client.window->restore();
-        client.window->iconify();
+        client.window->requestMove(11, 22);
+        client.window->requestMaximized(true);
+        client.window->requestMaximized(false);
+        client.window->requestFullscreen(true);
+        client.window->requestFullscreen(false);
+        client.window->requestRestore();
+        client.window->requestIconify();
         client.window->requestAttention();
         pump(*client.platform);
         if (command(fd, Command::QueryActivation).count != 1) {
             fprintf(stderr, "window API: requestAttention did not activate\n");
             return false;
         }
-        client.window->focus();
+        client.window->requestFocus();
         pump(*client.platform);
         if (command(fd, Command::QueryActivation).count != 2) {
             fprintf(stderr, "window API: focus did not activate\n");

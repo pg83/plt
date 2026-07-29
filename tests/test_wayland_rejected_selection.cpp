@@ -8,7 +8,7 @@ namespace plt::test {
         command(fd, Command::OfferSelection);
         pump(*client.platform);
         RejectSink read;
-        client.window->readClipboard(read);
+        client.window->requestReadClipboard(read);
         if (command(fd, Command::ReleaseRead).count != 1) {
             fprintf(stderr, "rejected selection: no transfer fd\n");
             return false;

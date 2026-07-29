@@ -12,7 +12,7 @@ namespace plt::test {
         for (unsigned index = 0; index != 2048; ++index) {
             static_cast<u8*>(title.mutData())[0] =
                 static_cast<u8>('a' + index % 26);
-            client.window->setTitle(stl::StringView(title));
+            client.window->requestTitle(stl::StringView(title));
         }
         command(fd, Command::AwaitTitles);
 

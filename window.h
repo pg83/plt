@@ -67,29 +67,29 @@ namespace plt {
     };
 
     struct Window {
-        virtual void show() = 0;
+        virtual void requestShow() = 0;
         virtual void requestClose() = 0;
-        virtual void invalidate() = 0;
+        virtual void requestFrame() = 0;
 
-        virtual void setTitle(stl::StringView title) = 0;
+        virtual void requestTitle(stl::StringView title) = 0;
         virtual void requestAttention() = 0;
-        virtual void restore() = 0;
-        virtual void iconify() = 0;
-        virtual void move(i32 x, i32 y) = 0;
-        virtual void focus() = 0;
-        virtual void setMaximized(bool maximized) = 0;
-        virtual void setFullscreen(bool fullscreen) = 0;
+        virtual void requestRestore() = 0;
+        virtual void requestIconify() = 0;
+        virtual void requestMove(i32 x, i32 y) = 0;
+        virtual void requestFocus() = 0;
+        virtual void requestMaximized(bool maximized) = 0;
+        virtual void requestFullscreen(bool fullscreen) = 0;
         virtual void requestResize(u32 width, u32 height) = 0;
-        virtual void setMinimumSize(u32 width, u32 height) = 0;
-        virtual void setResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) = 0;
+        virtual void requestMinimumSize(u32 width, u32 height) = 0;
+        virtual void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) = 0;
 
-        virtual void readPrimary(ClipboardRead& read) = 0;
-        virtual void readClipboard(ClipboardRead& read) = 0;
+        virtual void requestReadPrimary(ClipboardRead& read) = 0;
+        virtual void requestReadClipboard(ClipboardRead& read) = 0;
         // After this returns, read receives no more callbacks for cancelled transfers.
         virtual void cancelClipboardRead(ClipboardRead& read) = 0;
-        virtual void writePrimary(stl::StringView content) = 0;
-        virtual void writeClipboard(stl::StringView content) = 0;
-        virtual void pointerIcon(PointerIcon icon) = 0;
+        virtual void requestWritePrimary(stl::StringView content) = 0;
+        virtual void requestWriteClipboard(stl::StringView content) = 0;
+        virtual void requestPointerIcon(PointerIcon icon) = 0;
 
         virtual RenderContext renderContext() const = 0;
     };

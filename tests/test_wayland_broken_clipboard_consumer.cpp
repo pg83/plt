@@ -3,7 +3,7 @@
 namespace plt::test {
     bool brokenClipboardConsumer(int fd) {
         Client client(fd);
-        client.window->writeClipboard(stl::StringView(u8"broken consumer"));
+        client.window->requestWriteClipboard(stl::StringView(u8"broken consumer"));
         command(fd, Command::PointerEnter);
         pump(*client.platform);
         if (command(fd, Command::RequestBrokenSourceData).count != 1) {

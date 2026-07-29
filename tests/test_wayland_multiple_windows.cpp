@@ -25,7 +25,7 @@ namespace plt::test {
                 .frame = &secondEvents,
             }
         );
-        second->show();
+        second->requestShow();
         for (u32 attempt = 0; attempt != 10
              && secondEvents.frameCount == 0; ++attempt) {
             pump(*client.platform);

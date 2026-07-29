@@ -15,7 +15,7 @@ namespace plt::test {
 
         events.frameCount = 0;
         events.submitFrames = true;
-        client.window->invalidate();
+        client.window->requestFrame();
         pump(*client.platform);
         frames = command(fd, Command::QueryFrames);
         if (events.frameCount != 1 || frames.count != 1 || frames.first != 1) {
@@ -26,8 +26,8 @@ namespace plt::test {
         pump(*client.platform);
 
         events.frameCount = 0;
-        client.window->invalidate();
-        client.window->invalidate();
+        client.window->requestFrame();
+        client.window->requestFrame();
         pump(*client.platform);
         if (events.frameCount != 1) {
             fprintf(stderr, "frame API: invalidations were not coalesced\n");
@@ -39,8 +39,8 @@ namespace plt::test {
             return false;
         }
 
-        client.window->invalidate();
-        client.window->invalidate();
+        client.window->requestFrame();
+        client.window->requestFrame();
         pump(*client.platform);
         if (events.frameCount != 1) {
             fprintf(stderr, "frame API: frame escaped presentation pacing\n");

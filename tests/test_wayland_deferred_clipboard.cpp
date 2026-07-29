@@ -5,7 +5,7 @@
 namespace plt::test {
     bool deferredClipboard(int fd) {
         Client client(fd);
-        client.window->writeClipboard(stl::StringView(u8"clipboard"));
+        client.window->requestWriteClipboard(stl::StringView(u8"clipboard"));
         const Reply before = command(fd, Command::PointerEnter);
         pump(*client.platform);
         const Reply after = command(fd, Command::QuerySelection);
