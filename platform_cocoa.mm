@@ -21,6 +21,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <errno.h>
+#include <float.h>
 #include <limits.h>
 #include <poll.h>
 
@@ -88,6 +89,7 @@ void cocoaButtonImpl(void* owner, NSEvent* event, bool pressed);
 void cocoaScrollImpl(void* owner, NSEvent* event);
 void cocoaPointerPresenceImpl(void* owner, bool present);
 void cocoaFileDescriptorReady(CFFileDescriptorRef descriptor, CFOptionFlags types, void* owner);
+void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 @interface PltWindowDelegate: NSObject <NSWindowDelegate>
 @property(nonatomic, assign) void* owner;
@@ -335,6 +337,7 @@ namespace {
 
     struct PollerImpl final: public Poller {
         explicit PollerImpl(ObjPool& owner);
+        ~PollerImpl();
 
         void arm(PollFD fd, PollCallback& callback) override;
         void disarm(int fd) override;
@@ -345,12 +348,14 @@ namespace {
         void dispatch();
         void descriptorReady(CFFileDescriptorRef descriptor);
         void dispatchTimers();
+        void scheduleTimer();
         u64 nextDeadline() const;
 
         IntMap<ArmedFD> armed;
         Vector<Timer> timers;
         Vector<ReadyTimer> readyTimers;
         cocoa_detail::Generation registrations;
+        CFRunLoopTimerRef runLoopTimer = nullptr;
     };
 
     enum class ClipboardOperationKind : u8 {
@@ -498,6 +503,24 @@ Poller* PlatformImpl::poller() {
 PollerImpl::PollerImpl(ObjPool& owner)
     : armed(ObjPool::create(&owner))
 {
+    CFRunLoopTimerContext context{};
+    context.info = this;
+    runLoopTimer = CFRunLoopTimerCreate(
+        kCFAllocatorDefault,
+        DBL_MAX,
+        0.000'000'1,
+        0,
+        0,
+        cocoaTimerReady,
+        &context
+    );
+    STD_VERIFY(runLoopTimer != nullptr);
+    CFRunLoopAddTimer(CFRunLoopGetMain(), runLoopTimer, kCFRunLoopCommonModes);
+}
+
+PollerImpl::~PollerImpl() {
+    CFRunLoopTimerInvalidate(runLoopTimer);
+    CFRelease(runLoopTimer);
 }
 
 ArmedFD::ArmedFD(PollFD fd_, PollCallback* callback_, CFFileDescriptorRef descriptor_, CFRunLoopSourceRef source_)
@@ -567,6 +590,7 @@ void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
         if (timer->callback == &callback) {
             timer->deadline = monotonicMicroseconds;
             timer->generation = registrations.advance();
+            scheduleTimer();
             return;
         }
     }
@@ -575,6 +599,7 @@ void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
         .deadline = monotonicMicroseconds,
         .generation = registrations.advance(),
     });
+    scheduleTimer();
 }
 
 void PollerImpl::cancel(TimerCallback& callback) {
@@ -582,6 +607,7 @@ void PollerImpl::cancel(TimerCallback& callback) {
         if (timers[index].callback == &callback) {
             timers.mut(index) = timers.back();
             timers.popBack();
+            scheduleTimer();
             return;
         }
     }
@@ -619,6 +645,18 @@ void PollerImpl::dispatchTimers() {
         }
     }
     readyTimers.clear();
+    scheduleTimer();
+}
+
+void PollerImpl::scheduleTimer() {
+    const u64 deadline = nextDeadline();
+    if (deadline == UINT64_MAX) {
+        CFRunLoopTimerSetNextFireDate(runLoopTimer, DBL_MAX);
+        return;
+    }
+    const u64 now = monotonicNowUs();
+    const CFTimeInterval delay = deadline > now ? (deadline - now) / 1'000'000.0 : 0.0;
+    CFRunLoopTimerSetNextFireDate(runLoopTimer, CFAbsoluteTimeGetCurrent() + delay);
 }
 
 void PollerImpl::descriptorReady(CFFileDescriptorRef descriptor) {
@@ -1336,6 +1374,10 @@ void cocoaPointerPresenceImpl(void* owner, bool present) {
 void cocoaFileDescriptorReady(CFFileDescriptorRef descriptor, CFOptionFlags types, void* owner) {
     (void)types;
     ((PollerImpl*)(owner))->descriptorReady(descriptor);
+}
+
+void cocoaTimerReady(CFRunLoopTimerRef, void* owner) {
+    ((PollerImpl*)(owner))->dispatchTimers();
 }
 
 Platform* plt::createCocoaPlatform(ObjPool& owner) {
