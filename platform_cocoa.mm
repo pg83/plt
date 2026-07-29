@@ -96,6 +96,10 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 @property(nonatomic, strong) NSTrackingArea* tracking;
 @end
 
+@interface PltMetalLayer: CAMetalLayer
+@property(nonatomic, assign) void* owner;
+@end
+
 @implementation PltWindowDelegate
 
 - (BOOL)windowShouldClose:(NSWindow*)sender {
@@ -160,15 +164,9 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 @implementation PltView
 
 - (CALayer*)makeBackingLayer {
-    return [CAMetalLayer layer];
-}
-
-- (BOOL)wantsUpdateLayer {
-    return YES;
-}
-
-- (void)updateLayer {
-    cocoaFrameImpl(self.owner);
+    PltMetalLayer* layer = [PltMetalLayer layer];
+    layer.owner = self.owner;
+    return layer;
 }
 
 - (BOOL)acceptsFirstResponder {
@@ -319,6 +317,16 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 - (void)mouseExited:(NSEvent*)event {
     (void)event;
     cocoaPointerPresenceImpl(self.owner, false);
+}
+
+@end
+
+@implementation PltMetalLayer
+
+- (void)display {
+    if (self.owner != nullptr) {
+        cocoaFrameImpl(self.owner);
+    }
 }
 
 @end
@@ -818,6 +826,7 @@ WindowImpl::~WindowImpl() {
     }
     window.delegate = nil;
     view.owner = nullptr;
+    ((PltMetalLayer*)(view.layer)).owner = nullptr;
     delegate.owner = nullptr;
     [window orderOut:nil];
 }
@@ -844,7 +853,7 @@ void WindowImpl::invalidate() {
         return;
     }
     frameRequested = true;
-    [view setNeedsDisplay:YES];
+    [view.layer setNeedsDisplay];
 #if defined(SHITTY_FRAME_TRACE)
     frameTrace("window invalidated requested=%d", frameRequested);
 #endif
@@ -859,7 +868,7 @@ void WindowImpl::draw() {
     }
     frameRequested = false;
     if (!frame->frame(currentInfo()) && frameRequested) {
-        [view setNeedsDisplay:YES];
+        [view.layer setNeedsDisplay];
     }
 }
 

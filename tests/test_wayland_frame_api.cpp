@@ -5,9 +5,19 @@
 namespace plt::test {
     bool frameApi(int fd) {
         EventSink events;
-        events.submitFrames = true;
         Client client(fd, 800, 1, &events, nullptr, true, &events);
+        pump(*client.platform);
         Reply frames = command(fd, Command::QueryFrames);
+        if (events.frameCount != 1 || frames.count != 0 || frames.first != 0) {
+            fprintf(stderr, "frame API: rejected frame armed presentation callback\n");
+            return false;
+        }
+
+        events.frameCount = 0;
+        events.submitFrames = true;
+        client.window->invalidate();
+        pump(*client.platform);
+        frames = command(fd, Command::QueryFrames);
         if (events.frameCount != 1 || frames.count != 1 || frames.first != 1) {
             fprintf(stderr, "frame API: initial frame was not submitted\n");
             return false;

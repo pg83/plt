@@ -1896,16 +1896,17 @@ void WindowImpl::ready() {
         return;
     }
     frameRequested = false;
+    if (!frame->frame(currentInfo())) {
+        if (frameRequested) {
+            invalidate();
+        }
+        return;
+    }
     frameCallback = wl_surface_frame(surface);
     if (frameCallback != nullptr) {
         wl_callback_add_listener(frameCallback, &frameListener, this);
     }
-    if (!frame->frame(currentInfo())) {
-        cancelFrame();
-        if (frameRequested) {
-            invalidate();
-        }
-    }
+    wl_surface_commit(surface);
 }
 
 void WindowImpl::cancelFrame() {
