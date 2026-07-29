@@ -6,7 +6,7 @@
 #include "platform.h"
 
 #include <std/sys/crt.h>
-#include <std/dbg/assert.h>
+#include <std/dbg/verify.h>
 #include <std/sym/i_map.h>
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
