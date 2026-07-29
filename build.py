@@ -107,6 +107,7 @@ elif system == "Darwin":
             *([f"-F{darwin_frameworks}"] if darwin_frameworks else []),
             "-framework", "AppKit",
             "-framework", "CoreGraphics",
+            "-framework", "CoreVideo",
             "-framework", "Metal",
             "-framework", "QuartzCore",
         ]),

@@ -16,6 +16,7 @@
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
+#import <CoreVideo/CVDisplayLink.h>
 #import <IOKit/hidsystem/IOLLEvent.h>
 #import <QuartzCore/CAMetalLayer.h>
 
@@ -65,11 +66,38 @@ namespace plt::cocoa_detail {
         return current != 0 && current == ready;
     }
 
+    struct DisplayLinkGate {
+        void attach(void* owner) {
+            __atomic_store_n(&owner_, owner, __ATOMIC_RELEASE);
+        }
+
+        void detach() {
+            __atomic_store_n(&owner_, nullptr, __ATOMIC_RELEASE);
+        }
+
+        void* owner() const {
+            return __atomic_load_n(&owner_, __ATOMIC_ACQUIRE);
+        }
+
+        bool schedule() {
+            bool expected = false;
+            return __atomic_compare_exchange_n(&scheduled_, &expected, true, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        }
+
+        void dispatched() {
+            __atomic_store_n(&scheduled_, false, __ATOMIC_RELEASE);
+        }
+
+        void* owner_ = nullptr;
+        bool scheduled_ = false;
+    };
+
 }
 
 void cocoaCloseImpl(void* owner);
 void cocoaResizeImpl(void* owner);
 void cocoaFrameImpl(void* owner);
+void cocoaFallbackFrameImpl(void* owner);
 void cocoaInvalidateImpl(void* owner);
 NSSize cocoaWillResizeImpl(void* owner, NSSize frameSize);
 void cocoaFocusImpl(void* owner, bool focused);
@@ -98,6 +126,12 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 @interface PltMetalLayer: CAMetalLayer
 @property(nonatomic, assign) void* owner;
+@end
+
+@interface PltDisplayLinkTarget: NSObject {
+@public
+    plt::cocoa_detail::DisplayLinkGate gate;
+}
 @end
 
 @implementation PltWindowDelegate
@@ -325,10 +359,13 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 - (void)display {
     if (self.owner != nullptr) {
-        cocoaFrameImpl(self.owner);
+        cocoaFallbackFrameImpl(self.owner);
     }
 }
 
+@end
+
+@implementation PltDisplayLinkTarget
 @end
 
 namespace {
@@ -433,6 +470,8 @@ namespace {
         void close();
         void resized();
         void draw();
+        void fallbackDraw();
+        void stopDisplayLink();
         NSSize willResize(NSSize frameSize) const;
         void focused(bool value);
         void key(NSEvent* event, bool pressed);
@@ -458,6 +497,9 @@ namespace {
         NSWindow* window = nil;
         PltView* view = nil;
         PltWindowDelegate* delegate = nil;
+        CVDisplayLinkRef displayLink = nullptr;
+        PltDisplayLinkTarget* displayLinkTarget = nil;
+        void* displayLinkContext = nullptr;
         u32 minimumWidth = 1;
         u32 minimumHeight = 1;
         u32 resizeUnitWidth = 1;
@@ -466,6 +508,7 @@ namespace {
         u32 resizeBaseHeight = 0;
         ClipboardOperation* clipboardOperations = nullptr;
         bool frameRequested = false;
+        bool fallbackFrameRequested = false;
     };
 
     struct PlatformImpl final: public Platform {
@@ -481,6 +524,22 @@ namespace {
 
     NSString* stringFromView(StringView value) {
         return [[NSString alloc] initWithBytes:value.data() length:value.length() encoding:NSUTF8StringEncoding];
+    }
+
+    CVReturn displayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*, void* context) {
+        PltDisplayLinkTarget* const target = (__bridge PltDisplayLinkTarget*)(context);
+        if (!target->gate.schedule()) {
+            return kCVReturnSuccess;
+        }
+        CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+          target->gate.dispatched();
+          void* const owner = target->gate.owner();
+          if (owner != nullptr) {
+              cocoaFrameImpl(owner);
+          }
+        });
+        CFRunLoopWakeUp(CFRunLoopGetMain());
+        return kCVReturnSuccess;
     }
 
 }
@@ -818,11 +877,34 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     window.acceptsMouseMovedEvents = YES;
     requestTitle(options.title);
     requestMinimumSize(options.minimumWidth, options.minimumHeight);
+    if (CVDisplayLinkCreateWithActiveCGDisplays(&displayLink) == kCVReturnSuccess && displayLink != nullptr) {
+        displayLinkTarget = [PltDisplayLinkTarget new];
+        displayLinkTarget->gate.attach(this);
+        displayLinkContext = (__bridge_retained void*)(displayLinkTarget);
+        if (CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback, displayLinkContext) != kCVReturnSuccess) {
+            displayLinkTarget->gate.detach();
+            CFBridgingRelease(displayLinkContext);
+            displayLinkContext = nullptr;
+            displayLinkTarget = nil;
+            CVDisplayLinkRelease(displayLink);
+            displayLink = nullptr;
+        }
+    }
 }
 
 WindowImpl::~WindowImpl() {
     while (clipboardOperations != nullptr) {
         clipboardOperations->cancel();
+    }
+    if (displayLinkTarget != nil) {
+        displayLinkTarget->gate.detach();
+    }
+    stopDisplayLink();
+    if (displayLink != nullptr) {
+        CVDisplayLinkRelease(displayLink);
+    }
+    if (displayLinkContext != nullptr) {
+        CFBridgingRelease(displayLinkContext);
     }
     window.delegate = nil;
     view.owner = nullptr;
@@ -853,6 +935,15 @@ void WindowImpl::requestFrame() {
         return;
     }
     frameRequested = true;
+    if (displayLink != nullptr) {
+        if (!CVDisplayLinkIsRunning(displayLink) && CVDisplayLinkStart(displayLink) == kCVReturnSuccess) {
+            return;
+        }
+        if (CVDisplayLinkIsRunning(displayLink)) {
+            return;
+        }
+    }
+    fallbackFrameRequested = true;
     [view.layer setNeedsDisplay];
 #if defined(SHITTY_FRAME_TRACE)
     frameTrace("window invalidated requested=%d", frameRequested);
@@ -864,11 +955,27 @@ void WindowImpl::draw() {
     frameTrace("window draw requested=%d", frameRequested);
 #endif
     if (!frameRequested || frame == nullptr) {
+        stopDisplayLink();
         return;
     }
     frameRequested = false;
-    if (!frame->frame(currentInfo()) && frameRequested) {
-        [view.layer setNeedsDisplay];
+    frame->frame(currentInfo());
+    if (!frameRequested) {
+        stopDisplayLink();
+    }
+}
+
+void WindowImpl::fallbackDraw() {
+    if (!fallbackFrameRequested) {
+        return;
+    }
+    fallbackFrameRequested = false;
+    draw();
+}
+
+void WindowImpl::stopDisplayLink() {
+    if (displayLink != nullptr && CVDisplayLinkIsRunning(displayLink)) {
+        CVDisplayLinkStop(displayLink);
     }
 }
 
@@ -1329,6 +1436,10 @@ void cocoaResizeImpl(void* owner) {
 
 void cocoaFrameImpl(void* owner) {
     ((WindowImpl*)(owner))->draw();
+}
+
+void cocoaFallbackFrameImpl(void* owner) {
+    ((WindowImpl*)(owner))->fallbackDraw();
 }
 
 void cocoaInvalidateImpl(void* owner) {
