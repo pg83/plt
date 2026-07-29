@@ -508,7 +508,7 @@ namespace {
         u32 resizeBaseHeight = 0;
         ClipboardOperation* clipboardOperations = nullptr;
         bool frameRequested = false;
-        bool fallbackFrameRequested = false;
+        bool layerFrameRequested = false;
     };
 
     struct PlatformImpl final: public Platform {
@@ -943,7 +943,7 @@ void WindowImpl::requestFrame() {
             return;
         }
     }
-    fallbackFrameRequested = true;
+    layerFrameRequested = true;
     [view.layer setNeedsDisplay];
 #if defined(SHITTY_FRAME_TRACE)
     frameTrace("window invalidated requested=%d", frameRequested);
@@ -966,10 +966,10 @@ void WindowImpl::draw() {
 }
 
 void WindowImpl::fallbackDraw() {
-    if (!fallbackFrameRequested) {
+    if (!layerFrameRequested) {
         return;
     }
-    fallbackFrameRequested = false;
+    layerFrameRequested = false;
     draw();
 }
 
@@ -1140,6 +1140,8 @@ void WindowImpl::resized() {
     applySizeConstraints();
     ((CAMetalLayer*)(view.layer)).contentsScale = window.backingScaleFactor;
     requestFrame();
+    layerFrameRequested = true;
+    [view.layer setNeedsDisplay];
 #if defined(SHITTY_FRAME_TRACE)
     frameTrace("window resized end dirty=%d", view.needsDisplay);
 #endif
