@@ -19,6 +19,7 @@
 #import <CoreVideo/CVDisplayLink.h>
 #import <IOKit/hidsystem/IOLLEvent.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CATransaction.h>
 
 #include <errno.h>
 #include <float.h>
@@ -124,8 +125,9 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 @property(nonatomic, strong) NSTrackingArea* tracking;
 @end
 
-@interface PltMetalLayer: CAMetalLayer
+@interface PltRootLayer: CALayer
 @property(nonatomic, assign) void* owner;
+@property(nonatomic, strong) CAMetalLayer* metalLayer;
 @end
 
 @interface PltDisplayLinkTarget: NSObject {
@@ -198,8 +200,10 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 @implementation PltView
 
 - (CALayer*)makeBackingLayer {
-    PltMetalLayer* layer = [PltMetalLayer layer];
+    PltRootLayer* layer = [PltRootLayer layer];
     layer.owner = self.owner;
+    layer.metalLayer = [CAMetalLayer layer];
+    [layer addSublayer:layer.metalLayer];
     return layer;
 }
 
@@ -355,12 +359,19 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 @end
 
-@implementation PltMetalLayer
+@implementation PltRootLayer
 
 - (void)display {
     if (self.owner != nullptr) {
         cocoaFallbackFrameImpl(self.owner);
     }
+}
+
+- (void)layoutSublayers {
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    self.metalLayer.frame = self.bounds;
+    [CATransaction commit];
 }
 
 @end
@@ -545,8 +556,7 @@ namespace {
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
-    : poller_(owner.make<PollerImpl>(owner))
-{
+    : poller_(owner.make<PollerImpl>(owner)) {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp finishLaunching];
@@ -561,19 +571,10 @@ Poller* PlatformImpl::poller() {
 }
 
 PollerImpl::PollerImpl(ObjPool& owner)
-    : armed(ObjPool::create(&owner))
-{
+    : armed(ObjPool::create(&owner)) {
     CFRunLoopTimerContext context{};
     context.info = this;
-    runLoopTimer = CFRunLoopTimerCreate(
-        kCFAllocatorDefault,
-        DBL_MAX,
-        0.000'000'1,
-        0,
-        0,
-        cocoaTimerReady,
-        &context
-    );
+    runLoopTimer = CFRunLoopTimerCreate(kCFAllocatorDefault, DBL_MAX, 0.000'000'1, 0, 0, cocoaTimerReady, &context);
     STD_VERIFY(runLoopTimer != nullptr);
     CFRunLoopAddTimer(CFRunLoopGetMain(), runLoopTimer, kCFRunLoopCommonModes);
 }
@@ -587,8 +588,7 @@ ArmedFD::ArmedFD(PollFD fd_, PollCallback* callback_, CFFileDescriptorRef descri
     : fd(fd_)
     , callback(callback_)
     , descriptor(descriptor_)
-    , source(source_)
-{
+    , source(source_) {
 }
 
 ArmedFD::~ArmedFD() {
@@ -793,8 +793,7 @@ ClipboardOperation::ClipboardOperation(WindowImpl& window_, ClipboardOperationKi
     : window(window_)
     , kind(kind_)
     , read(read_)
-    , content(content_)
-{
+    , content(content_) {
     next = window.clipboardOperations;
     window.clipboardOperations = this;
     window.platform.poller_->timeout(0, *this);
@@ -858,8 +857,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     : platform(platform_)
     , input(options.input)
     , events(options.events)
-    , frame(options.frame)
-{
+    , frame(options.frame) {
     const NSRect frame = NSMakeRect(0, 0, max(1u, options.width), max(1u, options.height));
     window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
     delegate = [PltWindowDelegate new];
@@ -869,7 +867,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     view.owner = this;
     view.wantsLayer = YES;
     view.layerContentsRedrawPolicy = NSViewLayerContentsRedrawDuringViewResize;
-    ((CAMetalLayer*)(view.layer)).presentsWithTransaction = NO;
+    ((PltRootLayer*)(view.layer)).metalLayer.presentsWithTransaction = NO;
     window.contentView = view;
 #if defined(SHITTY_FRAME_TRACE)
     frameTrace("window constructed window=%p view=%p wantsLayer=%d layer=%p policy=%ld", window, view, view.wantsLayer, view.layer, (long)(view.layerContentsRedrawPolicy));
@@ -908,7 +906,7 @@ WindowImpl::~WindowImpl() {
     }
     window.delegate = nil;
     view.owner = nullptr;
-    ((PltMetalLayer*)(view.layer)).owner = nullptr;
+    ((PltRootLayer*)(view.layer)).owner = nullptr;
     delegate.owner = nullptr;
     [window orderOut:nil];
 }
@@ -1120,10 +1118,11 @@ void WindowImpl::requestPointerIcon(PointerIcon icon) {
 }
 
 RenderContext WindowImpl::renderContext() const {
+    PltRootLayer* const layer = (PltRootLayer*)(view.layer);
     return {
         .backend = RenderBackend::Cocoa,
-        .connection = nullptr,
-        .window = (__bridge void*)(view.layer),
+        .connection = (__bridge void*)(layer),
+        .window = (__bridge void*)(layer.metalLayer),
     };
 }
 
@@ -1138,7 +1137,10 @@ void WindowImpl::resized() {
     frameTrace("window resized begin bounds=%gx%g backing=%g layer=%p", view.bounds.size.width, view.bounds.size.height, window.backingScaleFactor, view.layer);
 #endif
     applySizeConstraints();
-    ((CAMetalLayer*)(view.layer)).contentsScale = window.backingScaleFactor;
+    PltRootLayer* const layer = (PltRootLayer*)(view.layer);
+    layer.contentsScale = window.backingScaleFactor;
+    layer.metalLayer.contentsScale = window.backingScaleFactor;
+    [layer setNeedsLayout];
     requestFrame();
     layerFrameRequested = true;
     [view.layer setNeedsDisplay];
