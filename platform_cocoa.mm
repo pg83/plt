@@ -18,33 +18,15 @@
 #import <Carbon/Carbon.h>
 #import <CoreVideo/CVDisplayLink.h>
 #import <IOKit/hidsystem/IOLLEvent.h>
-#import <QuartzCore/CAMetalLayer.h>
-#import <QuartzCore/CATransaction.h>
+#import <QuartzCore/CALayer.h>
 
 #include <errno.h>
 #include <float.h>
 #include <limits.h>
 #include <poll.h>
-#if defined(SHITTY_FRAME_TRACE)
-    #include <stdio.h>
-    #include <stdarg.h>
-#endif
 
 using namespace stl;
 using namespace plt;
-
-#if defined(SHITTY_FRAME_TRACE)
-void frameTrace(const char* format, ...) {
-    static u64 sequence = 0;
-    fprintf(stderr, "frame[%llu] %.6f ", (unsigned long long)(++sequence), CFAbsoluteTimeGetCurrent());
-    va_list args;
-    va_start(args, format);
-    vfprintf(stderr, format, args);
-    va_end(args);
-    fputc('\n', stderr);
-    fflush(stderr);
-}
-#endif
 
 namespace plt::cocoa_detail {
     struct Generation {
@@ -127,7 +109,6 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 @interface PltRootLayer: CALayer
 @property(nonatomic, assign) void* owner;
-@property(nonatomic, strong) CAMetalLayer* metalLayer;
 @end
 
 @interface PltDisplayLinkTarget: NSObject {
@@ -146,9 +127,6 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 - (void)windowDidResize:(NSNotification*)notification {
     (void)notification;
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("delegate windowDidResize owner=%p", self.owner);
-#endif
     cocoaResizeImpl(self.owner);
 }
 
@@ -159,9 +137,6 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 - (void)windowDidChangeBackingProperties:(NSNotification*)notification {
     (void)notification;
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("delegate backingProperties owner=%p", self.owner);
-#endif
     cocoaResizeImpl(self.owner);
 }
 
@@ -202,8 +177,6 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 - (CALayer*)makeBackingLayer {
     PltRootLayer* layer = [PltRootLayer layer];
     layer.owner = self.owner;
-    layer.metalLayer = [CAMetalLayer layer];
-    [layer addSublayer:layer.metalLayer];
     return layer;
 }
 
@@ -365,13 +338,6 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
     if (self.owner != nullptr) {
         cocoaFallbackFrameImpl(self.owner);
     }
-}
-
-- (void)layoutSublayers {
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    self.metalLayer.frame = self.bounds;
-    [CATransaction commit];
 }
 
 @end
@@ -556,7 +522,8 @@ namespace {
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
-    : poller_(owner.make<PollerImpl>(owner)) {
+    : poller_(owner.make<PollerImpl>(owner))
+{
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp finishLaunching];
@@ -571,7 +538,8 @@ Poller* PlatformImpl::poller() {
 }
 
 PollerImpl::PollerImpl(ObjPool& owner)
-    : armed(ObjPool::create(&owner)) {
+    : armed(ObjPool::create(&owner))
+{
     CFRunLoopTimerContext context{};
     context.info = this;
     runLoopTimer = CFRunLoopTimerCreate(kCFAllocatorDefault, DBL_MAX, 0.000'000'1, 0, 0, cocoaTimerReady, &context);
@@ -588,7 +556,8 @@ ArmedFD::ArmedFD(PollFD fd_, PollCallback* callback_, CFFileDescriptorRef descri
     : fd(fd_)
     , callback(callback_)
     , descriptor(descriptor_)
-    , source(source_) {
+    , source(source_)
+{
 }
 
 ArmedFD::~ArmedFD() {
@@ -603,9 +572,6 @@ ArmedFD::~ArmedFD() {
 }
 
 void PollerImpl::arm(PollFD fd, PollCallback& callback) {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("poll arm fd=%d flags=%u callback=%p", fd.fd, (unsigned)(fd.flags), &callback);
-#endif
     disarm(fd.fd);
     CFFileDescriptorContext context{};
     context.info = this;
@@ -626,23 +592,14 @@ void PollerImpl::arm(PollFD fd, PollCallback& callback) {
 }
 
 void PollerImpl::disarm(int fd) {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("poll disarm fd=%d", fd);
-#endif
     armed.erase(fd);
 }
 
 void PollerImpl::timeout(u64 microseconds, TimerCallback& callback) {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("timer timeout delay=%llu callback=%p", (unsigned long long)(microseconds), &callback);
-#endif
     deadline(monotonicNowUs() + microseconds, callback);
 }
 
 void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("timer deadline value=%llu callback=%p timers=%zu", (unsigned long long)(monotonicMicroseconds), &callback, timers.length());
-#endif
     if (monotonicMicroseconds == 0) {
         monotonicMicroseconds = monotonicNowUs();
     }
@@ -663,9 +620,6 @@ void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
 }
 
 void PollerImpl::cancel(TimerCallback& callback) {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("timer cancel callback=%p timers=%zu", &callback, timers.length());
-#endif
     for (size_t index = 0; index != timers.length(); ++index) {
         if (timers[index].callback == &callback) {
             timers.mut(index) = timers.back();
@@ -686,9 +640,6 @@ u64 PollerImpl::nextDeadline() const {
 
 void PollerImpl::dispatchTimers() {
     const u64 now = monotonicNowUs();
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("timer dispatch begin now=%llu timers=%zu", (unsigned long long)(now), timers.length());
-#endif
     readyTimers.clear();
     for (size_t index = 0; index != timers.length();) {
         if (timers[index].deadline > now) {
@@ -704,9 +655,6 @@ void PollerImpl::dispatchTimers() {
                 continue;
             }
             TimerCallback* const callback = timers[index].callback;
-#if defined(SHITTY_FRAME_TRACE)
-            frameTrace("timer invoke callback=%p deadline=%llu generation=%llu", callback, (unsigned long long)(timers[index].deadline), (unsigned long long)(ready.generation));
-#endif
             timers.mut(index) = timers.back();
             timers.popBack();
             callback->ready();
@@ -715,9 +663,6 @@ void PollerImpl::dispatchTimers() {
     }
     readyTimers.clear();
     scheduleTimer();
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("timer dispatch end timers=%zu next=%llu", timers.length(), (unsigned long long)(nextDeadline()));
-#endif
 }
 
 void PollerImpl::scheduleTimer() {
@@ -733,18 +678,12 @@ void PollerImpl::scheduleTimer() {
 
 void PollerImpl::descriptorReady(CFFileDescriptorRef descriptor) {
     const int fd = CFFileDescriptorGetNativeDescriptor(descriptor);
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("fd source begin fd=%d descriptor=%p", fd, descriptor);
-#endif
     ArmedFD* registration = armed.find(fd);
     if (registration == nullptr || registration->descriptor != descriptor) {
         return;
     }
     struct pollfd event{fd, registration->fd.toPollEvents(), 0};
     const int pollResult = ::poll(&event, 1, 0);
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("fd source poll fd=%d result=%d events=%d revents=%d", fd, pollResult, event.events, event.revents);
-#endif
     if (pollResult <= 0 || event.revents == 0) {
         CFOptionFlags types = 0;
         if (registration->fd.flags & (PollFlag::In | PollFlag::Err | PollFlag::Hup)) {
@@ -762,25 +701,13 @@ void PollerImpl::descriptorReady(CFFileDescriptorRef descriptor) {
         .flags = PollFD::fromPollEvents(event.revents),
     };
     armed.erase(fd);
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("fd invoke fd=%d flags=%u callback=%p", fd, (unsigned)(ready.flags), callback);
-#endif
     callback->ready(ready);
     NSEvent* wakeup = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
     [NSApp postEvent:wakeup atStart:NO];
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("fd source end fd=%d wakeup posted", fd);
-#endif
 }
 
 void PlatformImpl::run() {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("application run begin");
-#endif
     [NSApp run];
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("application run end");
-#endif
 }
 
 void PlatformImpl::stop() {
@@ -793,7 +720,8 @@ ClipboardOperation::ClipboardOperation(WindowImpl& window_, ClipboardOperationKi
     : window(window_)
     , kind(kind_)
     , read(read_)
-    , content(content_) {
+    , content(content_)
+{
     next = window.clipboardOperations;
     window.clipboardOperations = this;
     window.platform.poller_->timeout(0, *this);
@@ -857,7 +785,8 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     : platform(platform_)
     , input(options.input)
     , events(options.events)
-    , frame(options.frame) {
+    , frame(options.frame)
+{
     const NSRect frame = NSMakeRect(0, 0, max(1u, options.width), max(1u, options.height));
     window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
     delegate = [PltWindowDelegate new];
@@ -867,11 +796,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     view.owner = this;
     view.wantsLayer = YES;
     view.layerContentsRedrawPolicy = NSViewLayerContentsRedrawDuringViewResize;
-    ((PltRootLayer*)(view.layer)).metalLayer.presentsWithTransaction = NO;
     window.contentView = view;
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("window constructed window=%p view=%p wantsLayer=%d layer=%p policy=%ld", window, view, view.wantsLayer, view.layer, (long)(view.layerContentsRedrawPolicy));
-#endif
     window.acceptsMouseMovedEvents = YES;
     requestTitle(options.title);
     requestMinimumSize(options.minimumWidth, options.minimumHeight);
@@ -912,9 +837,6 @@ WindowImpl::~WindowImpl() {
 }
 
 void WindowImpl::requestShow() {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("window show window=%p view=%p layer=%p", window, view, view.layer);
-#endif
     [window center];
     [window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
@@ -926,9 +848,6 @@ void WindowImpl::requestClose() {
 }
 
 void WindowImpl::requestFrame() {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("window invalidate visible=%d drawable=%d wantsLayer=%d layer=%p dirty=%d layerDirty=%d requested=%d", window.visible, view.canDraw, view.wantsLayer, view.layer, view.needsDisplay, [view.layer needsDisplay], frameRequested);
-#endif
     if (frameRequested) {
         return;
     }
@@ -943,15 +862,9 @@ void WindowImpl::requestFrame() {
     }
     layerFrameRequested = true;
     [view.layer setNeedsDisplay];
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("window invalidated requested=%d", frameRequested);
-#endif
 }
 
 void WindowImpl::draw() {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("window draw requested=%d", frameRequested);
-#endif
     if (!frameRequested || frame == nullptr) {
         stopDisplayLink();
         return;
@@ -1122,7 +1035,7 @@ RenderContext WindowImpl::renderContext() const {
     return {
         .backend = RenderBackend::Cocoa,
         .connection = (__bridge void*)(layer),
-        .window = (__bridge void*)(layer.metalLayer),
+        .window = nullptr,
     };
 }
 
@@ -1133,20 +1046,12 @@ void WindowImpl::close() {
 }
 
 void WindowImpl::resized() {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("window resized begin bounds=%gx%g backing=%g layer=%p", view.bounds.size.width, view.bounds.size.height, window.backingScaleFactor, view.layer);
-#endif
     applySizeConstraints();
     PltRootLayer* const layer = (PltRootLayer*)(view.layer);
     layer.contentsScale = window.backingScaleFactor;
-    layer.metalLayer.contentsScale = window.backingScaleFactor;
-    [layer setNeedsLayout];
     requestFrame();
     layerFrameRequested = true;
     [view.layer setNeedsDisplay];
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("window resized end dirty=%d", view.needsDisplay);
-#endif
 }
 
 NSSize WindowImpl::willResize(NSSize frameSize) const {
@@ -1492,18 +1397,11 @@ void cocoaPointerPresenceImpl(void* owner, bool present) {
 }
 
 void cocoaFileDescriptorReady(CFFileDescriptorRef descriptor, CFOptionFlags types, void* owner) {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("bridge fd descriptor=%p types=%lu owner=%p", descriptor, (unsigned long)(types), owner);
-#else
     (void)types;
-#endif
     ((PollerImpl*)(owner))->descriptorReady(descriptor);
 }
 
 void cocoaTimerReady(CFRunLoopTimerRef, void* owner) {
-#if defined(SHITTY_FRAME_TRACE)
-    frameTrace("bridge timer owner=%p", owner);
-#endif
     ((PollerImpl*)(owner))->dispatchTimers();
 }
 
