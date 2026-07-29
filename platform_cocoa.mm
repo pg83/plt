@@ -71,6 +71,7 @@ void cocoaCloseImpl(void* owner);
 void cocoaResizeImpl(void* owner);
 void cocoaFrameImpl(void* owner);
 void cocoaInvalidateImpl(void* owner);
+NSSize cocoaWillResizeImpl(void* owner, NSSize frameSize);
 void cocoaFocusImpl(void* owner, bool focused);
 void cocoaKeyImpl(void* owner, NSEvent* event, bool pressed);
 void cocoaTextImpl(void* owner, NSString* text, NSEventModifierFlags modifiers);
@@ -113,6 +114,11 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
     frameTrace("delegate windowDidResize owner=%p", self.owner);
 #endif
     cocoaResizeImpl(self.owner);
+}
+
+- (NSSize)windowWillResize:(NSWindow*)sender toSize:(NSSize)frameSize {
+    (void)sender;
+    return cocoaWillResizeImpl(self.owner, frameSize);
 }
 
 - (void)windowDidChangeBackingProperties:(NSNotification*)notification {
@@ -414,7 +420,7 @@ namespace {
         void requestFullscreen(bool fullscreen) override;
         void requestResize(u32 width, u32 height) override;
         void requestMinimumSize(u32 width, u32 height) override;
-        void requestResizeUnit(u32 width, u32 height, u32, u32) override;
+        void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
         WindowInfo currentInfo() const;
         void requestReadPrimary(ClipboardRead& sink) override;
         void requestReadClipboard(ClipboardRead& sink) override;
@@ -427,6 +433,7 @@ namespace {
         void close();
         void resized();
         void draw();
+        NSSize willResize(NSSize frameSize) const;
         void focused(bool value);
         void key(NSEvent* event, bool pressed);
         void flushInput();
@@ -455,6 +462,8 @@ namespace {
         u32 minimumHeight = 1;
         u32 resizeUnitWidth = 1;
         u32 resizeUnitHeight = 1;
+        u32 resizeBaseWidth = 0;
+        u32 resizeBaseHeight = 0;
         ClipboardOperation* clipboardOperations = nullptr;
         bool frameRequested = false;
     };
@@ -921,16 +930,16 @@ void WindowImpl::requestMinimumSize(u32 width, u32 height) {
     applySizeConstraints();
 }
 
-void WindowImpl::requestResizeUnit(u32 width, u32 height, u32, u32) {
+void WindowImpl::requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) {
     resizeUnitWidth = max(1u, width);
     resizeUnitHeight = max(1u, height);
-    applySizeConstraints();
+    resizeBaseWidth = baseWidth;
+    resizeBaseHeight = baseHeight;
 }
 
 void WindowImpl::applySizeConstraints() {
     const CGFloat scale = window.backingScaleFactor;
     window.contentMinSize = NSMakeSize(minimumWidth / scale, minimumHeight / scale);
-    window.contentResizeIncrements = NSMakeSize(resizeUnitWidth / scale, resizeUnitHeight / scale);
 }
 
 WindowInfo WindowImpl::currentInfo() const {
@@ -1027,6 +1036,21 @@ void WindowImpl::resized() {
 #if defined(SHITTY_FRAME_TRACE)
     frameTrace("window resized end dirty=%d", view.needsDisplay);
 #endif
+}
+
+NSSize WindowImpl::willResize(NSSize frameSize) const {
+    const NSRect content = [window contentRectForFrameRect:NSMakeRect(0, 0, frameSize.width, frameSize.height)];
+    const CGFloat scale = window.backingScaleFactor;
+    u32 width = (u32)(max(1.0, content.size.width * scale) + 0.5);
+    u32 height = (u32)(max(1.0, content.size.height * scale) + 0.5);
+    if (resizeUnitWidth > 1 && width > resizeBaseWidth) {
+        width = resizeBaseWidth + ((width - resizeBaseWidth) / resizeUnitWidth) * resizeUnitWidth;
+    }
+    if (resizeUnitHeight > 1 && height > resizeBaseHeight) {
+        height = resizeBaseHeight + ((height - resizeBaseHeight) / resizeUnitHeight) * resizeUnitHeight;
+    }
+    const NSRect frame = [window frameRectForContentRect:NSMakeRect(0, 0, width / scale, height / scale)];
+    return frame.size;
 }
 
 void WindowImpl::focused(bool value) {
@@ -1309,6 +1333,10 @@ void cocoaFrameImpl(void* owner) {
 
 void cocoaInvalidateImpl(void* owner) {
     ((WindowImpl*)(owner))->requestFrame();
+}
+
+NSSize cocoaWillResizeImpl(void* owner, NSSize frameSize) {
+    return ((WindowImpl*)(owner))->willResize(frameSize);
 }
 
 void cocoaFocusImpl(void* owner, bool focused) {
