@@ -790,6 +790,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     view.owner = this;
     view.wantsLayer = YES;
     view.layer = [CAMetalLayer layer];
+    ((CAMetalLayer*)(view.layer)).presentsWithTransaction = YES;
     window.contentView = view;
     window.acceptsMouseMovedEvents = YES;
     setTitle(options.title);
