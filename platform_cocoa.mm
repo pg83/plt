@@ -435,7 +435,7 @@ namespace {
         void requestResize(u32 width, u32 height) override;
         void requestMinimumSize(u32 width, u32 height) override;
         void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
-        WindowInfo currentInfo() const;
+        WindowInfo info() const override;
         void requestReadPrimary(ClipboardRead& sink) override;
         void requestReadClipboard(ClipboardRead& sink) override;
         void cancelClipboardRead(ClipboardRead& sink) override;
@@ -522,8 +522,7 @@ namespace {
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
-    : poller_(owner.make<PollerImpl>(owner))
-{
+    : poller_(owner.make<PollerImpl>(owner)) {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp finishLaunching];
@@ -538,8 +537,7 @@ Poller* PlatformImpl::poller() {
 }
 
 PollerImpl::PollerImpl(ObjPool& owner)
-    : armed(ObjPool::create(&owner))
-{
+    : armed(ObjPool::create(&owner)) {
     CFRunLoopTimerContext context{};
     context.info = this;
     runLoopTimer = CFRunLoopTimerCreate(kCFAllocatorDefault, DBL_MAX, 0.000'000'1, 0, 0, cocoaTimerReady, &context);
@@ -556,8 +554,7 @@ ArmedFD::ArmedFD(PollFD fd_, PollCallback* callback_, CFFileDescriptorRef descri
     : fd(fd_)
     , callback(callback_)
     , descriptor(descriptor_)
-    , source(source_)
-{
+    , source(source_) {
 }
 
 ArmedFD::~ArmedFD() {
@@ -720,8 +717,7 @@ ClipboardOperation::ClipboardOperation(WindowImpl& window_, ClipboardOperationKi
     : window(window_)
     , kind(kind_)
     , read(read_)
-    , content(content_)
-{
+    , content(content_) {
     next = window.clipboardOperations;
     window.clipboardOperations = this;
     window.platform.poller_->timeout(0, *this);
@@ -785,8 +781,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     : platform(platform_)
     , input(options.input)
     , events(options.events)
-    , frame(options.frame)
-{
+    , frame(options.frame) {
     const NSRect frame = NSMakeRect(0, 0, max(1u, options.width), max(1u, options.height));
     window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
     delegate = [PltWindowDelegate new];
@@ -870,7 +865,7 @@ void WindowImpl::draw() {
         return;
     }
     frameRequested = false;
-    frame->frame(currentInfo());
+    frame->frame(info());
     if (!frameRequested) {
         stopDisplayLink();
     }
@@ -960,7 +955,7 @@ void WindowImpl::applySizeConstraints() {
     window.contentMinSize = NSMakeSize(minimumWidth / scale, minimumHeight / scale);
 }
 
-WindowInfo WindowImpl::currentInfo() const {
+WindowInfo WindowImpl::info() const {
     const NSRect content = [view convertRectToBacking:view.bounds];
     NSScreen* screen = window.screen != nil ? window.screen : [NSScreen mainScreen];
     const NSRect screenFrame = [screen convertRectToBacking:screen.frame];

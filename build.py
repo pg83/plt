@@ -23,6 +23,7 @@ common_sources = [
     "$(S)/poller.cpp",
     "$(S)/pointer_grab.cpp",
     "$(S)/platform.cpp",
+    "$(S)/platform_headless.cpp",
     "$(S)/window.cpp",
 ]
 target_platform = build.target

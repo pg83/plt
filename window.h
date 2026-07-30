@@ -8,7 +8,8 @@ namespace plt {
 
     enum class RenderBackend : u8 {
         Wayland,
-        Cocoa
+        Cocoa,
+        Headless
     };
 
     struct RenderContext {
@@ -91,6 +92,7 @@ namespace plt {
         virtual void requestWriteClipboard(stl::StringView content) = 0;
         virtual void requestPointerIcon(PointerIcon icon) = 0;
 
+        virtual WindowInfo info() const = 0;
         virtual RenderContext renderContext() const = 0;
     };
 }

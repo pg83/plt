@@ -132,7 +132,7 @@ namespace {
         void requestResize(u32 width, u32 height) override;
         void requestMinimumSize(u32 width, u32 height) override;
         void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
-        WindowInfo currentInfo() const;
+        WindowInfo info() const override;
         void requestReadPrimary(ClipboardRead& read) override;
         void requestReadClipboard(ClipboardRead& read) override;
         void cancelClipboardRead(ClipboardRead& read) override;
@@ -808,8 +808,7 @@ SelectionTransfer::SelectionTransfer(PlatformImpl& platform_, int fd_, WindowImp
     , content(content_)
     , fd(fd_)
     , writing(writing_)
-    , success(success_)
-{
+    , success(success_) {
     next = platform.transfers;
     platform.transfers = this;
 }
@@ -956,8 +955,7 @@ void SelectionTransfer::dispose() {
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
-    : poller_(owner.make<PollerImpl>(owner))
-{
+    : poller_(owner.make<PollerImpl>(owner)) {
     display = wl_display_connect(nullptr);
     if (display == nullptr) {
         fail(u8"wl_display_connect failed");
@@ -1181,8 +1179,7 @@ void PlatformImpl::createSelectionDevices() {
 }
 
 PollerImpl::PollerImpl(ObjPool& owner)
-    : armed(ObjPool::create(&owner))
-{
+    : armed(ObjPool::create(&owner)) {
 }
 
 u64 PollerImpl::allocateGeneration() {
@@ -1730,8 +1727,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     , logicalWidth(max(1u, options.width))
     , logicalHeight(max(1u, options.height))
     , minimumWidth(max(1u, options.minimumWidth))
-    , minimumHeight(max(1u, options.minimumHeight))
-{
+    , minimumHeight(max(1u, options.minimumHeight)) {
     surface = wl_compositor_create_surface(platform.compositor);
     if (surface == nullptr) {
         fail(u8"wl_compositor_create_surface failed");
@@ -1907,7 +1903,7 @@ void WindowImpl::ready() {
         return;
     }
     frameRequested = false;
-    if (!frame->frame(currentInfo())) {
+    if (!frame->frame(info())) {
         if (frameRequested) {
             requestFrame();
         }
@@ -2002,7 +1998,7 @@ void WindowImpl::requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 bas
     resizeBaseHeight = baseHeight;
 }
 
-WindowInfo WindowImpl::currentInfo() const {
+WindowInfo WindowImpl::info() const {
     return {
         .width = pixelWidth(),
         .height = pixelHeight(),
