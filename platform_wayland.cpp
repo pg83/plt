@@ -414,6 +414,13 @@ namespace {
             }
             decoded = (decoded << 6) | (continuation & 0x3f);
         }
+        // Reject overlong forms, UTF-16 surrogates, and values past
+        // U+10FFFF: these bytes come from the compositor and would
+        // otherwise reach the pty as invalid scalars.
+        static constexpr u32 minimums[4] = {0, 0x80, 0x800, 0x10000};
+        if (decoded < minimums[continuations] || decoded > 0x10ffff || (decoded >= 0xd800 && decoded <= 0xdfff)) {
+            return 0;
+        }
         *value = decoded;
         return continuations + 1;
     }
@@ -1417,9 +1424,11 @@ void PlatformImpl::globalRemoved(u32 name) {
         // the registry and re-creates them from its capabilities.
         seatCapabilities(0);
         if (textInput != nullptr) {
+            // Full leave semantics: clear the pending and visible preedit
+            // state, not just the proxy.
+            textInputLeft(nullptr);
             zwp_text_input_v3_destroy(textInput);
             textInput = nullptr;
-            textInputWindow = nullptr;
         }
         if (dataDevice != nullptr) {
             releaseDataDevice(dataDevice);
@@ -1880,7 +1889,11 @@ size_t PlatformImpl::composeFeed(xkb_keysym_t symbol, u32 codepoint, u32* codepo
 }
 
 void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool repeated) {
-    this->serial(serial);
+    // Repeats replay the original press serial; a replay must not roll
+    // latestSerial back past newer events.
+    if (!repeated) {
+        this->serial(serial);
+    }
     if (!repeated && consumeEnterPressedKey(key, state)) {
         return;
     }
@@ -2141,6 +2154,13 @@ void PlatformImpl::textInputDone() {
                     .modifiers = activeModifiers,
                 });
                 delivered = true;
+                if (textInputWindow != window) {
+                    // A sink callback tore the focus down mid-delivery;
+                    // the leave path already reset the preedit state.
+                    pendingCommitText.reset();
+                    pendingPreeditText.reset();
+                    return;
+                }
             }
         }
     }

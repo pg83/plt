@@ -29,6 +29,27 @@ namespace plt::test {
             return false;
         }
 
+        // A newer serial arrives while the key still repeats: replayed
+        // repeats must not roll latestSerial back to the original press.
+        command(fd, Command::PointerSequence);
+        pump(*client.platform);
+        const u32 repeatsBeforeProbe = input.repeatCount;
+        for (u32 attempt = 0; attempt != 20 && input.repeatCount == repeatsBeforeProbe; ++attempt) {
+            pump(*client.platform);
+        }
+        client.window->requestWriteClipboard(stl::StringView(u8"serial-probe"));
+        pump(*client.platform);
+        const Reply serialProbe = command(fd, Command::QuerySelectionSerial);
+        if (serialProbe.count + 2 < (u32)(serialProbe.first)) {
+            fprintf(
+                stderr,
+                "keyboard input: repeat rolled the serial back, selection=%u latest=%d\n",
+                serialProbe.count,
+                serialProbe.first
+            );
+            return false;
+        }
+
         command(fd, Command::KeyboardRelease);
         pump(*client.platform);
         const u32 repeats = input.repeatCount;

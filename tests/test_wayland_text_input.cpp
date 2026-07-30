@@ -64,6 +64,31 @@ namespace plt::test {
             fprintf(stderr, "text input: commit did not clear the preedit preview\n");
             return false;
         }
+
+        command(fd, Command::TextInputCommitInvalid);
+        pump(*client.platform);
+        if (input.textCount != 2 || input.lastText.codepoint != 'A') {
+            fprintf(
+                stderr,
+                "text input: invalid UTF-8 leaked into commit, texts=%u codepoint=%x\n",
+                input.textCount,
+                input.lastText.codepoint
+            );
+            return false;
+        }
+
+        command(fd, Command::TextInputPreedit);
+        pump(*client.platform);
+        if (input.lastPreedit.empty()) {
+            fprintf(stderr, "text input: preedit before seat removal missing\n");
+            return false;
+        }
+        command(fd, Command::RemoveSeat);
+        pump(*client.platform);
+        if (!input.lastPreedit.empty()) {
+            fprintf(stderr, "text input: seat removal left a stale preedit preview\n");
+            return false;
+        }
         return true;
     }
 }

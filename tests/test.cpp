@@ -99,6 +99,8 @@ namespace plt::test {
         wl_resource* cursorShapeDevice = nullptr;
         wl_resource* textInput = nullptr;
         wl_global* outputGlobal = nullptr;
+        wl_global* seatGlobal = nullptr;
+        u32 selectionSerial = 0;
         Surface* window = nullptr;
         Vector<wl_resource*> frameCallbacks;
         wl_event_source* writeSource = nullptr;
@@ -302,9 +304,10 @@ namespace plt::test {
     const struct wl_data_device_interface dataDeviceImplementation{
         .start_drag = nullptr,
         .set_selection =
-            [](wl_client*, wl_resource* resource, wl_resource*, u32) {
+            [](wl_client*, wl_resource* resource, wl_resource*, u32 serial) {
         auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
         ++server->selectionCount;
+        server->selectionSerial = serial;
     },
         .release = destroyResource,
     };
@@ -681,7 +684,7 @@ namespace plt::test {
         display = wl_display_create();
         loop = wl_display_get_event_loop(display);
         wl_global_create(display, &wl_compositor_interface, 6, this, bindCompositor);
-        wl_global_create(display, &wl_seat_interface, 8, this, bindSeat);
+        seatGlobal = wl_global_create(display, &wl_seat_interface, 8, this, bindSeat);
         wl_global_create(display, &wl_data_device_manager_interface, 3, this, bindDataManager);
         wl_global_create(display, &xdg_wm_base_interface, 6, this, bindWmBase);
         wl_global_create(display, &wp_viewporter_interface, 1, this, bindViewporter);
@@ -1077,6 +1080,28 @@ namespace plt::test {
                     wl_display_flush_clients(display);
                     reply.count = 1;
                 }
+                break;
+            case Command::TextInputCommitInvalid:
+                if (textInput != nullptr) {
+                    // Overlong '/', a UTF-16 surrogate, and an F5-lead
+                    // sequence past U+10FFFF, then one valid scalar.
+                    zwp_text_input_v3_send_commit_string(textInput, "\xc0\xaf\xed\xa0\x80\xf5\x8f\xbf\xbf" "A");
+                    zwp_text_input_v3_send_done(textInput, textInputCommitCount);
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
+            case Command::RemoveSeat:
+                if (seatGlobal != nullptr) {
+                    wl_global_destroy(seatGlobal);
+                    seatGlobal = nullptr;
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
+            case Command::QuerySelectionSerial:
+                reply.count = selectionSerial;
+                reply.first = static_cast<i32>(serial);
                 break;
             case Command::QueryTextInput:
                 reply.count = textInputCommitCount;
