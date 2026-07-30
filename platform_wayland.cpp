@@ -288,15 +288,7 @@ namespace {
     };
 
     struct SelectionTransfer final: public PollCallback, public TimerCallback {
-        SelectionTransfer(
-            PlatformImpl& platform,
-            int fd,
-            WindowImpl* window,
-            ClipboardRead* read,
-            StringView content,
-            bool writing,
-            bool success
-        );
+        SelectionTransfer(PlatformImpl& platform, int fd, WindowImpl* window, ClipboardRead* read, StringView content, bool writing, bool success);
 
         void start();
         void ready(PollFD event) override;
@@ -807,15 +799,7 @@ const char* Offer::mime() const {
     return plain ? "text/plain" : nullptr;
 }
 
-SelectionTransfer::SelectionTransfer(
-    PlatformImpl& platform_,
-    int fd_,
-    WindowImpl* window_,
-    ClipboardRead* read_,
-    StringView content_,
-    bool writing_,
-    bool success_
-)
+SelectionTransfer::SelectionTransfer(PlatformImpl& platform_, int fd_, WindowImpl* window_, ClipboardRead* read_, StringView content_, bool writing_, bool success_)
     : platform(platform_)
     , window(window_)
     , read(read_)
@@ -870,11 +854,7 @@ void SelectionTransfer::ready(PollFD) {
             return;
         }
         const size_t chunk = min<size_t>(remaining, 64 * 1024);
-        const ssize_t count = writeNoSignal(
-            fd,
-            (const u8*)(content.data()) + offset,
-            chunk
-        );
+        const ssize_t count = writeNoSignal(fd, (const u8*)(content.data()) + offset, chunk);
         if (count > 0) {
             offset += (size_t)(count);
             if (offset == content.length()) {
@@ -896,9 +876,7 @@ void SelectionTransfer::ready(PollFD) {
     if (count > 0) {
         dispatching = true;
         ClipboardRead* const target = read;
-        const bool accepted =
-            target != nullptr
-            && target->data(StringView(bytes, (size_t)(count)));
+        const bool accepted = target != nullptr && target->data(StringView(bytes, (size_t)(count)));
         dispatching = false;
         if (cancelled) {
             dispose();
@@ -930,9 +908,7 @@ void SelectionTransfer::ready() {
     if (accepted && !content.empty()) {
         dispatching = true;
         ClipboardRead* const target = read;
-        accepted =
-            target != nullptr
-            && target->data(StringView(content));
+        accepted = target != nullptr && target->data(StringView(content));
         dispatching = false;
     }
     if (cancelled) {
@@ -1118,8 +1094,7 @@ bool PlatformImpl::flushDisplay() {
 }
 
 void PlatformImpl::ready(PollFD event) {
-    if (event.flags & (PollFlag::Err | PollFlag::Hup)
-        || !(event.flags & (PollFlag::In | PollFlag::Out))) {
+    if (event.flags & (PollFlag::Err | PollFlag::Hup) || !(event.flags & (PollFlag::In | PollFlag::Out))) {
         stop();
         return;
     }
@@ -1337,9 +1312,7 @@ void PollerImpl::wait(u64 monotonicDeadline) {
     }
     for (const ReadyFD& ready : readyFDs) {
         ArmedFD* const registration = armed.find(ready.fd.fd);
-        if (registration == nullptr
-            || registration->callback != ready.callback
-            || registration->generation != ready.generation) {
+        if (registration == nullptr || registration->callback != ready.callback || registration->generation != ready.generation) {
             continue;
         }
         armed.erase(ready.fd.fd);
@@ -1419,6 +1392,9 @@ u16 PlatformImpl::modifiers() const {
 }
 
 InputKey PlatformImpl::inputKey(xkb_keysym_t symbol) const {
+    if (symbol >= XKB_KEY_F1 && symbol <= XKB_KEY_F35) {
+        return (InputKey)((u8)(InputKey::F1) + symbol - XKB_KEY_F1);
+    }
     if (symbol >= XKB_KEY_a && symbol <= XKB_KEY_z) {
         return InputKey::Printable;
     }
@@ -1458,27 +1434,8 @@ InputKey PlatformImpl::inputKey(xkb_keysym_t symbol) const {
             return InputKey::PageUp;
         case XKB_KEY_Page_Down:
             return InputKey::PageDown;
-        case XKB_KEY_F1:
-        case XKB_KEY_F2:
-        case XKB_KEY_F3:
-        case XKB_KEY_F4:
-        case XKB_KEY_F5:
-        case XKB_KEY_F6:
-        case XKB_KEY_F7:
-        case XKB_KEY_F8:
-        case XKB_KEY_F9:
-        case XKB_KEY_F10:
-        case XKB_KEY_F11:
-        case XKB_KEY_F12:
-        case XKB_KEY_F13:
-        case XKB_KEY_F14:
-        case XKB_KEY_F15:
-        case XKB_KEY_F16:
-        case XKB_KEY_F17:
-        case XKB_KEY_F18:
-        case XKB_KEY_F19:
-        case XKB_KEY_F20:
-            return (InputKey)((u8)(InputKey::F1) + symbol - XKB_KEY_F1);
+        case XKB_KEY_Clear:
+            return InputKey::Clear;
         case XKB_KEY_KP_0:
         case XKB_KEY_KP_1:
         case XKB_KEY_KP_2:
@@ -1504,6 +1461,42 @@ InputKey PlatformImpl::inputKey(xkb_keysym_t symbol) const {
             return InputKey::KeypadEnter;
         case XKB_KEY_KP_Equal:
             return InputKey::KeypadEqual;
+        case XKB_KEY_KP_Separator:
+            return InputKey::KeypadSeparator;
+        case XKB_KEY_KP_F1:
+            return InputKey::KeypadF1;
+        case XKB_KEY_KP_F2:
+            return InputKey::KeypadF2;
+        case XKB_KEY_KP_F3:
+            return InputKey::KeypadF3;
+        case XKB_KEY_KP_F4:
+            return InputKey::KeypadF4;
+        case XKB_KEY_KP_Insert:
+            return InputKey::KeypadInsert;
+        case XKB_KEY_KP_Delete:
+            return InputKey::KeypadDelete;
+        case XKB_KEY_KP_Up:
+            return InputKey::KeypadUp;
+        case XKB_KEY_KP_Down:
+            return InputKey::KeypadDown;
+        case XKB_KEY_KP_Left:
+            return InputKey::KeypadLeft;
+        case XKB_KEY_KP_Right:
+            return InputKey::KeypadRight;
+        case XKB_KEY_KP_Home:
+            return InputKey::KeypadHome;
+        case XKB_KEY_KP_End:
+            return InputKey::KeypadEnd;
+        case XKB_KEY_KP_Page_Up:
+            return InputKey::KeypadPageUp;
+        case XKB_KEY_KP_Page_Down:
+            return InputKey::KeypadPageDown;
+        case XKB_KEY_KP_Begin:
+            return InputKey::KeypadBegin;
+        case XKB_KEY_KP_Space:
+            return InputKey::KeypadSpace;
+        case XKB_KEY_KP_Tab:
+            return InputKey::KeypadTab;
         case XKB_KEY_Caps_Lock:
             return InputKey::CapsLock;
         case XKB_KEY_Scroll_Lock:
@@ -1533,6 +1526,28 @@ InputKey PlatformImpl::inputKey(xkb_keysym_t symbol) const {
             return InputKey::RightAlt;
         case XKB_KEY_Super_R:
             return InputKey::RightSuper;
+        case XKB_KEY_XF86AudioPlay:
+            return InputKey::MediaPlay;
+        case XKB_KEY_XF86AudioPause:
+            return InputKey::MediaPause;
+        case XKB_KEY_XF86AudioStop:
+            return InputKey::MediaStop;
+        case XKB_KEY_XF86AudioForward:
+            return InputKey::MediaFastForward;
+        case XKB_KEY_XF86AudioRewind:
+            return InputKey::MediaRewind;
+        case XKB_KEY_XF86AudioNext:
+            return InputKey::MediaTrackNext;
+        case XKB_KEY_XF86AudioPrev:
+            return InputKey::MediaTrackPrevious;
+        case XKB_KEY_XF86AudioRecord:
+            return InputKey::MediaRecord;
+        case XKB_KEY_XF86AudioLowerVolume:
+            return InputKey::VolumeDown;
+        case XKB_KEY_XF86AudioRaiseVolume:
+            return InputKey::VolumeUp;
+        case XKB_KEY_XF86AudioMute:
+            return InputKey::VolumeMute;
         default:
             return xkb_keysym_to_utf32(symbol) != 0 ? InputKey::Printable : InputKey::Unknown;
     }
@@ -1614,20 +1629,14 @@ void PlatformImpl::readSelection(int fd, WindowImpl& window, ClipboardRead& read
     (new SelectionTransfer(*this, fd, &window, &read, {}, false, true))->start();
 }
 
-void PlatformImpl::completeSelection(
-    WindowImpl& window,
-    ClipboardRead& read,
-    StringView content,
-    bool success
-) {
+void PlatformImpl::completeSelection(WindowImpl& window, ClipboardRead& read, StringView content, bool success) {
     (new SelectionTransfer(*this, -1, &window, &read, content, false, success))->start();
 }
 
 void PlatformImpl::cancelSelection(WindowImpl& window, ClipboardRead* read) {
     for (SelectionTransfer* transfer = transfers; transfer != nullptr;) {
         SelectionTransfer* const next = transfer->next;
-        if (transfer->window == &window
-            && (read == nullptr || transfer->read == read)) {
+        if (transfer->window == &window && (read == nullptr || transfer->read == read)) {
             transfer->cancel();
         }
         transfer = next;
@@ -2032,12 +2041,7 @@ void WindowImpl::receive(Offer& offer, bool primary, ClipboardRead& read) {
 
 void WindowImpl::requestReadPrimary(ClipboardRead& read) {
     if (platform.primarySource != nullptr) {
-        platform.completeSelection(
-            *this,
-            read,
-            StringView(platform.primaryContent),
-            true
-        );
+        platform.completeSelection(*this, read, StringView(platform.primaryContent), true);
     } else {
         receive(platform.primaryOffer, true, read);
     }
@@ -2045,12 +2049,7 @@ void WindowImpl::requestReadPrimary(ClipboardRead& read) {
 
 void WindowImpl::requestReadClipboard(ClipboardRead& read) {
     if (platform.clipboardSource != nullptr) {
-        platform.completeSelection(
-            *this,
-            read,
-            StringView(platform.clipboardContent),
-            true
-        );
+        platform.completeSelection(*this, read, StringView(platform.clipboardContent), true);
     } else {
         receive(platform.clipboardOffer, false, read);
     }

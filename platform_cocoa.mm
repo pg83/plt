@@ -1181,7 +1181,7 @@ InputKey WindowImpl::inputKey(NSEvent* event) const {
         case NSPageDownFunctionKey:
             return InputKey::PageDown;
         default:
-            if (value >= NSF1FunctionKey && value <= NSF20FunctionKey) {
+            if (value >= NSF1FunctionKey && value <= NSF35FunctionKey) {
                 return (InputKey)((u8)(InputKey::F1) + value - NSF1FunctionKey);
             }
             return value != 0 ? InputKey::Printable : InputKey::Unknown;
