@@ -18,13 +18,14 @@ namespace plt::test {
                 event = event_;
                 called = true;
                 u8 byte;
-                read(event.fd, &byte, 1);
+                readOk = read(event.fd, &byte, 1) == 1;
                 platform.stop();
             }
 
             Platform& platform;
             PollFD event{};
             bool called = false;
+            bool readOk = false;
         };
 
         struct DeadlineCallback final: TimerCallback {
@@ -104,7 +105,8 @@ namespace plt::test {
             return false;
         }
         client.platform->run();
-        if (!ready.called || !(ready.event.flags & PollFlag::In)) {
+        if (!ready.called || !ready.readOk
+            || !(ready.event.flags & PollFlag::In)) {
             fprintf(stderr, "poller API: fd callback failed\n");
             close(pipes[0]);
             close(pipes[1]);
@@ -117,9 +119,17 @@ namespace plt::test {
             disarmed
         );
         client.platform->poller()->disarm(pipes[0]);
-        write(pipes[1], &byte, 1);
+        if (write(pipes[1], &byte, 1) != 1) {
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
         pump(*client.platform);
-        read(pipes[0], &byte, 1);
+        if (read(pipes[0], &byte, 1) != 1) {
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
         if (disarmed.called) {
             fprintf(stderr, "poller API: disarm failed\n");
             close(pipes[0]);
@@ -183,8 +193,16 @@ namespace plt::test {
             {.fd = crossPipes[1][0], .flags = PollFlag::In},
             second
         );
-        write(crossPipes[0][1], &byte, 1);
-        write(crossPipes[1][1], &byte, 1);
+        if (write(crossPipes[0][1], &byte, 1) != 1
+            || write(crossPipes[1][1], &byte, 1) != 1) {
+            for (auto& crossPipe : crossPipes) {
+                close(crossPipe[0]);
+                close(crossPipe[1]);
+            }
+            close(pipes[0]);
+            close(pipes[1]);
+            return false;
+        }
         client.platform->run();
         for (auto& crossPipe : crossPipes) {
             close(crossPipe[0]);
