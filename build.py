@@ -42,6 +42,7 @@ if system == "Linux":
         "unstable/xdg-decoration/xdg-decoration-unstable-v1",
         "staging/xdg-activation/xdg-activation-v1",
         "unstable/primary-selection/primary-selection-unstable-v1",
+        "unstable/tablet/tablet-unstable-v2",
         "staging/cursor-shape/cursor-shape-v1",
     ]
     protocol_outputs = []
@@ -64,6 +65,7 @@ if system == "Linux":
             "xdg-decoration-unstable-v1",
             "xdg-activation-v1",
             "primary-selection-unstable-v1",
+            "tablet-unstable-v2",
             "cursor-shape-v1",
         }:
             server_header = f"$(B)/protocol/{protocol}-server-protocol.h"

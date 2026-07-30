@@ -12,6 +12,8 @@
 #include "viewporter-client-protocol-code.h"
 #include "xdg-activation-v1-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
+#include "tablet-unstable-v2-client-protocol.h"
+#include "tablet-unstable-v2-client-protocol-code.h"
 #include "cursor-shape-v1-client-protocol-code.h"
 #include "xdg-activation-v1-client-protocol-code.h"
 #include "fractional-scale-v1-client-protocol-code.h"
