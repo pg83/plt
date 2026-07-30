@@ -142,8 +142,10 @@ if build.target == build.host:
         deps=[libplt, libstd],
     )
 
+    # Hard per-invocation timeout so a hung test cannot wedge the whole CI run.
+    test_timeout = ["python3", "$(S)/tests/run_timed.py", "120"]
     test_deps = [plt_unit_tests]
-    test_commands = [["$(B)/plt_unit_tests"]]
+    test_commands = [[*test_timeout, "$(B)/plt_unit_tests"]]
     if system == "Linux":
         wayland_test_sources = [
             "$(S)/tests/test.cpp",
@@ -167,7 +169,7 @@ if build.target == build.host:
             ],
         )
         test_deps.append(plt_wayland_integration_tests)
-        test_commands.append(["$(B)/plt_wayland_integration_tests"])
+        test_commands.append([*test_timeout, "$(B)/plt_wayland_integration_tests"])
 
     plt_tests = command(
         name="plt_tests",
