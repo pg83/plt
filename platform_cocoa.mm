@@ -85,6 +85,7 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 @interface PltView: NSView <NSTextInputClient> {
     NSMutableAttributedString* markedText_;
     NSRange selectedTextRange_;
+    NSMutableSet<NSNumber*>* composedKeys_;
 }
 @property(nonatomic, assign) void* owner;
 @property(nonatomic, strong) NSTrackingArea* tracking;
@@ -177,12 +178,30 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 }
 
 - (void)keyDown:(NSEvent*)event {
-    cocoaKeyImpl(self.owner, event, true);
+    // While the input method composes, the event belongs to the IME:
+    // Enter picks a candidate, arrows and Escape navigate the candidate
+    // window. Delivering it to the terminal too would double every key.
+    // The matching release is swallowed as well: the press was never
+    // seen, so an orphan release must not leak (kitty keyboard protocol
+    // reports releases).
+    if ([self hasMarkedText]) {
+        if (composedKeys_ == nil) {
+            composedKeys_ = [NSMutableSet set];
+        }
+        [composedKeys_ addObject:@(event.keyCode)];
+    } else {
+        cocoaKeyImpl(self.owner, event, true);
+    }
     [self interpretKeyEvents:@[ event ]];
     cocoaFlushInputImpl(self.owner);
 }
 
 - (void)keyUp:(NSEvent*)event {
+    NSNumber* const code = @(event.keyCode);
+    if ([composedKeys_ containsObject:code]) {
+        [composedKeys_ removeObject:code];
+        return;
+    }
     cocoaKeyImpl(self.owner, event, false);
     cocoaFlushInputImpl(self.owner);
 }
