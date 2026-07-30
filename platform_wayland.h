@@ -7,5 +7,5 @@ namespace stl {
 namespace plt {
     struct Platform;
 
-    Platform* createWaylandPlatform(stl::ObjPool& owner);
+    Platform* createBackendPlatform(stl::ObjPool& owner);
 }
