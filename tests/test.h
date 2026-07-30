@@ -46,6 +46,15 @@ namespace plt::test {
         QueryPrimarySelection,
         OfferPrimarySelection,
         RequestPrimarySourceData,
+        PointerValue120,
+        KeyboardEnterWithKeys,
+        RemoveOutput,
+        RestoreOutput,
+        TextInputEnter,
+        TextInputPreedit,
+        TextInputCommitString,
+        QueryTextInput,
+        QueryTextInputRect,
         Quit,
     };
 
@@ -71,15 +80,7 @@ namespace plt::test {
     stl::Buffer repeated(size_t size, u8 value);
 
     struct Client {
-        explicit Client(
-            int controlFd,
-            u32 width = 800,
-            u32 minimum = 1,
-            WindowEvents* events = nullptr,
-            InputSink* input = nullptr,
-            bool waitForConfigure = true,
-            FrameCallback* frame = nullptr
-        );
+        explicit Client(int controlFd, u32 width = 800, u32 minimum = 1, WindowEvents* events = nullptr, InputSink* input = nullptr, bool waitForConfigure = true, FrameCallback* frame = nullptr);
 
         int controlFd;
         stl::ObjPool::Ref owner;
@@ -154,6 +155,14 @@ namespace plt::test {
             ++textCount;
         }
 
+        void preedit(stl::StringView text, i32 cursorBegin, i32 cursorEnd) override {
+            lastPreedit.reset();
+            lastPreedit.append(text.data(), text.length());
+            lastPreeditCursorBegin = cursorBegin;
+            lastPreeditCursorEnd = cursorEnd;
+            ++preeditCount;
+        }
+
         void pointerMotion(const PointerMotionInput& input) override {
             lastMotion = input;
             ++motionCount;
@@ -196,6 +205,10 @@ namespace plt::test {
         KeyInput pressedKey;
         KeyInput lastKey;
         TextInput lastText;
+        stl::Buffer lastPreedit;
+        i32 lastPreeditCursorBegin = -1;
+        i32 lastPreeditCursorEnd = -1;
+        u32 preeditCount = 0;
         PointerMotionInput lastMotion;
         PointerButtonInput lastButton;
         ScrollInput lastScroll;
@@ -215,7 +228,10 @@ namespace plt::test {
     };
 
     struct StopOnClose final: WindowEvents {
-        explicit StopOnClose(Platform*& platform_): platform(platform_) {}
+        explicit StopOnClose(Platform*& platform_)
+            : platform(platform_)
+        {
+        }
 
         void close() override {
             closed = true;
@@ -251,4 +267,8 @@ namespace plt::test {
     bool sourceCancellation(int fd);
     bool invalidKeymap(int fd);
     bool multipleWindows(int fd);
+    bool scrollValue120(int fd);
+    bool keyboardEnterKeys(int fd);
+    bool outputRemoval(int fd);
+    bool textInput(int fd);
 }

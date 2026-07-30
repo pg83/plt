@@ -4,6 +4,7 @@
 #include "poller.h"
 #include "window.h"
 #include "platform.h"
+#include "timer_queue.h"
 #include "pointer_grab.h"
 #include "xdg-shell-client-protocol.h"
 #include "viewporter-client-protocol.h"
@@ -13,10 +14,12 @@
 #include "xdg-activation-v1-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
 #include "tablet-unstable-v2-client-protocol.h"
+#include "text-input-unstable-v3-client-protocol.h"
 #include "tablet-unstable-v2-client-protocol-code.h"
 #include "cursor-shape-v1-client-protocol-code.h"
 #include "xdg-activation-v1-client-protocol-code.h"
 #include "fractional-scale-v1-client-protocol-code.h"
+#include "text-input-unstable-v3-client-protocol-code.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 #include "primary-selection-unstable-v1-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol-code.h"
@@ -34,6 +37,7 @@
 #include <cerrno>
 #include <poll.h>
 #include <climits>
+#include <cstdlib>
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
@@ -43,6 +47,7 @@
 #include <xkbcommon/xkbcommon.h>
 #include <linux/input-event-codes.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
+#include <xkbcommon/xkbcommon-compose.h>
 
 using namespace stl;
 using namespace plt;
@@ -54,6 +59,10 @@ namespace {
     struct SelectionTransfer;
 
     constexpr u32 scaleDenominator = 120;
+    // Abort a selection transfer when the peer makes no progress for this
+    // long; otherwise a stalled clipboard source or consumer pins the pipe
+    // descriptors and the transfer object forever.
+    constexpr u64 selectionTransferTimeoutUs = 30'000'000;
     const StringView utf8Mime(u8"text/plain;charset=utf-8");
     const StringView plainMime(u8"text/plain");
     const StringView utf8StringMime(u8"UTF8_STRING");
@@ -67,16 +76,6 @@ namespace {
     struct ReadyFD {
         PollFD fd;
         PollCallback* callback = nullptr;
-        u64 generation = 0;
-    };
-
-    struct Timer {
-        TimerCallback* callback = nullptr;
-        u64 deadline = 0;
-        u64 generation = 0;
-    };
-
-    struct ReadyTimer {
         u64 generation = 0;
     };
 
@@ -96,8 +95,7 @@ namespace {
         IntMap<ArmedFD> armed;
         Vector<struct pollfd> pollFDs;
         Vector<ReadyFD> readyFDs;
-        Vector<Timer> timers;
-        Vector<ReadyTimer> readyTimers;
+        TimerQueue timers;
         u64 nextGeneration = 1;
 
         u64 allocateGeneration();
@@ -139,6 +137,7 @@ namespace {
         void requestWritePrimary(StringView content) override;
         void requestWriteClipboard(StringView content) override;
         void requestPointerIcon(PointerIcon icon) override;
+        void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) override;
         RenderContext renderContext() const override;
 
         void configure();
@@ -148,6 +147,7 @@ namespace {
         void pointerMoved(wl_fixed_t x, wl_fixed_t y);
         void pointerButton(u32 time, u32 button, u32 state);
         void pointerAxis(u32 axis, wl_fixed_t value);
+        void pointerAxisSteps(u32 axis, i32 value120);
         void pointerFrame();
         void frameReady(struct wl_callback* callback);
         void cancelFrame();
@@ -155,6 +155,7 @@ namespace {
         u32 pixelWidth() const;
         u32 pixelHeight() const;
         u32 logicalForPixel(u32 pixels) const;
+        i32 logicalCoordinate(i32 pixels) const;
         u32 snappedLogical(u32 suggested, u32 unit, u32 base) const;
         void setLogicalSize(u32 width, u32 height);
         void receive(Offer& offer, bool primary, ClipboardRead& read);
@@ -187,6 +188,12 @@ namespace {
         i32 pointerY = 0;
         double scrollX = 0;
         double scrollY = 0;
+        i32 scrollStepsX = 0;
+        i32 scrollStepsY = 0;
+        i32 textInputX = 0;
+        i32 textInputY = 0;
+        u32 textInputWidth = 0;
+        u32 textInputHeight = 0;
         PointerIcon cursor = PointerIcon::Text;
         bool shown = false;
         bool configured = false;
@@ -214,6 +221,7 @@ namespace {
         void ready(PollFD event) override;
 
         void bindRegistry(u32 name, const char* interface, u32 version);
+        void globalRemoved(u32 name);
         void seatCapabilities(u32 capabilities);
         void createSelectionDevices();
         void armDisplay(bool write);
@@ -223,11 +231,14 @@ namespace {
         u64 nextDeadline() const;
         void serial(u32 value);
         void keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool repeated = false);
+        bool consumeEnterPressedKey(u32 key, u32 state);
         void repeat();
         void stopRepeat();
         u16 modifiers() const;
         InputKey inputKey(xkb_keysym_t symbol) const;
         u32 baseCodepoint(xkb_keycode_t key) const;
+        bool composing() const;
+        size_t composeFeed(xkb_keysym_t symbol, u32 codepoint, u32* codepoints, size_t capacity);
         void applyClipboardSelection();
         void applyPrimarySelection();
         void setClipboard(StringView content);
@@ -239,6 +250,12 @@ namespace {
         void completeSelection(WindowImpl& window, ClipboardRead& read, StringView content, bool success);
         void cancelSelection(WindowImpl& window, ClipboardRead* read);
         void removeTransfer(SelectionTransfer& transfer);
+        void enableTextInput(WindowImpl& window);
+        void disableTextInput();
+        void textInputEntered(struct wl_surface* surface);
+        void textInputLeft(struct wl_surface* surface);
+        void textInputDone();
+        void textInputRectChanged(WindowImpl& window, bool commit);
 
         PollerImpl* poller_ = nullptr;
         struct wl_display* display = nullptr;
@@ -261,11 +278,24 @@ namespace {
         struct wp_cursor_shape_manager_v1* cursorShapeManager = nullptr;
         struct wp_cursor_shape_device_v1* cursorShapeDevice = nullptr;
         struct wl_output* output = nullptr;
+        struct zwp_text_input_manager_v3* textInputManager = nullptr;
+        struct zwp_text_input_v3* textInput = nullptr;
+        WindowImpl* textInputWindow = nullptr;
         struct xkb_context* xkbContext = nullptr;
         struct xkb_keymap* keymap = nullptr;
         struct xkb_state* xkbState = nullptr;
+        struct xkb_compose_table* composeTable = nullptr;
+        struct xkb_compose_state* composeState = nullptr;
         WindowImpl* keyboardFocus = nullptr;
         PointerGrab pointerGrab;
+        Vector<u32> enterPressedKeys;
+        Buffer pendingPreeditText;
+        Buffer pendingCommitText;
+        i32 pendingPreeditCursorBegin = -1;
+        i32 pendingPreeditCursorEnd = -1;
+        bool pendingPreedit = false;
+        bool pendingCommit = false;
+        bool preeditVisible = false;
         WindowImpl* repeatWindow = nullptr;
         u32 repeatKeycode = 0;
         u32 repeatSerial = 0;
@@ -274,6 +304,9 @@ namespace {
         u32 repeatDelay = 0;
         u64 repeatDeadline = 0;
         u32 latestSerial = 0;
+        u32 pointerEnterSerial = 0;
+        u32 seatName = 0;
+        u32 outputName = 0;
         u32 outputWidth = 0;
         u32 outputHeight = 0;
         i32 outputScale = 1;
@@ -293,6 +326,7 @@ namespace {
         SelectionTransfer(PlatformImpl& platform, int fd, WindowImpl* window, ClipboardRead* read, StringView content, bool writing, bool success);
 
         void start();
+        void armFd(u32 flags);
         void ready(PollFD event) override;
         void ready() override;
         void cancel();
@@ -341,9 +375,101 @@ namespace {
             while (sigtimedwait(&blocked, nullptr, &timeout) < 0 && errno == EINTR) {
             }
         }
-        const int restoreError = pthread_sigmask(SIG_SETMASK, &previous, nullptr);
-        errno = result < 0 ? writeError : restoreError;
+        pthread_sigmask(SIG_SETMASK, &previous, nullptr);
+        if (result < 0) {
+            errno = writeError;
+        }
         return result;
+    }
+
+    // Decodes one UTF-8 sequence; returns the bytes consumed, or 0 when the
+    // input starts with an invalid byte which the caller should skip.
+    size_t decodeUtf8One(const u8* bytes, size_t length, u32* value) {
+        const u8 lead = bytes[0];
+        u32 decoded;
+        size_t continuations;
+        if (lead < 0x80) {
+            decoded = lead;
+            continuations = 0;
+        } else if ((lead & 0xe0) == 0xc0) {
+            decoded = lead & 0x1f;
+            continuations = 1;
+        } else if ((lead & 0xf0) == 0xe0) {
+            decoded = lead & 0x0f;
+            continuations = 2;
+        } else if ((lead & 0xf8) == 0xf0) {
+            decoded = lead & 0x07;
+            continuations = 3;
+        } else {
+            return 0;
+        }
+        if (length <= continuations) {
+            return 0;
+        }
+        for (size_t offset = 1; offset <= continuations; ++offset) {
+            const u8 continuation = bytes[offset];
+            if ((continuation & 0xc0) != 0x80) {
+                return 0;
+            }
+            decoded = (decoded << 6) | (continuation & 0x3f);
+        }
+        *value = decoded;
+        return continuations + 1;
+    }
+
+    size_t decodeUtf8(const u8* bytes, size_t length, u32* codepoints, size_t capacity) {
+        size_t count = 0;
+        for (size_t index = 0; index != length && count != capacity;) {
+            u32 value;
+            const size_t consumed = decodeUtf8One(bytes + index, length - index, &value);
+            if (consumed == 0) {
+                ++index;
+                continue;
+            }
+            index += consumed;
+            codepoints[count++] = value;
+        }
+        return count;
+    }
+
+    void releaseKeyboard(struct wl_keyboard* keyboard) {
+        if (wl_keyboard_get_version(keyboard) >= WL_KEYBOARD_RELEASE_SINCE_VERSION) {
+            wl_keyboard_release(keyboard);
+        } else {
+            wl_keyboard_destroy(keyboard);
+        }
+    }
+
+    void releasePointer(struct wl_pointer* pointer) {
+        if (wl_pointer_get_version(pointer) >= WL_POINTER_RELEASE_SINCE_VERSION) {
+            wl_pointer_release(pointer);
+        } else {
+            wl_pointer_destroy(pointer);
+        }
+    }
+
+    void releaseSeat(struct wl_seat* seat) {
+        if (wl_seat_get_version(seat) >= WL_SEAT_RELEASE_SINCE_VERSION) {
+            wl_seat_release(seat);
+        } else {
+            wl_seat_destroy(seat);
+        }
+    }
+
+    void releaseDataDevice(struct wl_data_device* device) {
+        if (wl_data_device_get_version(device) >= WL_DATA_DEVICE_RELEASE_SINCE_VERSION) {
+            wl_data_device_release(device);
+        } else {
+            wl_data_device_destroy(device);
+        }
+    }
+
+    void releaseOutput(struct wl_output* output) {
+        if (wl_output_get_version(output) >= WL_OUTPUT_RELEASE_SINCE_VERSION) {
+            wl_output_release(output);
+        } else {
+            wl_output_destroy(output);
+        }
     }
 
     [[noreturn]]
@@ -512,10 +638,26 @@ namespace {
         platform.xkbState = state;
     }
 
-    void keyboardEnter(void* data, struct wl_keyboard*, u32 serial, struct wl_surface* surface, struct wl_array*) {
+    void keyboardEnter(void* data, struct wl_keyboard*, u32 serial, struct wl_surface* surface, struct wl_array* keys) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
         platform.serial(serial);
+        // A destroyed surface arrives as a null proxy; the window teardown
+        // already dropped the focus state it would have cleared here.
+        if (surface == nullptr) {
+            return;
+        }
         platform.keyboardFocus = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
+        // Keys held while focus arrives update state only; delivering them as
+        // presses would type the key that switched focus into the terminal.
+        // Their eventual releases are suppressed to match.
+        platform.enterPressedKeys.clear();
+        if (keys != nullptr) {
+            const u32* key = (const u32*)(keys->data);
+            const u32* const keysEnd = key + keys->size / sizeof(*key);
+            for (; key != keysEnd; ++key) {
+                platform.enterPressedKeys.pushBack(*key);
+            }
+        }
         if (platform.keyboardFocus != nullptr) {
             platform.keyboardFocus->focused = true;
             platform.keyboardFocus->requestFrame();
@@ -529,7 +671,11 @@ namespace {
     void keyboardLeave(void* data, struct wl_keyboard*, u32 serial, struct wl_surface* surface) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
         platform.serial(serial);
-        WindowImpl* const window = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
+        platform.enterPressedKeys.clear();
+        if (platform.composeState != nullptr) {
+            xkb_compose_state_reset(platform.composeState);
+        }
+        WindowImpl* const window = surface == nullptr ? nullptr : (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
         if (window != nullptr) {
             window->focused = false;
             window->requestFrame();
@@ -538,7 +684,7 @@ namespace {
                 window->input->flush();
             }
         }
-        if (platform.keyboardFocus == window) {
+        if (surface == nullptr || platform.keyboardFocus == window) {
             platform.keyboardFocus = nullptr;
         }
         platform.stopRepeat();
@@ -571,24 +717,44 @@ namespace {
         .repeat_info = keyboardRepeatInfo,
     };
 
+    void pointerFrame(void* data, struct wl_pointer*) {
+        PlatformImpl& platform = *(PlatformImpl*)(data);
+        WindowImpl* const window = (WindowImpl*)(platform.pointerGrab.eventTarget());
+        if (window != nullptr) {
+            window->pointerFrame();
+        }
+    }
+
+    // Seats below version 5 never send wl_pointer.frame, so flush after every
+    // event which would otherwise wait for the end of the frame.
+    void pointerFrameFallback(PlatformImpl& platform) {
+        if (platform.pointer != nullptr && wl_pointer_get_version(platform.pointer) < WL_POINTER_FRAME_SINCE_VERSION) {
+            pointerFrame(&platform, nullptr);
+        }
+    }
+
     void pointerEnter(void* data, struct wl_pointer*, u32 serial, struct wl_surface* surface, wl_fixed_t x, wl_fixed_t y) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
         platform.serial(serial);
-        WindowImpl* const window = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
+        platform.pointerEnterSerial = serial;
+        WindowImpl* const window = surface == nullptr ? nullptr : (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
         platform.pointerGrab.enter(window);
         if (window != nullptr) {
             window->pointerEntered(serial, x, y);
         }
+        pointerFrameFallback(platform);
     }
 
     void pointerLeave(void* data, struct wl_pointer*, u32 serial, struct wl_surface* surface) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
         platform.serial(serial);
-        WindowImpl* const window = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
+        platform.pointerEnterSerial = 0;
+        WindowImpl* const window = surface == nullptr ? nullptr : (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
         if (window != nullptr) {
             window->pointerLeft();
         }
         platform.pointerGrab.leave(window);
+        pointerFrameFallback(platform);
     }
 
     void pointerMotion(void* data, struct wl_pointer*, u32, wl_fixed_t x, wl_fixed_t y) {
@@ -597,6 +763,7 @@ namespace {
         if (window != nullptr) {
             window->pointerMoved(x, y);
         }
+        pointerFrameFallback(platform);
     }
 
     void pointerButton(void* data, struct wl_pointer*, u32 serial, u32 time, u32 button, u32 state) {
@@ -606,6 +773,7 @@ namespace {
         if (window != nullptr) {
             window->pointerButton(time, button, state);
         }
+        pointerFrameFallback(platform);
     }
 
     void pointerAxis(void* data, struct wl_pointer*, u32, u32 axis, wl_fixed_t value) {
@@ -614,13 +782,14 @@ namespace {
         if (window != nullptr) {
             window->pointerAxis(axis, value);
         }
+        pointerFrameFallback(platform);
     }
 
-    void pointerFrame(void* data, struct wl_pointer*) {
+    void pointerAxisSteps(void* data, struct wl_pointer*, u32 axis, i32 value120) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
         WindowImpl* const window = (WindowImpl*)(platform.pointerGrab.eventTarget());
         if (window != nullptr) {
-            window->pointerFrame();
+            window->pointerAxisSteps(axis, value120);
         }
     }
 
@@ -633,8 +802,11 @@ namespace {
         .frame = pointerFrame,
         .axis_source = [](void*, struct wl_pointer*, u32) {},
         .axis_stop = [](void*, struct wl_pointer*, u32, u32) {},
-        .axis_discrete = [](void*, struct wl_pointer*, u32, i32) {},
-        .axis_value120 = [](void*, struct wl_pointer*, u32, i32) {},
+        .axis_discrete =
+            [](void* data, struct wl_pointer* pointer, u32 axis, i32 discrete) {
+        pointerAxisSteps(data, pointer, axis, discrete * 120);
+    },
+        .axis_value120 = pointerAxisSteps,
         .axis_relative_direction = [](void*, struct wl_pointer*, u32, u32) {},
         .warp = [](void* data, struct wl_pointer*, wl_fixed_t x, wl_fixed_t y) {
         pointerMotion(data, nullptr, 0, x, y);
@@ -677,7 +849,9 @@ namespace {
 
     const struct wl_registry_listener registryListener{
         .global = registryGlobal,
-        .global_remove = [](void*, struct wl_registry*, u32) {},
+        .global_remove = [](void* data, struct wl_registry*, u32 name) {
+        ((PlatformImpl*)(data))->globalRemoved(name);
+    },
     };
 
     const struct xdg_wm_base_listener wmBaseListener{
@@ -782,6 +956,52 @@ namespace {
         window.activationToken = nullptr;
     },
     };
+
+    void textInputPreedit(void* data, struct zwp_text_input_v3*, const char* text, i32 cursorBegin, i32 cursorEnd) {
+        PlatformImpl& platform = *(PlatformImpl*)(data);
+        platform.pendingPreeditText.reset();
+        if (text != nullptr) {
+            const StringView value(text);
+            platform.pendingPreeditText.append(value.data(), value.length());
+        }
+        platform.pendingPreeditCursorBegin = cursorBegin;
+        platform.pendingPreeditCursorEnd = cursorEnd;
+        platform.pendingPreedit = true;
+    }
+
+    void textInputCommit(void* data, struct zwp_text_input_v3*, const char* text) {
+        PlatformImpl& platform = *(PlatformImpl*)(data);
+        platform.pendingCommitText.reset();
+        if (text != nullptr) {
+            const StringView value(text);
+            platform.pendingCommitText.append(value.data(), value.length());
+        }
+        platform.pendingCommit = true;
+    }
+
+    const struct zwp_text_input_v3_listener textInputListener{
+        .enter =
+            [](void* data, struct zwp_text_input_v3*, struct wl_surface* surface) {
+        ((PlatformImpl*)(data))->textInputEntered(surface);
+    },
+        .leave =
+            [](void* data, struct zwp_text_input_v3*, struct wl_surface* surface) {
+        ((PlatformImpl*)(data))->textInputLeft(surface);
+    },
+        .preedit_string = textInputPreedit,
+        .commit_string = textInputCommit,
+        // A terminal has no surrounding text for the input method to delete.
+        .delete_surrounding_text = [](void*, struct zwp_text_input_v3*, u32, u32) {},
+        .done =
+            [](void* data, struct zwp_text_input_v3*, u32) {
+        ((PlatformImpl*)(data))->textInputDone();
+    },
+        // Version 2 events; never delivered because the manager is bound at
+        // version 1.
+        .action = [](void*, struct zwp_text_input_v3*, u32, u32) {},
+        .language = [](void*, struct zwp_text_input_v3*, const char*) {},
+        .preedit_hint = [](void*, struct zwp_text_input_v3*, u32, u32, u32) {},
+    };
 }
 
 void Offer::reset() {
@@ -808,7 +1028,8 @@ SelectionTransfer::SelectionTransfer(PlatformImpl& platform_, int fd_, WindowImp
     , content(content_)
     , fd(fd_)
     , writing(writing_)
-    , success(success_) {
+    , success(success_)
+{
     next = platform.transfers;
     platform.transfers = this;
 }
@@ -832,14 +1053,22 @@ void SelectionTransfer::start() {
         }
         return;
     }
+    armFd(writing ? PollFlag::Out : PollFlag::In);
+}
+
+void SelectionTransfer::armFd(u32 flags) {
     fdArmed = true;
     platform.poller_->arm(
         {
             .fd = fd,
-            .flags = writing ? PollFlag::Out : PollFlag::In,
+            .flags = flags,
         },
         *this
     );
+    // Watchdog: every fd wait re-arms the deadline, so it fires only when the
+    // peer stops making the descriptor ready at all.
+    timerArmed = true;
+    platform.poller_->timeout(selectionTransferTimeoutUs, *this);
 }
 
 void SelectionTransfer::ready(PollFD) {
@@ -867,8 +1096,7 @@ void SelectionTransfer::ready(PollFD) {
             dispose();
             return;
         }
-        fdArmed = true;
-        platform.poller_->arm({.fd = fd, .flags = PollFlag::Out}, *this);
+        armFd(PollFlag::Out);
         return;
     }
 
@@ -887,13 +1115,11 @@ void SelectionTransfer::ready(PollFD) {
             finish(false);
             return;
         }
-        fdArmed = true;
-        platform.poller_->arm({.fd = fd, .flags = PollFlag::In}, *this);
+        armFd(PollFlag::In);
     } else if (count == 0) {
         finish(true);
     } else if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-        fdArmed = true;
-        platform.poller_->arm({.fd = fd, .flags = PollFlag::In}, *this);
+        armFd(PollFlag::In);
     } else {
         finish(false);
     }
@@ -903,6 +1129,11 @@ void SelectionTransfer::ready() {
     timerArmed = false;
     if (cancelled) {
         dispose();
+        return;
+    }
+    if (fd >= 0) {
+        // The watchdog fired: the peer stalled, abort the transfer.
+        finish(false);
         return;
     }
     bool accepted = success;
@@ -955,7 +1186,8 @@ void SelectionTransfer::dispose() {
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
-    : poller_(owner.make<PollerImpl>(owner)) {
+    : poller_(owner.make<PollerImpl>(owner))
+{
     display = wl_display_connect(nullptr);
     if (display == nullptr) {
         fail(u8"wl_display_connect failed");
@@ -963,6 +1195,22 @@ PlatformImpl::PlatformImpl(ObjPool& owner)
     xkbContext = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     if (xkbContext == nullptr) {
         fail(u8"xkb_context_new failed");
+    }
+    const char* locale = getenv("LC_ALL");
+    if (locale == nullptr || *locale == 0) {
+        locale = getenv("LC_CTYPE");
+    }
+    if (locale == nullptr || *locale == 0) {
+        locale = getenv("LANG");
+    }
+    if (locale == nullptr || *locale == 0) {
+        locale = "C";
+    }
+    // Dead-key compose sequences. A missing table (e.g. a plain "C" locale
+    // without compose data) simply disables composition.
+    composeTable = xkb_compose_table_new_from_locale(xkbContext, locale, XKB_COMPOSE_COMPILE_NO_FLAGS);
+    if (composeTable != nullptr) {
+        composeState = xkb_compose_state_new(composeTable, XKB_COMPOSE_STATE_NO_FLAGS);
     }
     registry = wl_display_get_registry(display);
     wl_registry_add_listener(registry, &registryListener, this);
@@ -992,26 +1240,32 @@ PlatformImpl::~PlatformImpl() {
     if (primarySource != nullptr) {
         zwp_primary_selection_source_v1_destroy(primarySource);
     }
+    if (textInput != nullptr) {
+        zwp_text_input_v3_destroy(textInput);
+    }
+    if (textInputManager != nullptr) {
+        zwp_text_input_manager_v3_destroy(textInputManager);
+    }
     if (cursorShapeDevice != nullptr) {
         wp_cursor_shape_device_v1_destroy(cursorShapeDevice);
     }
     if (pointer != nullptr) {
-        wl_pointer_release(pointer);
+        releasePointer(pointer);
     }
     if (keyboard != nullptr) {
-        wl_keyboard_release(keyboard);
+        releaseKeyboard(keyboard);
     }
     if (dataDevice != nullptr) {
-        wl_data_device_release(dataDevice);
+        releaseDataDevice(dataDevice);
     }
     if (primaryDevice != nullptr) {
         zwp_primary_selection_device_v1_destroy(primaryDevice);
     }
     if (output != nullptr) {
-        wl_output_release(output);
+        releaseOutput(output);
     }
     if (seat != nullptr) {
-        wl_seat_release(seat);
+        releaseSeat(seat);
     }
     if (cursorShapeManager != nullptr) {
         wp_cursor_shape_manager_v1_destroy(cursorShapeManager);
@@ -1042,6 +1296,12 @@ PlatformImpl::~PlatformImpl() {
     }
     if (registry != nullptr) {
         wl_registry_destroy(registry);
+    }
+    if (composeState != nullptr) {
+        xkb_compose_state_unref(composeState);
+    }
+    if (composeTable != nullptr) {
+        xkb_compose_table_unref(composeTable);
     }
     if (xkbState != nullptr) {
         xkb_state_unref(xkbState);
@@ -1113,8 +1373,9 @@ void PlatformImpl::bindRegistry(u32 name, const char* interface, u32 version) {
     } else if (StringView(interface) == StringView(xdg_wm_base_interface.name)) {
         wmBase = (struct xdg_wm_base*)(wl_registry_bind(registry, name, &xdg_wm_base_interface, min(version, 6u)));
         xdg_wm_base_add_listener(wmBase, &wmBaseListener, this);
-    } else if (StringView(interface) == StringView(wl_seat_interface.name)) {
+    } else if (StringView(interface) == StringView(wl_seat_interface.name) && seat == nullptr) {
         seat = (struct wl_seat*)(wl_registry_bind(registry, name, &wl_seat_interface, min(version, 8u)));
+        seatName = name;
         wl_seat_add_listener(seat, &seatListener, this);
     } else if (StringView(interface) == StringView(wl_data_device_manager_interface.name)) {
         dataDeviceManager = (struct wl_data_device_manager*)(wl_registry_bind(registry, name, &wl_data_device_manager_interface, min(version, 3u)));
@@ -1130,9 +1391,46 @@ void PlatformImpl::bindRegistry(u32 name, const char* interface, u32 version) {
         activation = (struct xdg_activation_v1*)(wl_registry_bind(registry, name, &xdg_activation_v1_interface, 1));
     } else if (StringView(interface) == StringView(wp_cursor_shape_manager_v1_interface.name)) {
         cursorShapeManager = (struct wp_cursor_shape_manager_v1*)(wl_registry_bind(registry, name, &wp_cursor_shape_manager_v1_interface, 1));
+    } else if (StringView(interface) == StringView(zwp_text_input_manager_v3_interface.name)) {
+        textInputManager = (struct zwp_text_input_manager_v3*)(wl_registry_bind(registry, name, &zwp_text_input_manager_v3_interface, 1));
+        createSelectionDevices();
     } else if (StringView(interface) == StringView(wl_output_interface.name) && output == nullptr) {
         output = (struct wl_output*)(wl_registry_bind(registry, name, &wl_output_interface, min(version, 4u)));
+        outputName = name;
         wl_output_add_listener(output, &outputListener, this);
+    }
+}
+
+void PlatformImpl::globalRemoved(u32 name) {
+    if (name == outputName && output != nullptr) {
+        releaseOutput(output);
+        output = nullptr;
+        outputName = 0;
+        outputWidth = 0;
+        outputHeight = 0;
+        outputScale = 1;
+        return;
+    }
+    if (name == seatName && seat != nullptr) {
+        // Drop every seat-derived object; a replacement seat rebinds through
+        // the registry and re-creates them from its capabilities.
+        seatCapabilities(0);
+        if (textInput != nullptr) {
+            zwp_text_input_v3_destroy(textInput);
+            textInput = nullptr;
+            textInputWindow = nullptr;
+        }
+        if (dataDevice != nullptr) {
+            releaseDataDevice(dataDevice);
+            dataDevice = nullptr;
+        }
+        if (primaryDevice != nullptr) {
+            zwp_primary_selection_device_v1_destroy(primaryDevice);
+            primaryDevice = nullptr;
+        }
+        releaseSeat(seat);
+        seat = nullptr;
+        seatName = 0;
     }
 }
 
@@ -1141,9 +1439,10 @@ void PlatformImpl::seatCapabilities(u32 capabilities) {
         keyboard = wl_seat_get_keyboard(seat);
         wl_keyboard_add_listener(keyboard, &keyboardListener, this);
     } else if (!(capabilities & WL_SEAT_CAPABILITY_KEYBOARD) && keyboard != nullptr) {
-        wl_keyboard_release(keyboard);
+        releaseKeyboard(keyboard);
         keyboard = nullptr;
         keyboardFocus = nullptr;
+        enterPressedKeys.clear();
         stopRepeat();
     }
     if ((capabilities & WL_SEAT_CAPABILITY_POINTER) && pointer == nullptr) {
@@ -1157,8 +1456,9 @@ void PlatformImpl::seatCapabilities(u32 capabilities) {
             wp_cursor_shape_device_v1_destroy(cursorShapeDevice);
             cursorShapeDevice = nullptr;
         }
-        wl_pointer_release(pointer);
+        releasePointer(pointer);
         pointer = nullptr;
+        pointerEnterSerial = 0;
         pointerGrab.reset();
     }
     createSelectionDevices();
@@ -1176,10 +1476,16 @@ void PlatformImpl::createSelectionDevices() {
         primaryDevice = zwp_primary_selection_device_manager_v1_get_device(primaryManager, seat);
         zwp_primary_selection_device_v1_add_listener(primaryDevice, &primaryDeviceListener, this);
     }
+    if (textInputManager != nullptr && textInput == nullptr) {
+        textInput = zwp_text_input_manager_v3_get_text_input(textInputManager, seat);
+        zwp_text_input_v3_add_listener(textInput, &textInputListener, this);
+    }
 }
 
 PollerImpl::PollerImpl(ObjPool& owner)
-    : armed(ObjPool::create(&owner)) {
+    : armed(ObjPool::create(&owner))
+    , timers(owner)
+{
 }
 
 u64 PollerImpl::allocateGeneration() {
@@ -1203,69 +1509,26 @@ void PollerImpl::disarm(int fd) {
 }
 
 void PollerImpl::timeout(u64 microseconds, TimerCallback& callback) {
-    deadline(monotonicNowUs() + microseconds, callback);
+    timers.schedule(monotonicNowUs() + microseconds, callback);
 }
 
 void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
     if (monotonicMicroseconds == 0) {
         monotonicMicroseconds = monotonicNowUs();
     }
-    for (Timer* timer = timers.mutBegin(); timer != timers.mutEnd(); ++timer) {
-        if (timer->callback == &callback) {
-            timer->deadline = monotonicMicroseconds;
-            timer->generation = allocateGeneration();
-            return;
-        }
-    }
-    timers.pushBack({
-        .callback = &callback,
-        .deadline = monotonicMicroseconds,
-        .generation = allocateGeneration(),
-    });
+    timers.schedule(monotonicMicroseconds, callback);
 }
 
 void PollerImpl::cancel(TimerCallback& callback) {
-    for (size_t index = 0; index != timers.length(); ++index) {
-        if (timers[index].callback == &callback) {
-            timers.mut(index) = timers.back();
-            timers.popBack();
-            return;
-        }
-    }
+    timers.cancel(callback);
 }
 
 u64 PollerImpl::nextDeadline() const {
-    u64 result = UINT64_MAX;
-    for (const Timer& timer : timers) {
-        result = min(result, timer.deadline);
-    }
-    return result;
+    return timers.nextDeadline();
 }
 
 void PollerImpl::dispatchTimers() {
-    const u64 now = monotonicNowUs();
-    readyTimers.clear();
-    for (size_t index = 0; index != timers.length();) {
-        if (timers[index].deadline > now) {
-            ++index;
-            continue;
-        }
-        readyTimers.pushBack({.generation = timers[index].generation});
-        ++index;
-    }
-    for (const ReadyTimer& ready : readyTimers) {
-        for (size_t index = 0; index != timers.length(); ++index) {
-            if (timers[index].generation != ready.generation) {
-                continue;
-            }
-            TimerCallback* const callback = timers[index].callback;
-            timers.mut(index) = timers.back();
-            timers.popBack();
-            callback->ready();
-            break;
-        }
-    }
-    readyTimers.clear();
+    timers.dispatch(monotonicNowUs());
 }
 
 void PollerImpl::wait(u64 monotonicDeadline) {
@@ -1569,8 +1832,57 @@ void PlatformImpl::serial(u32 value) {
     applyPrimarySelection();
 }
 
+bool PlatformImpl::consumeEnterPressedKey(u32 key, u32 state) {
+    for (size_t index = 0; index != enterPressedKeys.length(); ++index) {
+        if (enterPressedKeys[index] != key) {
+            continue;
+        }
+        enterPressedKeys.mut(index) = enterPressedKeys.back();
+        enterPressedKeys.popBack();
+        // The press was never delivered, so swallow its release too. A fresh
+        // press of the same keycode flows through normally from now on.
+        return state == WL_KEYBOARD_KEY_STATE_RELEASED;
+    }
+    return false;
+}
+
+bool PlatformImpl::composing() const {
+    return composeState != nullptr && xkb_compose_state_get_status(composeState) == XKB_COMPOSE_COMPOSING;
+}
+
+size_t PlatformImpl::composeFeed(xkb_keysym_t symbol, u32 codepoint, u32* codepoints, size_t capacity) {
+    if (composeState != nullptr && xkb_compose_state_feed(composeState, symbol) == XKB_COMPOSE_FEED_ACCEPTED) {
+        switch (xkb_compose_state_get_status(composeState)) {
+            case XKB_COMPOSE_COMPOSING:
+                return 0;
+            case XKB_COMPOSE_COMPOSED: {
+                char buffer[64];
+                const int length = xkb_compose_state_get_utf8(composeState, buffer, sizeof(buffer));
+                xkb_compose_state_reset(composeState);
+                if (length <= 0) {
+                    return 0;
+                }
+                return decodeUtf8((const u8*)(buffer), min((size_t)(length), sizeof(buffer) - 1), codepoints, capacity);
+            }
+            case XKB_COMPOSE_CANCELLED:
+                xkb_compose_state_reset(composeState);
+                return 0;
+            case XKB_COMPOSE_NOTHING:
+                break;
+        }
+    }
+    if (codepoint != 0) {
+        codepoints[0] = codepoint;
+        return 1;
+    }
+    return 0;
+}
+
 void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool repeated) {
     this->serial(serial);
+    if (!repeated && consumeEnterPressedKey(key, state)) {
+        return;
+    }
     if (keyboardFocus == nullptr || keyboardFocus->input == nullptr || xkbState == nullptr) {
         return;
     }
@@ -1578,18 +1890,31 @@ void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool re
     const xkb_keysym_t symbol = xkb_state_key_get_one_sym(xkbState, keycode);
     const InputAction action = repeated ? InputAction::Repeat : (state == WL_KEYBOARD_KEY_STATE_PRESSED ? InputAction::Press : InputAction::Release);
     const u32 codepoint = xkb_state_key_get_utf32(xkbState, keycode);
+    u32 composed[8];
+    size_t composedCount = 0;
+    if (action == InputAction::Press) {
+        composedCount = composeFeed(symbol, codepoint, composed, sizeof(composed) / sizeof(composed[0]));
+    } else if (action == InputAction::Repeat && !composing() && codepoint != 0) {
+        composed[0] = codepoint;
+        composedCount = 1;
+    }
+    const u16 activeModifiers = modifiers();
     keyboardFocus->input->key({
         .key = inputKey(symbol),
         .action = action,
-        .modifiers = modifiers(),
-        .layoutCodepoint = codepoint,
+        .modifiers = activeModifiers,
+        .layoutCodepoint = composedCount != 0 ? composed[0] : codepoint,
         .baseCodepoint = baseCodepoint(keycode),
     });
-    if (action != InputAction::Release && codepoint >= 0x20 && codepoint != 0x7f && !(modifiers() & (InputControl | InputSuper))) {
-        keyboardFocus->input->text({
-            .codepoint = codepoint,
-            .modifiers = modifiers(),
-        });
+    if (action != InputAction::Release && !(activeModifiers & (InputControl | InputSuper))) {
+        for (size_t index = 0; index != composedCount; ++index) {
+            if (composed[index] >= 0x20 && composed[index] != 0x7f) {
+                keyboardFocus->input->text({
+                    .codepoint = composed[index],
+                    .modifiers = activeModifiers,
+                });
+            }
+        }
     }
     keyboardFocus->input->flush();
 
@@ -1605,13 +1930,22 @@ void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool re
 }
 
 void PlatformImpl::repeat() {
-    if (repeatWindow == nullptr || repeatRate == 0) {
+    if (repeatWindow == nullptr || repeatRate == 0 || repeatWindow != keyboardFocus) {
         stopRepeat();
         return;
     }
-    keyboardFocus = repeatWindow;
     keyboardKey(repeatSerial, repeatTime, repeatKeycode, WL_KEYBOARD_KEY_STATE_PRESSED, true);
-    repeatDeadline = monotonicNowUs() + 1'000'000 / repeatRate;
+    if (repeatDeadline == 0) {
+        return;
+    }
+    // Advance from the previous deadline so the repeat rate does not drift,
+    // but never schedule into the past after a stall.
+    const u64 interval = 1'000'000 / repeatRate;
+    repeatDeadline += interval;
+    const u64 now = monotonicNowUs();
+    if (repeatDeadline <= now) {
+        repeatDeadline = now + interval;
+    }
 }
 
 void PlatformImpl::stopRepeat() {
@@ -1699,11 +2033,14 @@ void PlatformImpl::setPrimary(StringView content) {
 }
 
 void PlatformImpl::setCursor(WindowImpl& window) {
-    if (cursorShapeDevice == nullptr || pointerGrab.focusTarget() != &window || latestSerial == 0) {
+    // set_shape validates against the wl_pointer.enter serial; any newer
+    // serial (e.g. from a keyboard event) makes compositors ignore the
+    // request.
+    if (cursorShapeDevice == nullptr || pointerGrab.focusTarget() != &window || pointerEnterSerial == 0) {
         return;
     }
     const u32 shape = window.cursor == PointerIcon::Link ? WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER : WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT;
-    wp_cursor_shape_device_v1_set_shape(cursorShapeDevice, latestSerial, shape);
+    wp_cursor_shape_device_v1_set_shape(cursorShapeDevice, pointerEnterSerial, shape);
 }
 
 void PlatformImpl::activate(WindowImpl& window) {
@@ -1719,6 +2056,118 @@ void PlatformImpl::activate(WindowImpl& window) {
     xdg_activation_token_v1_commit(window.activationToken);
 }
 
+void PlatformImpl::enableTextInput(WindowImpl& window) {
+    if (textInput == nullptr) {
+        return;
+    }
+    zwp_text_input_v3_enable(textInput);
+    zwp_text_input_v3_set_content_type(textInput, ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE, ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_TERMINAL);
+    if (window.textInputWidth != 0 && window.textInputHeight != 0) {
+        textInputRectChanged(window, false);
+    }
+    zwp_text_input_v3_commit(textInput);
+    flushDisplay();
+}
+
+void PlatformImpl::disableTextInput() {
+    if (textInput == nullptr) {
+        return;
+    }
+    zwp_text_input_v3_disable(textInput);
+    zwp_text_input_v3_commit(textInput);
+    flushDisplay();
+}
+
+void PlatformImpl::textInputEntered(struct wl_surface* surface) {
+    if (surface == nullptr) {
+        return;
+    }
+    textInputWindow = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
+    if (textInputWindow != nullptr) {
+        enableTextInput(*textInputWindow);
+    }
+}
+
+void PlatformImpl::textInputLeft(struct wl_surface* surface) {
+    WindowImpl* const window = surface == nullptr ? nullptr : (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
+    if (surface != nullptr && window != textInputWindow) {
+        return;
+    }
+    WindowImpl* const focused = textInputWindow;
+    textInputWindow = nullptr;
+    disableTextInput();
+    pendingPreedit = false;
+    pendingCommit = false;
+    pendingPreeditText.reset();
+    pendingCommitText.reset();
+    if (preeditVisible && focused != nullptr && focused->input != nullptr) {
+        focused->input->preedit({}, -1, -1);
+        focused->input->flush();
+    }
+    preeditVisible = false;
+}
+
+void PlatformImpl::textInputDone() {
+    // Pending values are double-buffered: done applies them and resets the
+    // pending state, so a batch without a preedit string clears the preview.
+    const bool commitPending = pendingCommit;
+    const bool preeditPending = pendingPreedit;
+    pendingCommit = false;
+    pendingPreedit = false;
+    WindowImpl* const window = textInputWindow;
+    if (window == nullptr || window->input == nullptr) {
+        pendingCommitText.reset();
+        pendingPreeditText.reset();
+        preeditVisible = false;
+        return;
+    }
+    bool delivered = false;
+    if (commitPending && !pendingCommitText.empty()) {
+        const u16 activeModifiers = modifiers();
+        const u8* const bytes = (const u8*)(pendingCommitText.data());
+        const size_t length = pendingCommitText.length();
+        for (size_t index = 0; index != length;) {
+            u32 value;
+            const size_t consumed = decodeUtf8One(bytes + index, length - index, &value);
+            if (consumed == 0) {
+                ++index;
+                continue;
+            }
+            index += consumed;
+            if (value >= 0x20 && value != 0x7f) {
+                window->input->text({
+                    .codepoint = value,
+                    .modifiers = activeModifiers,
+                });
+                delivered = true;
+            }
+        }
+    }
+    const StringView preeditText = preeditPending ? StringView(pendingPreeditText) : StringView();
+    const bool preeditShown = !preeditText.empty();
+    if (preeditShown || preeditVisible) {
+        window->input->preedit(preeditText, preeditPending ? pendingPreeditCursorBegin : -1, preeditPending ? pendingPreeditCursorEnd : -1);
+        delivered = true;
+    }
+    preeditVisible = preeditShown;
+    if (delivered) {
+        window->input->flush();
+    }
+    pendingCommitText.reset();
+    pendingPreeditText.reset();
+}
+
+void PlatformImpl::textInputRectChanged(WindowImpl& window, bool commit) {
+    if (textInput == nullptr || textInputWindow != &window) {
+        return;
+    }
+    zwp_text_input_v3_set_cursor_rectangle(textInput, window.logicalCoordinate(window.textInputX), window.logicalCoordinate(window.textInputY), (i32)(window.logicalForPixel(window.textInputWidth)), (i32)(window.logicalForPixel(window.textInputHeight)));
+    if (commit) {
+        zwp_text_input_v3_commit(textInput);
+        flushDisplay();
+    }
+}
+
 WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     : platform(platform_)
     , input(options.input)
@@ -1727,7 +2176,8 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     , logicalWidth(max(1u, options.width))
     , logicalHeight(max(1u, options.height))
     , minimumWidth(max(1u, options.minimumWidth))
-    , minimumHeight(max(1u, options.minimumHeight)) {
+    , minimumHeight(max(1u, options.minimumHeight))
+{
     surface = wl_compositor_create_surface(platform.compositor);
     if (surface == nullptr) {
         fail(u8"wl_compositor_create_surface failed");
@@ -1769,6 +2219,9 @@ WindowImpl::~WindowImpl() {
         platform.keyboardFocus = nullptr;
         platform.stopRepeat();
     }
+    if (platform.textInputWindow == this) {
+        platform.textInputWindow = nullptr;
+    }
     platform.pointerGrab.remove(this);
     cancelFrame();
     if (activationToken != nullptr) {
@@ -1804,6 +2257,10 @@ u32 WindowImpl::pixelHeight() const {
 
 u32 WindowImpl::logicalForPixel(u32 pixels) const {
     return max(1u, (u32)(((u64)(pixels)*scaleDenominator + scaleNumerator - 1) / scaleNumerator));
+}
+
+i32 WindowImpl::logicalCoordinate(i32 pixels) const {
+    return (i32)(((i64)(pixels)*scaleDenominator) / (i64)(scaleNumerator));
 }
 
 u32 WindowImpl::snappedLogical(u32 suggested, u32 unit, u32 base) const {
@@ -1913,6 +2370,9 @@ void WindowImpl::ready() {
     if (frameCallback != nullptr) {
         wl_callback_add_listener(frameCallback, &frameListener, this);
     }
+    // The renderer's Vulkan WSI owns buffer attachment for this surface; this
+    // is a state-only commit which latches the frame callback. Both run on
+    // this thread, so the commit cannot interleave with a WSI present.
     wl_surface_commit(surface);
 }
 
@@ -2070,6 +2530,17 @@ void WindowImpl::requestPointerIcon(PointerIcon icon) {
     updateCursor();
 }
 
+void WindowImpl::requestTextInputRect(i32 x, i32 y, u32 width, u32 height) {
+    if (x == textInputX && y == textInputY && width == textInputWidth && height == textInputHeight) {
+        return;
+    }
+    textInputX = x;
+    textInputY = y;
+    textInputWidth = width;
+    textInputHeight = height;
+    platform.textInputRectChanged(*this, true);
+}
+
 void WindowImpl::updateCursor() {
     platform.setCursor(*this);
 }
@@ -2151,12 +2622,29 @@ void WindowImpl::pointerAxis(u32 axis, wl_fixed_t value) {
     }
 }
 
+void WindowImpl::pointerAxisSteps(u32 axis, i32 value120) {
+    if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
+        scrollStepsX += value120;
+    } else if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+        scrollStepsY += value120;
+    }
+}
+
 void WindowImpl::pointerFrame() {
     if (input != nullptr) {
-        if (scrollX != 0 || scrollY != 0) {
+        // Wheel frames carry the intended step count in value120/discrete
+        // units; prefer them over the continuous-axis heuristic, which only
+        // approximates lines from smooth-scroll distance.
+        double lineX = -scrollX / 10.0;
+        double lineY = -scrollY / 10.0;
+        if (scrollStepsX != 0 || scrollStepsY != 0) {
+            lineX = -scrollStepsX / 120.0;
+            lineY = -scrollStepsY / 120.0;
+        }
+        if (lineX != 0 || lineY != 0) {
             input->scroll({
-                .x = -scrollX / 10.0,
-                .y = -scrollY / 10.0,
+                .x = lineX,
+                .y = lineY,
                 .pixelX = pointerX,
                 .pixelY = pointerY,
                 .modifiers = platform.modifiers(),
@@ -2166,6 +2654,8 @@ void WindowImpl::pointerFrame() {
     }
     scrollX = 0;
     scrollY = 0;
+    scrollStepsX = 0;
+    scrollStepsY = 0;
 }
 
 RenderContext WindowImpl::renderContext() const {

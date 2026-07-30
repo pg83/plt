@@ -84,6 +84,9 @@ namespace plt {
         virtual void requestMinimumSize(u32 width, u32 height) = 0;
         virtual void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) = 0;
 
+        // On macOS "primary" maps to the Find pasteboard: the platform has no
+        // primary selection, and the Find pasteboard is the closest persistent
+        // per-application slot. Reads may therefore observe search-field text.
         virtual void requestReadPrimary(ClipboardRead& read) = 0;
         virtual void requestReadClipboard(ClipboardRead& read) = 0;
         // After this returns, read receives no more callbacks for cancelled transfers.
@@ -91,6 +94,10 @@ namespace plt {
         virtual void requestWritePrimary(stl::StringView content) = 0;
         virtual void requestWriteClipboard(stl::StringView content) = 0;
         virtual void requestPointerIcon(PointerIcon icon) = 0;
+        // Caret rectangle in surface pixels. Input methods position their
+        // candidate window next to it (text-input-v3 cursor rectangle on
+        // Wayland, firstRectForCharacterRange on macOS).
+        virtual void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) = 0;
 
         virtual WindowInfo info() const = 0;
         virtual RenderContext renderContext() const = 0;

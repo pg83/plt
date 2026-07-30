@@ -1,5 +1,6 @@
 #pragma once
 
+#include <std/str/view.h>
 #include <std/sys/types.h>
 
 namespace plt {
@@ -188,6 +189,11 @@ namespace plt {
     struct InputSink {
         virtual void key(const KeyInput& input) = 0;
         virtual void text(const TextInput& input) = 0;
+        // Input-method composition preview. text is UTF-8 and valid only for
+        // the duration of the call; cursorBegin/cursorEnd are byte offsets
+        // into text, or -1 when the input method hides the preedit cursor.
+        // An empty text clears the preview.
+        virtual void preedit(stl::StringView text, i32 cursorBegin, i32 cursorEnd) = 0;
         virtual void pointerMotion(const PointerMotionInput& input) = 0;
         virtual void pointerButton(const PointerButtonInput& input) = 0;
         virtual void scroll(const ScrollInput& input) = 0;

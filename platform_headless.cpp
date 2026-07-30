@@ -52,6 +52,7 @@ namespace {
         void requestWritePrimary(StringView content) override;
         void requestWriteClipboard(StringView content) override;
         void requestPointerIcon(PointerIcon icon) override;
+        void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) override;
         WindowInfo info() const override;
         RenderContext renderContext() const override;
 
@@ -119,7 +120,8 @@ namespace {
 
 WindowHeadlessImpl::WindowHeadlessImpl(const WindowOptions& options)
     : events(options.events)
-    , frame(options.frame) {
+    , frame(options.frame)
+{
     info_.x = 10;
     info_.y = 20;
     info_.width = std::max(1u, options.width);
@@ -248,6 +250,9 @@ void WindowHeadlessImpl::requestWriteClipboard(StringView) {
 }
 
 void WindowHeadlessImpl::requestPointerIcon(PointerIcon) {
+}
+
+void WindowHeadlessImpl::requestTextInputRect(i32, i32, u32, u32) {
 }
 
 WindowInfo WindowHeadlessImpl::info() const {

@@ -24,6 +24,7 @@ common_sources = [
     "$(S)/pointer_grab.cpp",
     "$(S)/platform.cpp",
     "$(S)/platform_headless.cpp",
+    "$(S)/timer_queue.cpp",
     "$(S)/window.cpp",
 ]
 target_platform = build.target
@@ -44,6 +45,7 @@ if system == "Linux":
         "staging/xdg-activation/xdg-activation-v1",
         "unstable/primary-selection/primary-selection-unstable-v1",
         "unstable/tablet/tablet-unstable-v2",
+        "unstable/text-input/text-input-unstable-v3",
         "staging/cursor-shape/cursor-shape-v1",
     ]
     protocol_outputs = []
@@ -67,6 +69,7 @@ if system == "Linux":
             "xdg-activation-v1",
             "primary-selection-unstable-v1",
             "tablet-unstable-v2",
+            "text-input-unstable-v3",
             "cursor-shape-v1",
         }:
             server_header = f"$(B)/protocol/{protocol}-server-protocol.h"
@@ -134,6 +137,7 @@ if build.target == build.host:
         srcs=[
             "$(S)/tests/test_ut.cpp",
             "$(S)/pointer_grab_ut.cpp",
+            "$(S)/timer_queue_ut.cpp",
         ],
         deps=[libplt, libstd],
     )

@@ -3,6 +3,7 @@
 #include "cursor-shape-v1-server-protocol.h"
 #include "fractional-scale-v1-server-protocol.h"
 #include "primary-selection-unstable-v1-server-protocol.h"
+#include "text-input-unstable-v3-server-protocol.h"
 #include "viewporter-server-protocol.h"
 #include "xdg-activation-v1-server-protocol.h"
 #include "xdg-decoration-unstable-v1-server-protocol.h"
@@ -40,9 +41,7 @@ namespace plt::test {
     bool transfer(int fd, void* data, size_t size, bool writeData) {
         auto* cursor = static_cast<unsigned char*>(data);
         while (size != 0) {
-            const ssize_t count = writeData
-                ? write(fd, cursor, size)
-                : read(fd, cursor, size);
+            const ssize_t count = writeData ? write(fd, cursor, size) : read(fd, cursor, size);
             if (count > 0) {
                 cursor += count;
                 size -= static_cast<size_t>(count);
@@ -84,13 +83,7 @@ namespace plt::test {
         void handle(Command command, int controlFd);
         bool offerSelection(const char* mime);
         void sendInitialConfigure(Surface& surface);
-        void sendConfigure(
-            Surface& surface,
-            i32 width,
-            i32 height,
-            const u32* states,
-            size_t stateCount
-        );
+        void sendConfigure(Surface& surface, i32 width, i32 height, const u32* states, size_t stateCount);
 
         wl_display* display = nullptr;
         wl_event_loop* loop = nullptr;
@@ -104,6 +97,8 @@ namespace plt::test {
         wl_resource* primarySource = nullptr;
         wl_resource* primaryOffer = nullptr;
         wl_resource* cursorShapeDevice = nullptr;
+        wl_resource* textInput = nullptr;
+        wl_global* outputGlobal = nullptr;
         Surface* window = nullptr;
         Vector<wl_resource*> frameCallbacks;
         wl_event_source* writeSource = nullptr;
@@ -119,6 +114,17 @@ namespace plt::test {
         u32 frameRequestCount = 0;
         u32 cursorShapeCount = 0;
         u32 cursorShape = 0;
+        u32 cursorShapeSerial = 0;
+        u32 pointerEnterSerial = 0;
+        u32 textInputCommitCount = 0;
+        u32 textInputPurpose = 0;
+        i32 textInputRectX = 0;
+        i32 textInputRectY = 0;
+        i32 textInputRectWidth = 0;
+        i32 textInputRectHeight = 0;
+        bool textInputEnabled = false;
+        bool textInputPendingEnabled = false;
+        bool textInputPendingDisabled = false;
         u32 activationCount = 0;
         i32 geometryWidth = 0;
         i32 geometryHeight = 0;
@@ -132,21 +138,8 @@ namespace plt::test {
         wl_resource_destroy(resource);
     }
 
-    void bindSimple(
-        wl_client* client,
-        void*,
-        u32 version,
-        u32 id,
-        const wl_interface* interface,
-        const void* implementation,
-        void* data
-    ) {
-        wl_resource* const resource = wl_resource_create(
-            client,
-            interface,
-            static_cast<int>(version),
-            id
-        );
+    void bindSimple(wl_client* client, void*, u32 version, u32 id, const wl_interface* interface, const void* implementation, void* data) {
+        wl_resource* const resource = wl_resource_create(client, interface, static_cast<int>(version), id);
         wl_resource_set_implementation(resource, implementation, data, nullptr);
     }
 
@@ -155,11 +148,8 @@ namespace plt::test {
     }
 
     void surfaceCommit(wl_client*, wl_resource* resource) {
-        Surface* const surface =
-            static_cast<Surface*>(wl_resource_get_user_data(resource));
-        if (surface->xdgSurface != nullptr && surface->toplevel != nullptr
-            && !surface->configured
-            && !surface->server->deferInitialConfigure) {
+        Surface* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        if (surface->xdgSurface != nullptr && surface->toplevel != nullptr && !surface->configured && !surface->server->deferInitialConfigure) {
             surface->server->sendInitialConfigure(*surface);
         }
     }
@@ -168,14 +158,13 @@ namespace plt::test {
         .destroy = destroyResource,
         .attach = [](wl_client*, wl_resource*, wl_resource*, i32, i32) {},
         .damage = [](wl_client*, wl_resource*, i32, i32, i32, i32) {},
-        .frame = [](wl_client* client, wl_resource* resource, u32 id) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(resource));
-            wl_resource* const callback =
-                wl_resource_create(client, &wl_callback_interface, 1, id);
-            surface->server->frameCallbacks.pushBack(callback);
-            ++surface->server->frameRequestCount;
-        },
+        .frame =
+            [](wl_client* client, wl_resource* resource, u32 id) {
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        wl_resource* const callback = wl_resource_create(client, &wl_callback_interface, 1, id);
+        surface->server->frameCallbacks.pushBack(callback);
+        ++surface->server->frameRequestCount;
+    },
         .set_opaque_region = [](wl_client*, wl_resource*, wl_resource*) {},
         .set_input_region = [](wl_client*, wl_resource*, wl_resource*) {},
         .commit = surfaceCommit,
@@ -193,41 +182,22 @@ namespace plt::test {
     };
 
     const struct wl_compositor_interface compositorImplementation{
-        .create_surface = [](wl_client* client, wl_resource* resource, u32 id) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            wl_resource* const surfaceResource = wl_resource_create(
-                client,
-                &wl_surface_interface,
-                min(6, wl_resource_get_version(resource)),
-                id
-            );
-            auto* const surface = new Surface{
-                .server = server,
-                .surface = surfaceResource,
-            };
-            server->window = surface;
-            wl_resource_set_implementation(
-                surfaceResource,
-                &surfaceImplementation,
-                surface,
-                surfaceDestroy
-            );
-        },
-        .create_region = [](wl_client* client, wl_resource* resource, u32 id) {
-            wl_resource* const region = wl_resource_create(
-                client,
-                &wl_region_interface,
-                wl_resource_get_version(resource),
-                id
-            );
-            wl_resource_set_implementation(
-                region,
-                &regionImplementation,
-                nullptr,
-                nullptr
-            );
-        },
+        .create_surface =
+            [](wl_client* client, wl_resource* resource, u32 id) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        wl_resource* const surfaceResource = wl_resource_create(client, &wl_surface_interface, min(6, wl_resource_get_version(resource)), id);
+        auto* const surface = new Surface{
+            .server = server,
+            .surface = surfaceResource,
+        };
+        server->window = surface;
+        wl_resource_set_implementation(surfaceResource, &surfaceImplementation, surface, surfaceDestroy);
+    },
+        .create_region =
+            [](wl_client* client, wl_resource* resource, u32 id) {
+        wl_resource* const region = wl_resource_create(client, &wl_region_interface, wl_resource_get_version(resource), id);
+        wl_resource_set_implementation(region, &regionImplementation, nullptr, nullptr);
+    },
         .release = destroyResource,
     };
 
@@ -239,27 +209,13 @@ namespace plt::test {
     void sendKeymap(Server& server) {
         xkb_context* const context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
         xkb_rule_names names{};
-        xkb_keymap* const keymap = context == nullptr
-            ? nullptr
-            : xkb_keymap_new_from_names(
-                context,
-                &names,
-                XKB_KEYMAP_COMPILE_NO_FLAGS
-            );
-        char* const text = keymap == nullptr
-            ? nullptr
-            : xkb_keymap_get_as_string(keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
+        xkb_keymap* const keymap = context == nullptr ? nullptr : xkb_keymap_new_from_names(context, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
+        char* const text = keymap == nullptr ? nullptr : xkb_keymap_get_as_string(keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
         if (text != nullptr) {
             const size_t size = strLen(reinterpret_cast<const u8*>(text)) + 1;
             const int fd = memfd_create("plt-keymap", MFD_CLOEXEC);
-            if (fd >= 0 && transfer(fd, text, size, true)
-                && lseek(fd, 0, SEEK_SET) == 0) {
-                wl_keyboard_send_keymap(
-                    server.keyboard,
-                    WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
-                    fd,
-                    static_cast<u32>(size)
-                );
+            if (fd >= 0 && transfer(fd, text, size, true) && lseek(fd, 0, SEEK_SET) == 0) {
+                wl_keyboard_send_keymap(server.keyboard, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, static_cast<u32>(size));
             }
             if (fd >= 0) {
                 close(fd);
@@ -277,19 +233,8 @@ namespace plt::test {
     void sendInvalidKeymap(Server& server) {
         static constexpr char text[] = "not an xkb keymap";
         const int fd = memfd_create("plt-invalid-keymap", MFD_CLOEXEC);
-        if (fd >= 0 && transfer(
-                fd,
-                const_cast<char*>(text),
-                sizeof(text),
-                true
-            )
-            && lseek(fd, 0, SEEK_SET) == 0) {
-            wl_keyboard_send_keymap(
-                server.keyboard,
-                WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1,
-                fd,
-                sizeof(text)
-            );
+        if (fd >= 0 && transfer(fd, const_cast<char*>(text), sizeof(text), true) && lseek(fd, 0, SEEK_SET) == 0) {
+            wl_keyboard_send_keymap(server.keyboard, WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, sizeof(text));
         }
         if (fd >= 0) {
             close(fd);
@@ -301,303 +246,220 @@ namespace plt::test {
     };
 
     const struct wl_seat_interface seatImplementation{
-        .get_pointer = [](wl_client* client, wl_resource* resource, u32 id) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            server->pointer = wl_resource_create(
-                client,
-                &wl_pointer_interface,
-                min(8, wl_resource_get_version(resource)),
-                id
-            );
-            wl_resource_set_implementation(
-                server->pointer,
-                &pointerImplementation,
-                server,
-                nullptr
-            );
-        },
-        .get_keyboard = [](wl_client* client, wl_resource* resource, u32 id) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            server->keyboard = wl_resource_create(
-                client,
-                &wl_keyboard_interface,
-                min(8, wl_resource_get_version(resource)),
-                id
-            );
-            wl_resource_set_implementation(
-                server->keyboard,
-                &keyboardImplementation,
-                server,
-                nullptr
-            );
-            sendKeymap(*server);
-            wl_keyboard_send_repeat_info(server->keyboard, 1000, 1);
-        },
+        .get_pointer =
+            [](wl_client* client, wl_resource* resource, u32 id) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        server->pointer = wl_resource_create(client, &wl_pointer_interface, min(8, wl_resource_get_version(resource)), id);
+        wl_resource_set_implementation(server->pointer, &pointerImplementation, server, nullptr);
+    },
+        .get_keyboard =
+            [](wl_client* client, wl_resource* resource, u32 id) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        server->keyboard = wl_resource_create(client, &wl_keyboard_interface, min(8, wl_resource_get_version(resource)), id);
+        wl_resource_set_implementation(server->keyboard, &keyboardImplementation, server, nullptr);
+        sendKeymap(*server);
+        wl_keyboard_send_repeat_info(server->keyboard, 1000, 1);
+    },
         .get_touch = nullptr,
         .release = destroyResource,
     };
 
     const struct wl_data_source_interface dataSourceImplementation{
         .offer = [](wl_client*, wl_resource*, const char*) {},
-        .destroy = [](wl_client*, wl_resource* resource) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            if (server->dataSource == resource) {
-                server->dataSource = nullptr;
-            }
-            wl_resource_destroy(resource);
-        },
+        .destroy =
+            [](wl_client*, wl_resource* resource) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        if (server->dataSource == resource) {
+            server->dataSource = nullptr;
+        }
+        wl_resource_destroy(resource);
+    },
         .set_actions = [](wl_client*, wl_resource*, u32) {},
     };
 
     const struct wl_data_offer_interface dataOfferImplementation{
         .accept = [](wl_client*, wl_resource*, u32, const char*) {},
-        .receive = [](wl_client*, wl_resource* resource, const char*, i32 fd) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            if (server->readWriteFd != -1) {
-                close(server->readWriteFd);
-            }
-            server->readWriteFd = fd;
-        },
-        .destroy = [](wl_client*, wl_resource* resource) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            if (server->dataOffer == resource) {
-                server->dataOffer = nullptr;
-            }
-            wl_resource_destroy(resource);
-        },
+        .receive =
+            [](wl_client*, wl_resource* resource, const char*, i32 fd) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        if (server->readWriteFd != -1) {
+            close(server->readWriteFd);
+        }
+        server->readWriteFd = fd;
+    },
+        .destroy =
+            [](wl_client*, wl_resource* resource) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        if (server->dataOffer == resource) {
+            server->dataOffer = nullptr;
+        }
+        wl_resource_destroy(resource);
+    },
         .finish = [](wl_client*, wl_resource*) {},
         .set_actions = [](wl_client*, wl_resource*, u32, u32) {},
     };
 
     const struct wl_data_device_interface dataDeviceImplementation{
         .start_drag = nullptr,
-        .set_selection = [](wl_client*, wl_resource* resource, wl_resource*, u32) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            ++server->selectionCount;
-        },
+        .set_selection =
+            [](wl_client*, wl_resource* resource, wl_resource*, u32) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        ++server->selectionCount;
+    },
         .release = destroyResource,
     };
 
     const struct wl_data_device_manager_interface dataManagerImplementation{
         .create_data_source =
             [](wl_client* client, wl_resource* resource, u32 id) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            wl_resource* const source = wl_resource_create(
-                client,
-                &wl_data_source_interface,
-                wl_resource_get_version(resource),
-                id
-            );
-            server->dataSource = source;
-            wl_resource_set_implementation(
-                source,
-                &dataSourceImplementation,
-                server,
-                nullptr
-            );
-        },
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        wl_resource* const source = wl_resource_create(client, &wl_data_source_interface, wl_resource_get_version(resource), id);
+        server->dataSource = source;
+        wl_resource_set_implementation(source, &dataSourceImplementation, server, nullptr);
+    },
         .get_data_device =
             [](wl_client* client, wl_resource* resource, u32 id, wl_resource*) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            server->dataDevice = wl_resource_create(
-                client,
-                &wl_data_device_interface,
-                wl_resource_get_version(resource),
-                id
-            );
-            wl_resource_set_implementation(
-                server->dataDevice,
-                &dataDeviceImplementation,
-                server,
-                nullptr
-            );
-        },
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        server->dataDevice = wl_resource_create(client, &wl_data_device_interface, wl_resource_get_version(resource), id);
+        wl_resource_set_implementation(server->dataDevice, &dataDeviceImplementation, server, nullptr);
+    },
         .release = destroyResource,
     };
 
     const struct zwp_primary_selection_source_v1_interface primarySourceImplementation{
         .offer = [](wl_client*, wl_resource*, const char*) {},
         .destroy = [](wl_client*, wl_resource* resource) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            if (server->primarySource == resource) {
-                server->primarySource = nullptr;
-            }
-            wl_resource_destroy(resource);
-        },
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        if (server->primarySource == resource) {
+            server->primarySource = nullptr;
+        }
+        wl_resource_destroy(resource);
+    },
     };
 
     const struct zwp_primary_selection_offer_v1_interface primaryOfferImplementation{
         .receive =
             [](wl_client*, wl_resource* resource, const char*, i32 fd) {
-                auto* const server =
-                    static_cast<Server*>(wl_resource_get_user_data(resource));
-                if (server->readWriteFd != -1) {
-                    close(server->readWriteFd);
-                }
-                server->readWriteFd = fd;
-            },
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        if (server->readWriteFd != -1) {
+            close(server->readWriteFd);
+        }
+        server->readWriteFd = fd;
+    },
         .destroy = [](wl_client*, wl_resource* resource) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            if (server->primaryOffer == resource) {
-                server->primaryOffer = nullptr;
-            }
-            wl_resource_destroy(resource);
-        },
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        if (server->primaryOffer == resource) {
+            server->primaryOffer = nullptr;
+        }
+        wl_resource_destroy(resource);
+    },
     };
 
     const struct zwp_primary_selection_device_v1_interface primaryDeviceImplementation{
         .set_selection =
             [](wl_client*, wl_resource* resource, wl_resource*, u32) {
-                auto* const server =
-                    static_cast<Server*>(wl_resource_get_user_data(resource));
-                ++server->primarySelectionCount;
-            },
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        ++server->primarySelectionCount;
+    },
         .destroy = destroyResource,
     };
 
-    const struct zwp_primary_selection_device_manager_v1_interface
-        primaryManagerImplementation{
-            .create_source =
-                [](wl_client* client, wl_resource* resource, u32 id) {
-                    auto* const server =
-                        static_cast<Server*>(wl_resource_get_user_data(resource));
-                    server->primarySource = wl_resource_create(
-                        client,
-                        &zwp_primary_selection_source_v1_interface,
-                        1,
-                        id
-                    );
-                    wl_resource_set_implementation(
-                        server->primarySource,
-                        &primarySourceImplementation,
-                        server,
-                        nullptr
-                    );
-                },
-            .get_device =
-                [](wl_client* client, wl_resource* resource, u32 id, wl_resource*) {
-                    auto* const server =
-                        static_cast<Server*>(wl_resource_get_user_data(resource));
-                    server->primaryDevice = wl_resource_create(
-                        client,
-                        &zwp_primary_selection_device_v1_interface,
-                        1,
-                        id
-                    );
-                    wl_resource_set_implementation(
-                        server->primaryDevice,
-                        &primaryDeviceImplementation,
-                        server,
-                        nullptr
-                    );
-                },
-            .destroy = destroyResource,
-        };
+    const struct zwp_primary_selection_device_manager_v1_interface primaryManagerImplementation{
+        .create_source =
+            [](wl_client* client, wl_resource* resource, u32 id) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        server->primarySource = wl_resource_create(client, &zwp_primary_selection_source_v1_interface, 1, id);
+        wl_resource_set_implementation(server->primarySource, &primarySourceImplementation, server, nullptr);
+    },
+        .get_device =
+            [](wl_client* client, wl_resource* resource, u32 id, wl_resource*) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        server->primaryDevice = wl_resource_create(client, &zwp_primary_selection_device_v1_interface, 1, id);
+        wl_resource_set_implementation(server->primaryDevice, &primaryDeviceImplementation, server, nullptr);
+    },
+        .destroy = destroyResource,
+    };
 
     const struct xdg_toplevel_interface toplevelImplementation{
         .destroy = destroyResource,
         .set_parent = [](wl_client*, wl_resource*, wl_resource*) {},
-        .set_title = [](wl_client*, wl_resource* resource, const char* title) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(resource));
-            Server& server = *surface->server;
-            ++server.titleCount;
-            if (StringView(title) == StringView(u8"updated title")) {
-                server.requestFlags |= UpdatedTitle;
-            }
-            if (server.targetTitleCount != 0
-                && server.titleCount >= server.targetTitleCount) {
-                xdg_toplevel_send_close(resource);
-                wl_display_flush_clients(server.display);
-                server.targetTitleCount = 0;
-            }
-        },
-        .set_app_id = [](wl_client*, wl_resource* resource, const char* appId) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(resource));
-            if (StringView(appId) == StringView(u8"plt.integration")) {
-                surface->server->requestFlags |= InitialAppId;
-            }
-        },
+        .set_title =
+            [](wl_client*, wl_resource* resource, const char* title) {
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        Server& server = *surface->server;
+        ++server.titleCount;
+        if (StringView(title) == StringView(u8"updated title")) {
+            server.requestFlags |= UpdatedTitle;
+        }
+        if (server.targetTitleCount != 0 && server.titleCount >= server.targetTitleCount) {
+            xdg_toplevel_send_close(resource);
+            wl_display_flush_clients(server.display);
+            server.targetTitleCount = 0;
+        }
+    },
+        .set_app_id =
+            [](wl_client*, wl_resource* resource, const char* appId) {
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        if (StringView(appId) == StringView(u8"plt.integration")) {
+            surface->server->requestFlags |= InitialAppId;
+        }
+    },
         .show_window_menu = [](wl_client*, wl_resource*, wl_resource*, u32, i32, i32) {},
-        .move = [](wl_client*, wl_resource* resource, wl_resource*, u32) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(resource));
-            surface->server->requestFlags |= Move;
-        },
+        .move =
+            [](wl_client*, wl_resource* resource, wl_resource*, u32) {
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        surface->server->requestFlags |= Move;
+    },
         .resize = [](wl_client*, wl_resource*, wl_resource*, u32, u32) {},
         .set_max_size = [](wl_client*, wl_resource*, i32, i32) {},
-        .set_min_size = [](wl_client*, wl_resource* resource, i32 width, i32 height) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(resource));
-            surface->server->minimumWidth = width;
-            surface->server->minimumHeight = height;
-            ++surface->server->minimumCount;
-        },
-        .set_maximized = [](wl_client*, wl_resource* resource) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(resource));
-            surface->server->requestFlags |= Maximize;
-        },
-        .unset_maximized = [](wl_client*, wl_resource* resource) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(resource));
-            surface->server->requestFlags |= Unmaximize;
-        },
+        .set_min_size =
+            [](wl_client*, wl_resource* resource, i32 width, i32 height) {
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        surface->server->minimumWidth = width;
+        surface->server->minimumHeight = height;
+        ++surface->server->minimumCount;
+    },
+        .set_maximized =
+            [](wl_client*, wl_resource* resource) {
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        surface->server->requestFlags |= Maximize;
+    },
+        .unset_maximized =
+            [](wl_client*, wl_resource* resource) {
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        surface->server->requestFlags |= Unmaximize;
+    },
         .set_fullscreen =
             [](wl_client*, wl_resource* resource, wl_resource*) {
-                auto* const surface =
-                    static_cast<Surface*>(wl_resource_get_user_data(resource));
-                surface->server->requestFlags |= Fullscreen;
-            },
-        .unset_fullscreen = [](wl_client*, wl_resource* resource) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(resource));
-            surface->server->requestFlags |= Unfullscreen;
-        },
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        surface->server->requestFlags |= Fullscreen;
+    },
+        .unset_fullscreen =
+            [](wl_client*, wl_resource* resource) {
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        surface->server->requestFlags |= Unfullscreen;
+    },
         .set_minimized = [](wl_client*, wl_resource* resource) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(resource));
-            surface->server->requestFlags |= Minimize;
-        },
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        surface->server->requestFlags |= Minimize;
+    },
     };
 
     const struct xdg_surface_interface xdgSurfaceImplementation{
         .destroy = destroyResource,
-        .get_toplevel = [](wl_client* client, wl_resource* resource, u32 id) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(resource));
-            surface->toplevel = wl_resource_create(
-                client,
-                &xdg_toplevel_interface,
-                wl_resource_get_version(resource),
-                id
-            );
-            wl_resource_set_implementation(
-                surface->toplevel,
-                &toplevelImplementation,
-                surface,
-                nullptr
-            );
-        },
+        .get_toplevel =
+            [](wl_client* client, wl_resource* resource, u32 id) {
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        surface->toplevel = wl_resource_create(client, &xdg_toplevel_interface, wl_resource_get_version(resource), id);
+        wl_resource_set_implementation(surface->toplevel, &toplevelImplementation, surface, nullptr);
+    },
         .get_popup = nullptr,
         .set_window_geometry =
             [](wl_client*, wl_resource* resource, i32, i32, i32 width, i32 height) {
-                auto* const surface =
-                    static_cast<Surface*>(wl_resource_get_user_data(resource));
-                surface->server->geometryWidth = width;
-                surface->server->geometryHeight = height;
-            },
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(resource));
+        surface->server->geometryWidth = width;
+        surface->server->geometryHeight = height;
+    },
         .ack_configure = [](wl_client*, wl_resource*, u32) {},
     };
 
@@ -606,21 +468,10 @@ namespace plt::test {
         .create_positioner = nullptr,
         .get_xdg_surface =
             [](wl_client* client, wl_resource* resource, u32 id, wl_resource* wlSurface) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(wlSurface));
-            surface->xdgSurface = wl_resource_create(
-                client,
-                &xdg_surface_interface,
-                wl_resource_get_version(resource),
-                id
-            );
-            wl_resource_set_implementation(
-                surface->xdgSurface,
-                &xdgSurfaceImplementation,
-                surface,
-                nullptr
-            );
-        },
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(wlSurface));
+        surface->xdgSurface = wl_resource_create(client, &xdg_surface_interface, wl_resource_get_version(resource), id);
+        wl_resource_set_implementation(surface->xdgSurface, &xdgSurfaceImplementation, surface, nullptr);
+    },
         .pong = [](wl_client*, wl_resource*, u32) {},
     };
 
@@ -632,17 +483,10 @@ namespace plt::test {
 
     const struct wp_viewporter_interface viewporterImplementation{
         .destroy = destroyResource,
-        .get_viewport =
-            [](wl_client* client, wl_resource*, u32 id, wl_resource*) {
-            wl_resource* const viewport =
-                wl_resource_create(client, &wp_viewport_interface, 1, id);
-            wl_resource_set_implementation(
-                viewport,
-                &viewportImplementation,
-                nullptr,
-                nullptr
-            );
-        },
+        .get_viewport = [](wl_client* client, wl_resource*, u32 id, wl_resource*) {
+        wl_resource* const viewport = wl_resource_create(client, &wp_viewport_interface, 1, id);
+        wl_resource_set_implementation(viewport, &viewportImplementation, nullptr, nullptr);
+    },
     };
 
     const struct wp_fractional_scale_v1_interface fractionalScaleImplementation{
@@ -651,54 +495,82 @@ namespace plt::test {
 
     const struct wp_fractional_scale_manager_v1_interface fractionalManagerImplementation{
         .destroy = destroyResource,
-        .get_fractional_scale =
-            [](wl_client* client, wl_resource*, u32 id, wl_resource* wlSurface) {
-            auto* const surface =
-                static_cast<Surface*>(wl_resource_get_user_data(wlSurface));
-            surface->fractionalScale = wl_resource_create(
-                client,
-                &wp_fractional_scale_v1_interface,
-                1,
-                id
-            );
-            wl_resource_set_implementation(
-                surface->fractionalScale,
-                &fractionalScaleImplementation,
-                surface,
-                nullptr
-            );
-        },
+        .get_fractional_scale = [](wl_client* client, wl_resource*, u32 id, wl_resource* wlSurface) {
+        auto* const surface = static_cast<Surface*>(wl_resource_get_user_data(wlSurface));
+        surface->fractionalScale = wl_resource_create(client, &wp_fractional_scale_v1_interface, 1, id);
+        wl_resource_set_implementation(surface->fractionalScale, &fractionalScaleImplementation, surface, nullptr);
+    },
     };
 
     const struct wp_cursor_shape_device_v1_interface cursorShapeDeviceImplementation{
         .destroy = destroyResource,
-        .set_shape = [](wl_client*, wl_resource* resource, u32, u32 shape) {
-            auto* const server =
-                static_cast<Server*>(wl_resource_get_user_data(resource));
-            ++server->cursorShapeCount;
-            server->cursorShape = shape;
-        },
+        .set_shape = [](wl_client*, wl_resource* resource, u32 serial, u32 shape) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        ++server->cursorShapeCount;
+        server->cursorShape = shape;
+        server->cursorShapeSerial = serial;
+    },
+    };
+
+    const struct zwp_text_input_v3_interface textInputImplementation{
+        .destroy = destroyResource,
+        .enable =
+            [](wl_client*, wl_resource* resource) {
+        static_cast<Server*>(wl_resource_get_user_data(resource))->textInputPendingEnabled = true;
+    },
+        .disable =
+            [](wl_client*, wl_resource* resource) {
+        static_cast<Server*>(wl_resource_get_user_data(resource))->textInputPendingDisabled = true;
+    },
+        .set_surrounding_text = [](wl_client*, wl_resource*, const char*, i32, i32) {},
+        .set_text_change_cause = [](wl_client*, wl_resource*, u32) {},
+        .set_content_type =
+            [](wl_client*, wl_resource* resource, u32, u32 purpose) {
+        static_cast<Server*>(wl_resource_get_user_data(resource))->textInputPurpose = purpose;
+    },
+        .set_cursor_rectangle =
+            [](wl_client*, wl_resource* resource, i32 x, i32 y, i32 width, i32 height) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        server->textInputRectX = x;
+        server->textInputRectY = y;
+        server->textInputRectWidth = width;
+        server->textInputRectHeight = height;
+    },
+        .commit =
+            [](wl_client*, wl_resource* resource) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        ++server->textInputCommitCount;
+        if (server->textInputPendingEnabled) {
+            server->textInputEnabled = true;
+        }
+        if (server->textInputPendingDisabled) {
+            server->textInputEnabled = false;
+        }
+        server->textInputPendingEnabled = false;
+        server->textInputPendingDisabled = false;
+    },
+        .set_available_actions = [](wl_client*, wl_resource*, wl_array*) {},
+        .show_input_panel = [](wl_client*, wl_resource*) {},
+        .hide_input_panel = [](wl_client*, wl_resource*) {},
+    };
+
+    const struct zwp_text_input_manager_v3_interface textInputManagerImplementation{
+        .destroy = destroyResource,
+        .get_text_input = [](wl_client* client, wl_resource* resource, u32 id, wl_resource*) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        server->textInput = wl_resource_create(client, &zwp_text_input_v3_interface, 1, id);
+        wl_resource_set_implementation(server->textInput, &textInputImplementation, server, nullptr);
+    },
     };
 
     const struct wp_cursor_shape_manager_v1_interface cursorShapeManagerImplementation{
         .destroy = destroyResource,
         .get_pointer =
             [](wl_client* client, wl_resource* resource, u32 id, wl_resource*) {
-                auto* const server =
-                    static_cast<Server*>(wl_resource_get_user_data(resource));
-                server->cursorShapeDevice = wl_resource_create(
-                    client,
-                    &wp_cursor_shape_device_v1_interface,
-                    1,
-                    id
-                );
-                wl_resource_set_implementation(
-                    server->cursorShapeDevice,
-                    &cursorShapeDeviceImplementation,
-                    server,
-                    nullptr
-                );
-            },
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        server->cursorShapeDevice = wl_resource_create(client, &wp_cursor_shape_device_v1_interface, 1, id);
+        wl_resource_set_implementation(server->cursorShapeDevice, &cursorShapeDeviceImplementation, server, nullptr);
+    },
         .get_tablet_tool_v2 = nullptr,
     };
 
@@ -706,9 +578,10 @@ namespace plt::test {
         .set_serial = [](wl_client*, wl_resource*, u32, wl_resource*) {},
         .set_app_id = [](wl_client*, wl_resource*, const char*) {},
         .set_surface = [](wl_client*, wl_resource*, wl_resource*) {},
-        .commit = [](wl_client*, wl_resource* resource) {
-            xdg_activation_token_v1_send_done(resource, "plt-test-token");
-        },
+        .commit =
+            [](wl_client*, wl_resource* resource) {
+        xdg_activation_token_v1_send_done(resource, "plt-test-token");
+    },
         .destroy = destroyResource,
     };
 
@@ -716,25 +589,13 @@ namespace plt::test {
         .destroy = destroyResource,
         .get_activation_token =
             [](wl_client* client, wl_resource* resource, u32 id) {
-                wl_resource* const token = wl_resource_create(
-                    client,
-                    &xdg_activation_token_v1_interface,
-                    1,
-                    id
-                );
-                wl_resource_set_implementation(
-                    token,
-                    &activationTokenImplementation,
-                    wl_resource_get_user_data(resource),
-                    nullptr
-                );
-            },
-        .activate =
-            [](wl_client*, wl_resource* resource, const char*, wl_resource*) {
-                auto* const server =
-                    static_cast<Server*>(wl_resource_get_user_data(resource));
-                ++server->activationCount;
-            },
+        wl_resource* const token = wl_resource_create(client, &xdg_activation_token_v1_interface, 1, id);
+        wl_resource_set_implementation(token, &activationTokenImplementation, wl_resource_get_user_data(resource), nullptr);
+    },
+        .activate = [](wl_client*, wl_resource* resource, const char*, wl_resource*) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        ++server->activationCount;
+    },
     };
 
     const struct zxdg_toplevel_decoration_v1_interface decorationImplementation{
@@ -745,229 +606,69 @@ namespace plt::test {
 
     const struct zxdg_decoration_manager_v1_interface decorationManagerImplementation{
         .destroy = destroyResource,
-        .get_toplevel_decoration =
-            [](wl_client* client, wl_resource*, u32 id, wl_resource*) {
-                wl_resource* const decoration = wl_resource_create(
-                    client,
-                    &zxdg_toplevel_decoration_v1_interface,
-                    1,
-                    id
-                );
-                wl_resource_set_implementation(
-                    decoration,
-                    &decorationImplementation,
-                    nullptr,
-                    nullptr
-                );
-            },
+        .get_toplevel_decoration = [](wl_client* client, wl_resource*, u32 id, wl_resource*) {
+        wl_resource* const decoration = wl_resource_create(client, &zxdg_toplevel_decoration_v1_interface, 1, id);
+        wl_resource_set_implementation(decoration, &decorationImplementation, nullptr, nullptr);
+    },
     };
 
-    void bindCompositor(
-        wl_client* client,
-        void* data,
-        u32 version,
-        u32 id
-    ) {
-        bindSimple(
-            client,
-            nullptr,
-            version,
-            id,
-            &wl_compositor_interface,
-            &compositorImplementation,
-            data
-        );
+    void bindCompositor(wl_client* client, void* data, u32 version, u32 id) {
+        bindSimple(client, nullptr, version, id, &wl_compositor_interface, &compositorImplementation, data);
     }
 
     void bindSeat(wl_client* client, void* data, u32 version, u32 id) {
-        wl_resource* const resource =
-            wl_resource_create(client, &wl_seat_interface, version, id);
-        wl_resource_set_implementation(
-            resource,
-            &seatImplementation,
-            data,
-            nullptr
-        );
-        wl_seat_send_capabilities(
-            resource,
-            WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD
-        );
+        wl_resource* const resource = wl_resource_create(client, &wl_seat_interface, version, id);
+        wl_resource_set_implementation(resource, &seatImplementation, data, nullptr);
+        wl_seat_send_capabilities(resource, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
         if (version >= WL_SEAT_NAME_SINCE_VERSION) {
             wl_seat_send_name(resource, "plt-test-seat");
         }
     }
 
-    void bindDataManager(
-        wl_client* client,
-        void* data,
-        u32 version,
-        u32 id
-    ) {
-        bindSimple(
-            client,
-            nullptr,
-            version,
-            id,
-            &wl_data_device_manager_interface,
-            &dataManagerImplementation,
-            data
-        );
+    void bindDataManager(wl_client* client, void* data, u32 version, u32 id) {
+        bindSimple(client, nullptr, version, id, &wl_data_device_manager_interface, &dataManagerImplementation, data);
     }
 
-    void bindWmBase(
-        wl_client* client,
-        void* data,
-        u32 version,
-        u32 id
-    ) {
-        bindSimple(
-            client,
-            nullptr,
-            version,
-            id,
-            &xdg_wm_base_interface,
-            &wmBaseImplementation,
-            data
-        );
+    void bindWmBase(wl_client* client, void* data, u32 version, u32 id) {
+        bindSimple(client, nullptr, version, id, &xdg_wm_base_interface, &wmBaseImplementation, data);
     }
 
-    void bindViewporter(
-        wl_client* client,
-        void* data,
-        u32 version,
-        u32 id
-    ) {
-        bindSimple(
-            client,
-            nullptr,
-            version,
-            id,
-            &wp_viewporter_interface,
-            &viewporterImplementation,
-            data
-        );
+    void bindViewporter(wl_client* client, void* data, u32 version, u32 id) {
+        bindSimple(client, nullptr, version, id, &wp_viewporter_interface, &viewporterImplementation, data);
     }
 
-    void bindFractional(
-        wl_client* client,
-        void* data,
-        u32 version,
-        u32 id
-    ) {
-        bindSimple(
-            client,
-            nullptr,
-            version,
-            id,
-            &wp_fractional_scale_manager_v1_interface,
-            &fractionalManagerImplementation,
-            data
-        );
+    void bindFractional(wl_client* client, void* data, u32 version, u32 id) {
+        bindSimple(client, nullptr, version, id, &wp_fractional_scale_manager_v1_interface, &fractionalManagerImplementation, data);
     }
 
-    void bindPrimary(
-        wl_client* client,
-        void* data,
-        u32 version,
-        u32 id
-    ) {
-        bindSimple(
-            client,
-            nullptr,
-            version,
-            id,
-            &zwp_primary_selection_device_manager_v1_interface,
-            &primaryManagerImplementation,
-            data
-        );
+    void bindPrimary(wl_client* client, void* data, u32 version, u32 id) {
+        bindSimple(client, nullptr, version, id, &zwp_primary_selection_device_manager_v1_interface, &primaryManagerImplementation, data);
     }
 
-    void bindCursorShape(
-        wl_client* client,
-        void* data,
-        u32 version,
-        u32 id
-    ) {
-        bindSimple(
-            client,
-            nullptr,
-            version,
-            id,
-            &wp_cursor_shape_manager_v1_interface,
-            &cursorShapeManagerImplementation,
-            data
-        );
+    void bindCursorShape(wl_client* client, void* data, u32 version, u32 id) {
+        bindSimple(client, nullptr, version, id, &wp_cursor_shape_manager_v1_interface, &cursorShapeManagerImplementation, data);
     }
 
-    void bindActivation(
-        wl_client* client,
-        void* data,
-        u32 version,
-        u32 id
-    ) {
-        bindSimple(
-            client,
-            nullptr,
-            version,
-            id,
-            &xdg_activation_v1_interface,
-            &activationImplementation,
-            data
-        );
+    void bindTextInputManager(wl_client* client, void* data, u32 version, u32 id) {
+        bindSimple(client, nullptr, version, id, &zwp_text_input_manager_v3_interface, &textInputManagerImplementation, data);
     }
 
-    void bindDecoration(
-        wl_client* client,
-        void* data,
-        u32 version,
-        u32 id
-    ) {
-        bindSimple(
-            client,
-            nullptr,
-            version,
-            id,
-            &zxdg_decoration_manager_v1_interface,
-            &decorationManagerImplementation,
-            data
-        );
+    void bindActivation(wl_client* client, void* data, u32 version, u32 id) {
+        bindSimple(client, nullptr, version, id, &xdg_activation_v1_interface, &activationImplementation, data);
     }
 
-    void bindOutput(
-        wl_client* client,
-        void*,
-        u32 version,
-        u32 id
-    ) {
+    void bindDecoration(wl_client* client, void* data, u32 version, u32 id) {
+        bindSimple(client, nullptr, version, id, &zxdg_decoration_manager_v1_interface, &decorationManagerImplementation, data);
+    }
+
+    void bindOutput(wl_client* client, void*, u32 version, u32 id) {
         static const struct wl_output_interface outputImplementation{
             .release = destroyResource,
         };
-        wl_resource* const resource =
-            wl_resource_create(client, &wl_output_interface, version, id);
-        wl_resource_set_implementation(
-            resource,
-            &outputImplementation,
-            nullptr,
-            nullptr
-        );
-        wl_output_send_geometry(
-            resource,
-            0,
-            0,
-            300,
-            200,
-            WL_OUTPUT_SUBPIXEL_UNKNOWN,
-            "plt",
-            "test",
-            WL_OUTPUT_TRANSFORM_NORMAL
-        );
-        wl_output_send_mode(
-            resource,
-            WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
-            1920,
-            1080,
-            60000
-        );
+        wl_resource* const resource = wl_resource_create(client, &wl_output_interface, version, id);
+        wl_resource_set_implementation(resource, &outputImplementation, nullptr, nullptr);
+        wl_output_send_geometry(resource, 0, 0, 300, 200, WL_OUTPUT_SUBPIXEL_UNKNOWN, "plt", "test", WL_OUTPUT_TRANSFORM_NORMAL);
+        wl_output_send_mode(resource, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED, 1920, 1080, 60000);
         if (version >= WL_OUTPUT_SCALE_SINCE_VERSION) {
             wl_output_send_scale(resource, 1);
         }
@@ -981,51 +682,16 @@ namespace plt::test {
         loop = wl_display_get_event_loop(display);
         wl_global_create(display, &wl_compositor_interface, 6, this, bindCompositor);
         wl_global_create(display, &wl_seat_interface, 8, this, bindSeat);
-        wl_global_create(
-            display,
-            &wl_data_device_manager_interface,
-            3,
-            this,
-            bindDataManager
-        );
+        wl_global_create(display, &wl_data_device_manager_interface, 3, this, bindDataManager);
         wl_global_create(display, &xdg_wm_base_interface, 6, this, bindWmBase);
         wl_global_create(display, &wp_viewporter_interface, 1, this, bindViewporter);
-        wl_global_create(
-            display,
-            &wp_fractional_scale_manager_v1_interface,
-            1,
-            this,
-            bindFractional
-        );
-        wl_global_create(
-            display,
-            &zwp_primary_selection_device_manager_v1_interface,
-            1,
-            this,
-            bindPrimary
-        );
-        wl_global_create(
-            display,
-            &wp_cursor_shape_manager_v1_interface,
-            1,
-            this,
-            bindCursorShape
-        );
-        wl_global_create(
-            display,
-            &xdg_activation_v1_interface,
-            1,
-            this,
-            bindActivation
-        );
-        wl_global_create(
-            display,
-            &zxdg_decoration_manager_v1_interface,
-            1,
-            this,
-            bindDecoration
-        );
-        wl_global_create(display, &wl_output_interface, 4, this, bindOutput);
+        wl_global_create(display, &wp_fractional_scale_manager_v1_interface, 1, this, bindFractional);
+        wl_global_create(display, &zwp_primary_selection_device_manager_v1_interface, 1, this, bindPrimary);
+        wl_global_create(display, &wp_cursor_shape_manager_v1_interface, 1, this, bindCursorShape);
+        wl_global_create(display, &xdg_activation_v1_interface, 1, this, bindActivation);
+        wl_global_create(display, &zxdg_decoration_manager_v1_interface, 1, this, bindDecoration);
+        wl_global_create(display, &zwp_text_input_manager_v3_interface, 1, this, bindTextInputManager);
+        outputGlobal = wl_global_create(display, &wl_output_interface, 4, this, bindOutput);
     }
 
     Server::~Server() {
@@ -1047,19 +713,11 @@ namespace plt::test {
         surface.configured = true;
     }
 
-    void Server::sendConfigure(
-        Surface& surface,
-        i32 width,
-        i32 height,
-        const u32* states,
-        size_t stateCount
-    ) {
+    void Server::sendConfigure(Surface& surface, i32 width, i32 height, const u32* states, size_t stateCount) {
         wl_array stateArray;
         wl_array_init(&stateArray);
         for (size_t index = 0; index != stateCount; ++index) {
-            auto* const target = static_cast<u32*>(
-                wl_array_add(&stateArray, sizeof(u32))
-            );
+            auto* const target = static_cast<u32*>(wl_array_add(&stateArray, sizeof(u32)));
             if (target != nullptr) {
                 *target = states[index];
             }
@@ -1074,18 +732,8 @@ namespace plt::test {
         if (dataDevice == nullptr) {
             return false;
         }
-        dataOffer = wl_resource_create(
-            client,
-            &wl_data_offer_interface,
-            wl_resource_get_version(dataDevice),
-            0
-        );
-        wl_resource_set_implementation(
-            dataOffer,
-            &dataOfferImplementation,
-            this,
-            nullptr
-        );
+        dataOffer = wl_resource_create(client, &wl_data_offer_interface, wl_resource_get_version(dataDevice), 0);
+        wl_resource_set_implementation(dataOffer, &dataOfferImplementation, this, nullptr);
         wl_data_device_send_data_offer(dataDevice, dataOffer);
         wl_data_offer_send_offer(dataOffer, mime);
         wl_data_device_send_selection(dataDevice, dataOffer);
@@ -1113,22 +761,14 @@ namespace plt::test {
             case Command::PointerEnter:
                 reply.count = selectionCount;
                 if (pointer != nullptr && window != nullptr) {
-                    wl_pointer_send_enter(
-                        pointer,
-                        serial++,
-                        window->surface,
-                        wl_fixed_from_int(10),
-                        wl_fixed_from_int(20)
-                    );
+                    pointerEnterSerial = serial;
+                    wl_pointer_send_enter(pointer, serial++, window->surface, wl_fixed_from_int(10), wl_fixed_from_int(20));
                     wl_display_flush_clients(display);
                 }
                 break;
             case Command::PreferredScale:
                 if (window != nullptr && window->fractionalScale != nullptr) {
-                    wp_fractional_scale_v1_send_preferred_scale(
-                        window->fractionalScale,
-                        150
-                    );
+                    wp_fractional_scale_v1_send_preferred_scale(window->fractionalScale, 150);
                     wl_display_flush_clients(display);
                 }
                 break;
@@ -1152,14 +792,8 @@ namespace plt::test {
             case Command::ReleaseRead:
                 reply.count = readWriteFd != -1;
                 if (readWriteFd != -1) {
-                    static constexpr char content[] =
-                        "hermetic Wayland clipboard";
-                    transfer(
-                        readWriteFd,
-                        const_cast<char*>(content),
-                        sizeof(content) - 1,
-                        true
-                    );
+                    static constexpr char content[] = "hermetic Wayland clipboard";
+                    transfer(readWriteFd, const_cast<char*>(content), sizeof(content) - 1, true);
                     close(readWriteFd);
                     readWriteFd = -1;
                 }
@@ -1169,11 +803,7 @@ namespace plt::test {
                     int pipes[2];
                     if (pipe(pipes) == 0) {
                         writeReadFd = pipes[0];
-                        wl_data_source_send_send(
-                            dataSource,
-                            "text/plain;charset=utf-8",
-                            pipes[1]
-                        );
+                        wl_data_source_send_send(dataSource, "text/plain;charset=utf-8", pipes[1]);
                         close(pipes[1]);
                         wl_display_flush_clients(display);
                         reply.count = 1;
@@ -1185,11 +815,7 @@ namespace plt::test {
                     int pipes[2];
                     if (pipe(pipes) == 0) {
                         close(pipes[0]);
-                        wl_data_source_send_send(
-                            dataSource,
-                            "text/plain;charset=utf-8",
-                            pipes[1]
-                        );
+                        wl_data_source_send_send(dataSource, "text/plain;charset=utf-8", pipes[1]);
                         close(pipes[1]);
                         wl_display_flush_clients(display);
                         reply.count = 1;
@@ -1202,61 +828,41 @@ namespace plt::test {
                     reply.count |= 1;
                 }
                 if (primarySource != nullptr) {
-                    zwp_primary_selection_source_v1_send_cancelled(
-                        primarySource
-                    );
+                    zwp_primary_selection_source_v1_send_cancelled(primarySource);
                     reply.count |= 2;
                 }
                 wl_display_flush_clients(display);
                 break;
             case Command::ReleaseWrite:
                 if (writeReadFd != -1 && writeSource == nullptr) {
-                    fcntl(
-                        writeReadFd,
-                        F_SETFL,
-                        fcntl(writeReadFd, F_GETFL) | O_NONBLOCK
-                    );
-                    writeSource = wl_event_loop_add_fd(
-                        loop,
-                        writeReadFd,
-                        WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR,
-                        [](int fd, u32 mask, void* data) {
-                            auto* const server = static_cast<Server*>(data);
-                            char buffer[16384];
-                            for (;;) {
-                                const ssize_t count =
-                                    read(fd, buffer, sizeof(buffer));
-                                if (count > 0) {
-                                    server->writtenBytes +=
-                                        static_cast<u32>(count);
-                                } else if (count < 0 && errno == EINTR) {
-                                    continue;
-                                } else if (
-                                    count < 0
-                                    && (errno == EAGAIN || errno == EWOULDBLOCK)
-                                ) {
-                                    break;
-                                } else {
-                                    wl_event_source_remove(server->writeSource);
-                                    server->writeSource = nullptr;
-                                    close(server->writeReadFd);
-                                    server->writeReadFd = -1;
-                                    break;
-                                }
-                            }
-                            if (
-                                mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)
-                                && server->writeSource != nullptr
-                            ) {
+                    fcntl(writeReadFd, F_SETFL, fcntl(writeReadFd, F_GETFL) | O_NONBLOCK);
+                    writeSource = wl_event_loop_add_fd(loop, writeReadFd, WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR, [](int fd, u32 mask, void* data) {
+                        auto* const server = static_cast<Server*>(data);
+                        char buffer[16384];
+                        for (;;) {
+                            const ssize_t count = read(fd, buffer, sizeof(buffer));
+                            if (count > 0) {
+                                server->writtenBytes += static_cast<u32>(count);
+                            } else if (count < 0 && errno == EINTR) {
+                                continue;
+                            } else if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                                break;
+                            } else {
                                 wl_event_source_remove(server->writeSource);
                                 server->writeSource = nullptr;
                                 close(server->writeReadFd);
                                 server->writeReadFd = -1;
+                                break;
                             }
-                            return 0;
-                        },
-                        this
-                    );
+                        }
+                        if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR) && server->writeSource != nullptr) {
+                            wl_event_source_remove(server->writeSource);
+                            server->writeSource = nullptr;
+                            close(server->writeReadFd);
+                            server->writeReadFd = -1;
+                        }
+                        return 0;
+                    }, this);
                     reply.count = 1;
                 }
                 break;
@@ -1267,8 +873,7 @@ namespace plt::test {
             case Command::AwaitTitles:
                 targetTitleCount = static_cast<u32>(reply.first = 2049);
                 reply.count = titleCount;
-                if (window != nullptr && window->toplevel != nullptr
-                    && titleCount >= targetTitleCount) {
+                if (window != nullptr && window->toplevel != nullptr && titleCount >= targetTitleCount) {
                     xdg_toplevel_send_close(window->toplevel);
                     wl_display_flush_clients(display);
                     targetTitleCount = 0;
@@ -1282,13 +887,7 @@ namespace plt::test {
                         XDG_TOPLEVEL_STATE_FULLSCREEN,
                         XDG_TOPLEVEL_STATE_TILED_LEFT,
                     };
-                    sendConfigure(
-                        *window,
-                        900,
-                        700,
-                        states,
-                        sizeof(states) / sizeof(states[0])
-                    );
+                    sendConfigure(*window, 900, 700, states, sizeof(states) / sizeof(states[0]));
                     reply.count = 1;
                 }
                 break;
@@ -1327,52 +926,16 @@ namespace plt::test {
                 break;
             case Command::PointerSequence:
                 if (pointer != nullptr && window != nullptr) {
-                    wl_pointer_send_enter(
-                        pointer,
-                        serial++,
-                        window->surface,
-                        wl_fixed_from_int(10),
-                        wl_fixed_from_int(20)
-                    );
-                    wl_pointer_send_motion(
-                        pointer,
-                        1000,
-                        wl_fixed_from_int(30),
-                        wl_fixed_from_int(40)
-                    );
-                    wl_pointer_send_button(
-                        pointer,
-                        serial++,
-                        1500,
-                        BTN_LEFT,
-                        WL_POINTER_BUTTON_STATE_PRESSED
-                    );
-                    wl_pointer_send_axis(
-                        pointer,
-                        1600,
-                        WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-                        wl_fixed_from_int(20)
-                    );
-                    wl_pointer_send_axis(
-                        pointer,
-                        1600,
-                        WL_POINTER_AXIS_VERTICAL_SCROLL,
-                        wl_fixed_from_int(-30)
-                    );
+                    pointerEnterSerial = serial;
+                    wl_pointer_send_enter(pointer, serial++, window->surface, wl_fixed_from_int(10), wl_fixed_from_int(20));
+                    wl_pointer_send_motion(pointer, 1000, wl_fixed_from_int(30), wl_fixed_from_int(40));
+                    wl_pointer_send_button(pointer, serial++, 1500, BTN_LEFT, WL_POINTER_BUTTON_STATE_PRESSED);
+                    wl_pointer_send_axis(pointer, 1600, WL_POINTER_AXIS_HORIZONTAL_SCROLL, wl_fixed_from_int(20));
+                    wl_pointer_send_axis(pointer, 1600, WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_int(-30));
                     wl_pointer_send_frame(pointer);
-                    wl_pointer_send_button(
-                        pointer,
-                        serial++,
-                        1700,
-                        BTN_LEFT,
-                        WL_POINTER_BUTTON_STATE_RELEASED
-                    );
+                    wl_pointer_send_button(pointer, serial++, 1700, BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
                     wl_pointer_send_frame(pointer);
-                    wl_pointer_send_leave(
-                        pointer,
-                        serial++,
-                        window->surface
-                    );
+                    wl_pointer_send_leave(pointer, serial++, window->surface);
                     wl_display_flush_clients(display);
                     reply.count = 1;
                 }
@@ -1380,25 +943,14 @@ namespace plt::test {
             case Command::QueryCursor:
                 reply.count = cursorShapeCount;
                 reply.first = static_cast<i32>(cursorShape);
+                reply.second = pointerEnterSerial != 0 && cursorShapeSerial == pointerEnterSerial;
                 break;
             case Command::KeyboardEnter:
                 if (keyboard != nullptr && window != nullptr) {
                     wl_array keys;
                     wl_array_init(&keys);
-                    wl_keyboard_send_enter(
-                        keyboard,
-                        serial++,
-                        window->surface,
-                        &keys
-                    );
-                    wl_keyboard_send_modifiers(
-                        keyboard,
-                        serial++,
-                        0,
-                        0,
-                        0,
-                        0
-                    );
+                    wl_keyboard_send_enter(keyboard, serial++, window->surface, &keys);
+                    wl_keyboard_send_modifiers(keyboard, serial++, 0, 0, 0, 0);
                     wl_array_release(&keys);
                     wl_display_flush_clients(display);
                     reply.count = 1;
@@ -1406,37 +958,21 @@ namespace plt::test {
                 break;
             case Command::KeyboardPress:
                 if (keyboard != nullptr) {
-                    wl_keyboard_send_key(
-                        keyboard,
-                        serial++,
-                        2500,
-                        KEY_A,
-                        WL_KEYBOARD_KEY_STATE_PRESSED
-                    );
+                    wl_keyboard_send_key(keyboard, serial++, 2500, KEY_A, WL_KEYBOARD_KEY_STATE_PRESSED);
                     wl_display_flush_clients(display);
                     reply.count = 1;
                 }
                 break;
             case Command::KeyboardRelease:
                 if (keyboard != nullptr) {
-                    wl_keyboard_send_key(
-                        keyboard,
-                        serial++,
-                        2600,
-                        KEY_A,
-                        WL_KEYBOARD_KEY_STATE_RELEASED
-                    );
+                    wl_keyboard_send_key(keyboard, serial++, 2600, KEY_A, WL_KEYBOARD_KEY_STATE_RELEASED);
                     wl_display_flush_clients(display);
                     reply.count = 1;
                 }
                 break;
             case Command::KeyboardLeave:
                 if (keyboard != nullptr && window != nullptr) {
-                    wl_keyboard_send_leave(
-                        keyboard,
-                        serial++,
-                        window->surface
-                    );
+                    wl_keyboard_send_leave(keyboard, serial++, window->surface);
                     wl_display_flush_clients(display);
                     reply.count = 1;
                 }
@@ -1456,30 +992,11 @@ namespace plt::test {
                 break;
             case Command::OfferPrimarySelection:
                 if (primaryDevice != nullptr) {
-                    primaryOffer = wl_resource_create(
-                        client,
-                        &zwp_primary_selection_offer_v1_interface,
-                        1,
-                        0
-                    );
-                    wl_resource_set_implementation(
-                        primaryOffer,
-                        &primaryOfferImplementation,
-                        this,
-                        nullptr
-                    );
-                    zwp_primary_selection_device_v1_send_data_offer(
-                        primaryDevice,
-                        primaryOffer
-                    );
-                    zwp_primary_selection_offer_v1_send_offer(
-                        primaryOffer,
-                        "text/plain;charset=utf-8"
-                    );
-                    zwp_primary_selection_device_v1_send_selection(
-                        primaryDevice,
-                        primaryOffer
-                    );
+                    primaryOffer = wl_resource_create(client, &zwp_primary_selection_offer_v1_interface, 1, 0);
+                    wl_resource_set_implementation(primaryOffer, &primaryOfferImplementation, this, nullptr);
+                    zwp_primary_selection_device_v1_send_data_offer(primaryDevice, primaryOffer);
+                    zwp_primary_selection_offer_v1_send_offer(primaryOffer, "text/plain;charset=utf-8");
+                    zwp_primary_selection_device_v1_send_selection(primaryDevice, primaryOffer);
                     wl_display_flush_clients(display);
                     reply.count = 1;
                 }
@@ -1489,16 +1006,87 @@ namespace plt::test {
                     int pipes[2];
                     if (pipe(pipes) == 0) {
                         writeReadFd = pipes[0];
-                        zwp_primary_selection_source_v1_send_send(
-                            primarySource,
-                            "text/plain;charset=utf-8",
-                            pipes[1]
-                        );
+                        zwp_primary_selection_source_v1_send_send(primarySource, "text/plain;charset=utf-8", pipes[1]);
                         close(pipes[1]);
                         wl_display_flush_clients(display);
                         reply.count = 1;
                     }
                 }
+                break;
+            case Command::PointerValue120:
+                if (pointer != nullptr && window != nullptr) {
+                    pointerEnterSerial = serial;
+                    wl_pointer_send_enter(pointer, serial++, window->surface, wl_fixed_from_int(10), wl_fixed_from_int(20));
+                    wl_pointer_send_frame(pointer);
+                    wl_pointer_send_axis(pointer, 1600, WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_int(15));
+                    wl_pointer_send_axis_value120(pointer, WL_POINTER_AXIS_VERTICAL_SCROLL, -240);
+                    wl_pointer_send_frame(pointer);
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
+            case Command::KeyboardEnterWithKeys:
+                if (keyboard != nullptr && window != nullptr) {
+                    wl_array keys;
+                    wl_array_init(&keys);
+                    auto* const key = static_cast<u32*>(wl_array_add(&keys, sizeof(u32)));
+                    if (key != nullptr) {
+                        *key = KEY_A;
+                    }
+                    wl_keyboard_send_enter(keyboard, serial++, window->surface, &keys);
+                    wl_keyboard_send_modifiers(keyboard, serial++, 0, 0, 0, 0);
+                    wl_array_release(&keys);
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
+            case Command::RemoveOutput:
+                if (outputGlobal != nullptr) {
+                    wl_global_destroy(outputGlobal);
+                    outputGlobal = nullptr;
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
+            case Command::RestoreOutput:
+                if (outputGlobal == nullptr) {
+                    outputGlobal = wl_global_create(display, &wl_output_interface, 4, this, bindOutput);
+                    wl_display_flush_clients(display);
+                    reply.count = outputGlobal != nullptr;
+                }
+                break;
+            case Command::TextInputEnter:
+                if (textInput != nullptr && window != nullptr) {
+                    zwp_text_input_v3_send_enter(textInput, window->surface);
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
+            case Command::TextInputPreedit:
+                if (textInput != nullptr) {
+                    zwp_text_input_v3_send_preedit_string(textInput, "ni", 0, 2);
+                    zwp_text_input_v3_send_done(textInput, textInputCommitCount);
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
+            case Command::TextInputCommitString:
+                if (textInput != nullptr) {
+                    zwp_text_input_v3_send_commit_string(textInput, "\xc3\xa9");
+                    zwp_text_input_v3_send_done(textInput, textInputCommitCount);
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
+            case Command::QueryTextInput:
+                reply.count = textInputCommitCount;
+                reply.first = textInputEnabled ? 1 : 0;
+                reply.second = static_cast<i32>(textInputPurpose);
+                break;
+            case Command::QueryTextInputRect:
+                reply.count = static_cast<u32>((textInputRectWidth << 16) | (textInputRectHeight & 0xffff));
+                reply.first = textInputRectX;
+                reply.second = textInputRectY;
                 break;
             case Command::Quit:
                 break;
@@ -1565,7 +1153,10 @@ namespace plt::test {
     }
 
     struct StopTimer final: plt::TimerCallback {
-        explicit StopTimer(plt::Platform& platform_): platform(platform_) {}
+        explicit StopTimer(plt::Platform& platform_)
+            : platform(platform_)
+        {
+        }
 
         void ready() override {
             platform.stop();
@@ -1580,15 +1171,7 @@ namespace plt::test {
         platform.run();
     }
 
-    Client::Client(
-        int controlFd_,
-        u32 width,
-        u32 minimum,
-        plt::WindowEvents* events,
-        plt::InputSink* input,
-        bool waitForConfigure,
-        plt::FrameCallback* frame
-    )
+    Client::Client(int controlFd_, u32 width, u32 minimum, plt::WindowEvents* events, plt::InputSink* input, bool waitForConfigure, plt::FrameCallback* frame)
         : controlFd(controlFd_)
         , owner(stl::ObjPool::fromMemory())
     {
@@ -1611,10 +1194,7 @@ namespace plt::test {
         if (waitForConfigure) {
             for (u32 attempt = 0; attempt != 10; ++attempt) {
                 pump(*platform);
-                if (command(
-                        controlFd,
-                        Command::QueryInitialConfigure
-                    ).count != 0) {
+                if (command(controlFd, Command::QueryInitialConfigure).count != 0) {
                     break;
                 }
             }
@@ -1628,8 +1208,7 @@ namespace plt::test {
         Server server;
         int wayland[2];
         int control[2];
-        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, wayland) != 0
-            || socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, control) != 0) {
+        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, wayland) != 0 || socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, control) != 0) {
             perror("socketpair");
             return false;
         }
@@ -1690,5 +1269,9 @@ int main() {
     success = runScenario("Wayland flush backpressure", flushBackpressure) && success;
     success = runScenario("queued Wayland event", queuedWaylandEvent) && success;
     success = runScenario("invalid keymap", invalidKeymap) && success;
+    success = runScenario("value120 scroll", scrollValue120) && success;
+    success = runScenario("keyboard enter pressed keys", keyboardEnterKeys) && success;
+    success = runScenario("output removal", outputRemoval) && success;
+    success = runScenario("text input", textInput) && success;
     return success ? 0 : 1;
 }

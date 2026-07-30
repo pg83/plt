@@ -4,13 +4,13 @@
 #include "poller.h"
 #include "window.h"
 #include "platform.h"
+#include "timer_queue.h"
 
 #include <std/sys/crt.h>
 #include <std/dbg/verify.h>
 #include <std/sym/i_map.h>
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
-#include <std/lib/vector.h>
 #include <std/thr/poll_fd.h>
 #include <std/mem/obj_pool.h>
 
@@ -29,26 +29,6 @@ using namespace stl;
 using namespace plt;
 
 namespace plt::cocoa_detail {
-    struct Generation {
-        u64 advance() {
-            ++value;
-            if (value == 0) {
-                ++value;
-            }
-            return value;
-        }
-
-        bool matches(u64 candidate) const {
-            return candidate != 0 && candidate == value;
-        }
-
-        u64 value = 0;
-    };
-
-    bool readyGenerationMatches(u64 current, u64 ready) {
-        return current != 0 && current == ready;
-    }
-
     struct DisplayLinkGate {
         void attach(void* owner) {
             __atomic_store_n(&owner_, owner, __ATOMIC_RELEASE);
@@ -82,10 +62,13 @@ void cocoaResizeImpl(void* owner);
 void cocoaFrameImpl(void* owner);
 void cocoaFallbackFrameImpl(void* owner);
 void cocoaInvalidateImpl(void* owner);
+void cocoaScreenChangedImpl(void* owner);
+NSRect cocoaTextInputRectImpl(void* owner);
 NSSize cocoaWillResizeImpl(void* owner, NSSize frameSize);
 void cocoaFocusImpl(void* owner, bool focused);
 void cocoaKeyImpl(void* owner, NSEvent* event, bool pressed);
 void cocoaTextImpl(void* owner, NSString* text, NSEventModifierFlags modifiers);
+void cocoaPreeditImpl(void* owner, NSString* text);
 void cocoaFlushInputImpl(void* owner);
 void cocoaFlagsImpl(void* owner, NSEvent* event);
 void cocoaPointerImpl(void* owner, NSEvent* event);
@@ -147,7 +130,7 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 - (void)windowDidChangeScreen:(NSNotification*)notification {
     (void)notification;
-    cocoaInvalidateImpl(self.owner);
+    cocoaScreenChangedImpl(self.owner);
 }
 
 - (void)windowDidMiniaturize:(NSNotification*)notification {
@@ -286,12 +269,15 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
     selectedTextRange_ = selectedRange;
     if (markedText_.length == 0) {
         [self unmarkText];
+        return;
     }
+    cocoaPreeditImpl(self.owner, markedText_.string);
 }
 
 - (void)unmarkText {
     markedText_ = nil;
     selectedTextRange_ = NSMakeRange(NSNotFound, 0);
+    cocoaPreeditImpl(self.owner, nil);
 }
 
 - (NSArray<NSAttributedStringKey>*)validAttributesForMarkedText {
@@ -317,7 +303,10 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
     if (actualRange != nullptr) {
         *actualRange = range;
     }
-    return [self.window convertRectToScreen:NSMakeRect(0, 0, 0, 0)];
+    if (self.owner == nullptr) {
+        return [self.window convertRectToScreen:NSMakeRect(0, 0, 0, 0)];
+    }
+    return cocoaTextInputRectImpl(self.owner);
 }
 
 - (void)mouseEntered:(NSEvent*)event {
@@ -343,6 +332,17 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 @end
 
 @implementation PltDisplayLinkTarget
+
+// CADisplayLink callback; runs on the main run loop, unlike the CVDisplayLink
+// thread callback, so it dispatches directly.
+- (void)displayLinkFired:(id)sender {
+    (void)sender;
+    void* const owner = gate.owner();
+    if (owner != nullptr) {
+        cocoaFrameImpl(owner);
+    }
+}
+
 @end
 
 namespace {
@@ -361,16 +361,6 @@ namespace {
         CFRunLoopSourceRef source = nullptr;
     };
 
-    struct Timer {
-        TimerCallback* callback = nullptr;
-        u64 deadline = 0;
-        u64 generation = 0;
-    };
-
-    struct ReadyTimer {
-        u64 generation = 0;
-    };
-
     struct PollerImpl final: public Poller {
         explicit PollerImpl(ObjPool& owner);
         ~PollerImpl();
@@ -387,9 +377,7 @@ namespace {
         u64 nextDeadline() const;
 
         IntMap<ArmedFD> armed;
-        Vector<Timer> timers;
-        Vector<ReadyTimer> readyTimers;
-        cocoa_detail::Generation registrations;
+        TimerQueue timers;
         CFRunLoopTimerRef runLoopTimer = nullptr;
     };
 
@@ -442,10 +430,13 @@ namespace {
         void requestWritePrimary(StringView content) override;
         void requestWriteClipboard(StringView content) override;
         void requestPointerIcon(PointerIcon icon) override;
+        void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) override;
         RenderContext renderContext() const override;
 
         void close();
         void resized();
+        void screenChanged();
+        NSRect textInputScreenRect() const;
         void draw();
         void fallbackDraw();
         void stopDisplayLink();
@@ -453,6 +444,7 @@ namespace {
         void focused(bool value);
         void key(NSEvent* event, bool pressed);
         void flushInput();
+        void preeditChanged(NSString* text);
         void flags(NSEvent* event);
         void pointer(NSEvent* event);
         void button(NSEvent* event, bool pressed);
@@ -475,8 +467,13 @@ namespace {
         PltView* view = nil;
         PltWindowDelegate* delegate = nil;
         CVDisplayLinkRef displayLink = nullptr;
+        CADisplayLink* caDisplayLink = nil;
         PltDisplayLinkTarget* displayLinkTarget = nil;
         void* displayLinkContext = nullptr;
+        i32 textInputX = 0;
+        i32 textInputY = 0;
+        u32 textInputWidth = 0;
+        u32 textInputHeight = 0;
         u32 minimumWidth = 1;
         u32 minimumHeight = 1;
         u32 resizeUnitWidth = 1;
@@ -486,6 +483,7 @@ namespace {
         ClipboardOperation* clipboardOperations = nullptr;
         bool frameRequested = false;
         bool layerFrameRequested = false;
+        bool preeditShown = false;
     };
 
     struct PlatformImpl final: public Platform {
@@ -522,7 +520,8 @@ namespace {
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
-    : poller_(owner.make<PollerImpl>(owner)) {
+    : poller_(owner.make<PollerImpl>(owner))
+{
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp finishLaunching];
@@ -537,7 +536,9 @@ Poller* PlatformImpl::poller() {
 }
 
 PollerImpl::PollerImpl(ObjPool& owner)
-    : armed(ObjPool::create(&owner)) {
+    : armed(ObjPool::create(&owner))
+    , timers(owner)
+{
     CFRunLoopTimerContext context{};
     context.info = this;
     runLoopTimer = CFRunLoopTimerCreate(kCFAllocatorDefault, DBL_MAX, 0.000'000'1, 0, 0, cocoaTimerReady, &context);
@@ -554,7 +555,8 @@ ArmedFD::ArmedFD(PollFD fd_, PollCallback* callback_, CFFileDescriptorRef descri
     : fd(fd_)
     , callback(callback_)
     , descriptor(descriptor_)
-    , source(source_) {
+    , source(source_)
+{
 }
 
 ArmedFD::~ArmedFD() {
@@ -593,72 +595,29 @@ void PollerImpl::disarm(int fd) {
 }
 
 void PollerImpl::timeout(u64 microseconds, TimerCallback& callback) {
-    deadline(monotonicNowUs() + microseconds, callback);
+    timers.schedule(monotonicNowUs() + microseconds, callback);
+    scheduleTimer();
 }
 
 void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
     if (monotonicMicroseconds == 0) {
         monotonicMicroseconds = monotonicNowUs();
     }
-    for (Timer* timer = timers.mutBegin(); timer != timers.mutEnd(); ++timer) {
-        if (timer->callback == &callback) {
-            timer->deadline = monotonicMicroseconds;
-            timer->generation = registrations.advance();
-            scheduleTimer();
-            return;
-        }
-    }
-    timers.pushBack({
-        .callback = &callback,
-        .deadline = monotonicMicroseconds,
-        .generation = registrations.advance(),
-    });
+    timers.schedule(monotonicMicroseconds, callback);
     scheduleTimer();
 }
 
 void PollerImpl::cancel(TimerCallback& callback) {
-    for (size_t index = 0; index != timers.length(); ++index) {
-        if (timers[index].callback == &callback) {
-            timers.mut(index) = timers.back();
-            timers.popBack();
-            scheduleTimer();
-            return;
-        }
-    }
+    timers.cancel(callback);
+    scheduleTimer();
 }
 
 u64 PollerImpl::nextDeadline() const {
-    u64 result = UINT64_MAX;
-    for (const Timer& timer : timers) {
-        result = min(result, timer.deadline);
-    }
-    return result;
+    return timers.nextDeadline();
 }
 
 void PollerImpl::dispatchTimers() {
-    const u64 now = monotonicNowUs();
-    readyTimers.clear();
-    for (size_t index = 0; index != timers.length();) {
-        if (timers[index].deadline > now) {
-            ++index;
-            continue;
-        }
-        readyTimers.pushBack({.generation = timers[index].generation});
-        ++index;
-    }
-    for (const ReadyTimer& ready : readyTimers) {
-        for (size_t index = 0; index != timers.length(); ++index) {
-            if (!cocoa_detail::readyGenerationMatches(timers[index].generation, ready.generation)) {
-                continue;
-            }
-            TimerCallback* const callback = timers[index].callback;
-            timers.mut(index) = timers.back();
-            timers.popBack();
-            callback->ready();
-            break;
-        }
-    }
-    readyTimers.clear();
+    timers.dispatch(monotonicNowUs());
     scheduleTimer();
 }
 
@@ -717,7 +676,8 @@ ClipboardOperation::ClipboardOperation(WindowImpl& window_, ClipboardOperationKi
     : window(window_)
     , kind(kind_)
     , read(read_)
-    , content(content_) {
+    , content(content_)
+{
     next = window.clipboardOperations;
     window.clipboardOperations = this;
     window.platform.poller_->timeout(0, *this);
@@ -781,7 +741,8 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     : platform(platform_)
     , input(options.input)
     , events(options.events)
-    , frame(options.frame) {
+    , frame(options.frame)
+{
     const NSRect frame = NSMakeRect(0, 0, max(1u, options.width), max(1u, options.height));
     window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
     delegate = [PltWindowDelegate new];
@@ -795,7 +756,22 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     window.acceptsMouseMovedEvents = YES;
     requestTitle(options.title);
     requestMinimumSize(options.minimumWidth, options.minimumHeight);
-    if (CVDisplayLinkCreateWithActiveCGDisplays(&displayLink) == kCVReturnSuccess && displayLink != nullptr) {
+    // Prefer the view display link: it runs on the main run loop and follows
+    // the view across displays by itself. CVDisplayLink stays as the fallback
+    // for older systems and needs manual rebinding on screen changes.
+    if (@available(macOS 14.0, *)) {
+        displayLinkTarget = [PltDisplayLinkTarget new];
+        displayLinkTarget->gate.attach(this);
+        caDisplayLink = [view displayLinkWithTarget:displayLinkTarget selector:@selector(displayLinkFired:)];
+        if (caDisplayLink != nil) {
+            caDisplayLink.paused = YES;
+            [caDisplayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+        } else {
+            displayLinkTarget->gate.detach();
+            displayLinkTarget = nil;
+        }
+    }
+    if (caDisplayLink == nil && CVDisplayLinkCreateWithActiveCGDisplays(&displayLink) == kCVReturnSuccess && displayLink != nullptr) {
         displayLinkTarget = [PltDisplayLinkTarget new];
         displayLinkTarget->gate.attach(this);
         displayLinkContext = (__bridge_retained void*)(displayLinkTarget);
@@ -818,6 +794,10 @@ WindowImpl::~WindowImpl() {
         displayLinkTarget->gate.detach();
     }
     stopDisplayLink();
+    if (caDisplayLink != nil) {
+        [caDisplayLink invalidate];
+        caDisplayLink = nil;
+    }
     if (displayLink != nullptr) {
         CVDisplayLinkRelease(displayLink);
     }
@@ -847,6 +827,10 @@ void WindowImpl::requestFrame() {
         return;
     }
     frameRequested = true;
+    if (caDisplayLink != nil) {
+        caDisplayLink.paused = NO;
+        return;
+    }
     if (displayLink != nullptr) {
         if (!CVDisplayLinkIsRunning(displayLink) && CVDisplayLinkStart(displayLink) == kCVReturnSuccess) {
             return;
@@ -880,6 +864,9 @@ void WindowImpl::fallbackDraw() {
 }
 
 void WindowImpl::stopDisplayLink() {
+    if (caDisplayLink != nil) {
+        caDisplayLink.paused = YES;
+    }
     if (displayLink != nullptr && CVDisplayLinkIsRunning(displayLink)) {
         CVDisplayLinkStop(displayLink);
     }
@@ -1049,6 +1036,34 @@ void WindowImpl::resized() {
     [view.layer setNeedsDisplay];
 }
 
+void WindowImpl::screenChanged() {
+    // The CADisplayLink from NSView tracks the view's display by itself; the
+    // CVDisplayLink fallback must be retargeted or it keeps pacing frames at
+    // the previous display's refresh rate.
+    if (displayLink != nullptr) {
+        NSScreen* const screen = window.screen;
+        NSNumber* const number = screen == nil ? nil : screen.deviceDescription[@"NSScreenNumber"];
+        if (number != nil) {
+            CVDisplayLinkSetCurrentCGDisplay(displayLink, (CGDirectDisplayID)(number.unsignedIntValue));
+        }
+    }
+    requestFrame();
+}
+
+void WindowImpl::requestTextInputRect(i32 x, i32 y, u32 width, u32 height) {
+    textInputX = x;
+    textInputY = y;
+    textInputWidth = width;
+    textInputHeight = height;
+}
+
+NSRect WindowImpl::textInputScreenRect() const {
+    const CGFloat scale = window.backingScaleFactor;
+    NSRect rect = NSMakeRect(textInputX / scale, view.bounds.size.height - (textInputY + (CGFloat)(max(1u, textInputHeight))) / scale, max(1u, textInputWidth) / scale, max(1u, textInputHeight) / scale);
+    rect = [view convertRect:rect toView:nil];
+    return [window convertRectToScreen:rect];
+}
+
 NSSize WindowImpl::willResize(NSSize frameSize) const {
     const NSRect content = [window contentRectForFrameRect:NSMakeRect(0, 0, frameSize.width, frameSize.height)];
     const CGFloat scale = window.backingScaleFactor;
@@ -1210,6 +1225,27 @@ void WindowImpl::flushInput() {
     }
 }
 
+void WindowImpl::preeditChanged(NSString* text) {
+    if (input == nullptr) {
+        return;
+    }
+    if (text == nil || text.length == 0) {
+        if (preeditShown) {
+            input->preedit({}, -1, -1);
+            input->flush();
+            preeditShown = false;
+        }
+        return;
+    }
+    NSData* const data = [text dataUsingEncoding:NSUTF8StringEncoding];
+    if (data == nil) {
+        return;
+    }
+    input->preedit(StringView((const u8*)(data.bytes), data.length), -1, -1);
+    input->flush();
+    preeditShown = true;
+}
+
 void WindowImpl::emitText(NSString* string, u16 mods) {
     if (input == nullptr || (mods & (InputControl | InputSuper))) {
         return;
@@ -1350,6 +1386,14 @@ void cocoaInvalidateImpl(void* owner) {
     ((WindowImpl*)(owner))->requestFrame();
 }
 
+void cocoaScreenChangedImpl(void* owner) {
+    ((WindowImpl*)(owner))->screenChanged();
+}
+
+NSRect cocoaTextInputRectImpl(void* owner) {
+    return ((WindowImpl*)(owner))->textInputScreenRect();
+}
+
 NSSize cocoaWillResizeImpl(void* owner, NSSize frameSize) {
     return ((WindowImpl*)(owner))->willResize(frameSize);
 }
@@ -1369,6 +1413,12 @@ void cocoaTextImpl(void* owner, NSString* text, NSEventModifierFlags flags) {
 
 void cocoaFlushInputImpl(void* owner) {
     ((WindowImpl*)(owner))->flushInput();
+}
+
+void cocoaPreeditImpl(void* owner, NSString* text) {
+    if (owner != nullptr) {
+        ((WindowImpl*)(owner))->preeditChanged(text);
+    }
 }
 
 void cocoaFlagsImpl(void* owner, NSEvent* event) {
