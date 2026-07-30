@@ -2180,6 +2180,6 @@ RenderContext WindowImpl::renderContext() const {
     };
 }
 
-Platform* plt::createBackendPlatform(ObjPool& owner) {
+Platform* plt::createWaylandPlatform(ObjPool& owner) {
     return owner.make<PlatformImpl>(owner);
 }

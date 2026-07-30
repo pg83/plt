@@ -1405,6 +1405,6 @@ void cocoaTimerReady(CFRunLoopTimerRef, void* owner) {
     ((PollerImpl*)(owner))->dispatchTimers();
 }
 
-Platform* plt::createBackendPlatform(ObjPool& owner) {
+Platform* plt::createCocoaPlatform(ObjPool& owner) {
     return owner.make<PlatformImpl>(owner);
 }

@@ -5,16 +5,6 @@ namespace stl {
 }
 
 namespace plt {
-#if defined(__APPLE__)
-    constexpr bool cocoa = true;
-    constexpr bool wayland = false;
-#elif defined(__linux__)
-    constexpr bool cocoa = false;
-    constexpr bool wayland = true;
-#else
-    #error Unsupported platform
-#endif
-
     struct Poller;
     struct Window;
     struct WindowOptions;
