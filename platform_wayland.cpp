@@ -208,6 +208,7 @@ namespace {
         bool pendingTiled = false;
         bool frameRequested = false;
         bool frameScheduled = false;
+        u32 frameRetries = 0;
     };
 
     struct PlatformImpl final: public Platform, public PollCallback {
@@ -2362,10 +2363,17 @@ void WindowImpl::ready() {
     frameRequested = false;
     if (!frame->frame(info())) {
         if (frameRequested) {
-            requestFrame();
+            // The callback re-requested while failing.  Retry once
+            // immediately (transient failures during resize), then back
+            // off: a persistently failing renderer (hidden window, lost
+            // swapchain) must not spin the poller at timeout(0).
+            frameScheduled = true;
+            ++frameRetries;
+            platform.poller_->timeout(frameRetries > 1 ? 10'000 : 0, *this);
         }
         return;
     }
+    frameRetries = 0;
     frameCallback = wl_surface_frame(surface);
     if (frameCallback != nullptr) {
         wl_callback_add_listener(frameCallback, &frameListener, this);

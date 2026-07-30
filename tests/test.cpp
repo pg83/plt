@@ -1248,6 +1248,7 @@ int main() {
     success = runScenario("window API", windowApi) && success;
     success = runScenario("multiple windows", multipleWindows) && success;
     success = runScenario("frame API", frameApi) && success;
+    success = runScenario("frame retry", frameRetry) && success;
     success = runScenario("pointer input", pointerInput) && success;
     success = runScenario("keyboard input", keyboardInput) && success;
     success = runScenario("local selections", localSelections) && success;

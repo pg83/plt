@@ -173,6 +173,7 @@ if build.target == build.host:
 
     plt_tests = command(
         name="plt_tests",
+        inputs=["$(S)/tests/run_timed.py"],
         outputs=["$(B)/plt_tests.stamp"],
         deps=test_deps,
         cmd=[
