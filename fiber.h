@@ -11,6 +11,10 @@ namespace stl {
 namespace plt {
     struct Poller;
 
+    // Opaque fiber identity for wake().
+    struct Fiber {
+    };
+
     // A single-threaded cooperative fiber scheduler married to a Poller.
     // Fibers run on the platform thread: a blocked fiber resumes inside the
     // poller callback that made it runnable and switches back before the
@@ -30,6 +34,13 @@ namespace plt {
         virtual void sleep(u64 timeoutUs) = 0;
         virtual void yield() = 0;
         virtual bool inFiber() const = 0;
+        // Parks the calling fiber until wake(). Being single-threaded there
+        // is no publication race to defend against: a wake that arrives
+        // while the fiber is running is remembered and the next park returns
+        // immediately.
+        virtual void park() = 0;
+        virtual void wake(Fiber& fiber) = 0;
+        virtual Fiber* current() = 0;
 
         // Fiber control blocks come and go with every spawn, so they live in
         // the platform's small-object allocator rather than its object pool.

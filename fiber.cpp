@@ -19,7 +19,7 @@ namespace {
 
     struct SchedulerImpl;
 
-    struct FiberImpl final: public PollCallback, public TimerCallback, public Runable {
+    struct FiberImpl final: public Fiber, public PollCallback, public TimerCallback, public Runable {
         FiberImpl(SchedulerImpl& scheduler, Runable& entry);
 
         void ready(PollFD event) override;
@@ -36,6 +36,8 @@ namespace {
         Context* resumeTo = nullptr;
         bool fdReady = false;
         bool timerFired = false;
+        bool parked = false;
+        bool wakePending = false;
         bool finished = false;
     };
 
@@ -48,6 +50,9 @@ namespace {
         void sleep(u64 timeoutUs) override;
         void yield() override;
         bool inFiber() const override;
+        void park() override;
+        void wake(Fiber& fiber) override;
+        Fiber* current() override;
 
         bool awaitFd(int fd, u32 flags, u64 timeoutUs);
         void resume(FiberImpl& fiber);
@@ -159,6 +164,30 @@ void SchedulerImpl::yield() {
 
 bool SchedulerImpl::inFiber() const {
     return active != nullptr;
+}
+
+void SchedulerImpl::park() {
+    FiberImpl& fiber = *active;
+    if (fiber.wakePending) {
+        fiber.wakePending = false;
+        return;
+    }
+    fiber.parked = true;
+    fiber.block();
+}
+
+void SchedulerImpl::wake(Fiber& handle) {
+    FiberImpl& fiber = (FiberImpl&)(handle);
+    if (!fiber.parked) {
+        fiber.wakePending = true;
+        return;
+    }
+    fiber.parked = false;
+    resume(fiber);
+}
+
+Fiber* SchedulerImpl::current() {
+    return active;
 }
 
 Scheduler* Scheduler::create(ObjPool& owner, SmallObjAllocator& allocator, Poller& poller) {

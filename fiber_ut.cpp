@@ -124,6 +124,47 @@ STD_TEST_SUITE(FiberScheduler) {
         STD_INSIST(firstAt == 3);
     }
 
+    STD_TEST(ParkAndWake) {
+        ObjPool::Ref pool = ObjPool::fromMemory();
+        ManualPoller poller;
+        Scheduler* const scheduler = Scheduler::create(*pool, *SmallObjAllocator::create(pool.mutPtr()), poller);
+        Fiber* handle = nullptr;
+        int phase = 0;
+        auto body = makeRunable([&] {
+            handle = scheduler->current();
+            phase = 1;
+            scheduler->park();
+            phase = 2;
+            scheduler->park();
+            phase = 3;
+        });
+        scheduler->spawn(body);
+        STD_INSIST(phase == 1);
+        scheduler->wake(*handle);
+        STD_INSIST(phase == 2);
+        scheduler->wake(*handle);
+        STD_INSIST(phase == 3);
+    }
+
+    STD_TEST(WakeBeforeParkIsRemembered) {
+        ObjPool::Ref pool = ObjPool::fromMemory();
+        ManualPoller poller;
+        Scheduler* const scheduler = Scheduler::create(*pool, *SmallObjAllocator::create(pool.mutPtr()), poller);
+        Fiber* handle = nullptr;
+        bool woken = false;
+        auto body = makeRunable([&] {
+            handle = scheduler->current();
+            scheduler->sleep(1000);
+            scheduler->park();
+            woken = true;
+        });
+        scheduler->spawn(body);
+        scheduler->wake(*handle);
+        STD_INSIST(!woken);
+        poller.fireTimer();
+        STD_INSIST(woken);
+    }
+
     STD_TEST(NestedSpawn) {
         ObjPool::Ref pool = ObjPool::fromMemory();
         ManualPoller poller;
