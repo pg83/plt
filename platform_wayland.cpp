@@ -286,6 +286,7 @@ namespace {
         struct xdg_activation_v1* activation = nullptr;
         struct wp_cursor_shape_manager_v1* cursorShapeManager = nullptr;
         struct wp_cursor_shape_device_v1* cursorShapeDevice = nullptr;
+        u32 cursorShapeVersion = 0;
         struct wl_output* output = nullptr;
         struct zwp_text_input_manager_v3* textInputManager = nullptr;
         struct zwp_text_input_v3* textInput = nullptr;
@@ -1018,6 +1019,98 @@ namespace {
         .language = [](void*, struct zwp_text_input_v3*, const char*) {},
         .preedit_hint = [](void*, struct zwp_text_input_v3*, u32, u32, u32) {},
     };
+
+    u32 cursorShape(PointerIcon icon, u32 version) {
+        switch (icon) {
+            case PointerIcon::Default:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT;
+            case PointerIcon::ContextMenu:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CONTEXT_MENU;
+            case PointerIcon::Help:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_HELP;
+            case PointerIcon::Pointer:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER;
+            case PointerIcon::Progress:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_PROGRESS;
+            case PointerIcon::Wait:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_WAIT;
+            case PointerIcon::Cell:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CELL;
+            case PointerIcon::Crosshair:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR;
+            case PointerIcon::Text:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT;
+            case PointerIcon::VerticalText:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_VERTICAL_TEXT;
+            case PointerIcon::Alias:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ALIAS;
+            case PointerIcon::Copy:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_COPY;
+            case PointerIcon::Move:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_MOVE;
+            case PointerIcon::NoDrop:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NO_DROP;
+            case PointerIcon::NotAllowed:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NOT_ALLOWED;
+            case PointerIcon::Grab:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_GRAB;
+            case PointerIcon::Grabbing:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_GRABBING;
+            case PointerIcon::ResizeEast:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_E_RESIZE;
+            case PointerIcon::ResizeNorth:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_N_RESIZE;
+            case PointerIcon::ResizeNorthEast:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NE_RESIZE;
+            case PointerIcon::ResizeNorthWest:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NW_RESIZE;
+            case PointerIcon::ResizeSouth:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_S_RESIZE;
+            case PointerIcon::ResizeSouthEast:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_SE_RESIZE;
+            case PointerIcon::ResizeSouthWest:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_SW_RESIZE;
+            case PointerIcon::ResizeWest:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_W_RESIZE;
+            case PointerIcon::ResizeEastWest:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_EW_RESIZE;
+            case PointerIcon::ResizeNorthSouth:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NS_RESIZE;
+            case PointerIcon::ResizeNorthEastSouthWest:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NESW_RESIZE;
+            case PointerIcon::ResizeNorthWestSouthEast:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NWSE_RESIZE;
+            case PointerIcon::ResizeColumn:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_COL_RESIZE;
+            case PointerIcon::ResizeRow:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ROW_RESIZE;
+            case PointerIcon::AllScroll:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ALL_SCROLL;
+            case PointerIcon::ZoomIn:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ZOOM_IN;
+            case PointerIcon::ZoomOut:
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ZOOM_OUT;
+            case PointerIcon::DndAsk:
+                // dnd_ask exists since cursor-shape v2; a v1 compositor gets
+                // the copy shape, the usual visual for an undecided drag.
+                if (version >= 2) {
+                    return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DND_ASK;
+                }
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_COPY;
+            case PointerIcon::ResizeAll:
+                // all_resize exists since cursor-shape v2; move is the closest
+                // omnidirectional shape a v1 compositor offers.
+                if (version >= 2) {
+                    return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ALL_RESIZE;
+                }
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_MOVE;
+            case PointerIcon::DisappearingItem:
+                // Cocoa-only poof cursor: the item vanishes when dropped, so
+                // no-drop carries the closest meaning.
+                return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NO_DROP;
+        }
+        return WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT;
+    }
 }
 
 void Offer::reset() {
@@ -1406,7 +1499,8 @@ void PlatformImpl::bindRegistry(u32 name, const char* interface, u32 version) {
     } else if (StringView(interface) == StringView(xdg_activation_v1_interface.name)) {
         activation = (struct xdg_activation_v1*)(wl_registry_bind(registry, name, &xdg_activation_v1_interface, 1));
     } else if (StringView(interface) == StringView(wp_cursor_shape_manager_v1_interface.name)) {
-        cursorShapeManager = (struct wp_cursor_shape_manager_v1*)(wl_registry_bind(registry, name, &wp_cursor_shape_manager_v1_interface, 1));
+        cursorShapeVersion = min(version, 2u);
+        cursorShapeManager = (struct wp_cursor_shape_manager_v1*)(wl_registry_bind(registry, name, &wp_cursor_shape_manager_v1_interface, cursorShapeVersion));
     } else if (StringView(interface) == StringView(zwp_text_input_manager_v3_interface.name)) {
         textInputManager = (struct zwp_text_input_manager_v3*)(wl_registry_bind(registry, name, &zwp_text_input_manager_v3_interface, 1));
         createSelectionDevices();
@@ -2061,8 +2155,7 @@ void PlatformImpl::setCursor(WindowImpl& window) {
     if (cursorShapeDevice == nullptr || pointerGrab.focusTarget() != &window || pointerEnterSerial == 0) {
         return;
     }
-    const u32 shape = window.cursor == PointerIcon::Link ? WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER : WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT;
-    wp_cursor_shape_device_v1_set_shape(cursorShapeDevice, pointerEnterSerial, shape);
+    wp_cursor_shape_device_v1_set_shape(cursorShapeDevice, pointerEnterSerial, cursorShape(window.cursor, cursorShapeVersion));
 }
 
 void PlatformImpl::activate(WindowImpl& window) {

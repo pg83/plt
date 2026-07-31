@@ -20,9 +20,49 @@ namespace plt {
         void* window;
     };
 
+    // The union of the wp_cursor_shape_device_v1 shapes and the public
+    // NSCursor cursors, collapsed where both platforms mean the same thing
+    // (pointer covers pointingHandCursor, grab covers openHandCursor, and so
+    // on). A backend without a native cursor for a value substitutes the
+    // closest one it has.
     enum class PointerIcon : u8 {
+        Default,
+        ContextMenu,
+        Help,
+        Pointer,
+        Progress,
+        Wait,
+        Cell,
+        Crosshair,
         Text,
-        Link
+        VerticalText,
+        Alias,
+        Copy,
+        Move,
+        NoDrop,
+        NotAllowed,
+        Grab,
+        Grabbing,
+        ResizeEast,
+        ResizeNorth,
+        ResizeNorthEast,
+        ResizeNorthWest,
+        ResizeSouth,
+        ResizeSouthEast,
+        ResizeSouthWest,
+        ResizeWest,
+        ResizeEastWest,
+        ResizeNorthSouth,
+        ResizeNorthEastSouthWest,
+        ResizeNorthWestSouthEast,
+        ResizeColumn,
+        ResizeRow,
+        AllScroll,
+        ZoomIn,
+        ZoomOut,
+        DndAsk,
+        ResizeAll,
+        DisappearingItem
     };
 
     struct WindowInfo {

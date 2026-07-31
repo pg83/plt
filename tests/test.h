@@ -55,6 +55,7 @@ namespace plt::test {
         TextInputCommitString,
         TextInputCommitInvalid,
         RemoveSeat,
+        CursorShapeV1,
         QuerySelectionSerial,
         QueryTextInput,
         QueryTextInputRect,
@@ -275,4 +276,6 @@ namespace plt::test {
     bool keyboardEnterKeys(int fd);
     bool outputRemoval(int fd);
     bool textInput(int fd);
+    bool cursorShapes(int fd);
+    bool cursorShapesV1(int fd);
 }

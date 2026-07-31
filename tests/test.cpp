@@ -100,6 +100,7 @@ namespace plt::test {
         wl_resource* textInput = nullptr;
         wl_global* outputGlobal = nullptr;
         wl_global* seatGlobal = nullptr;
+        wl_global* cursorShapeGlobal = nullptr;
         u32 selectionSerial = 0;
         Surface* window = nullptr;
         Vector<wl_resource*> frameCallbacks;
@@ -571,7 +572,7 @@ namespace plt::test {
         .get_pointer =
             [](wl_client* client, wl_resource* resource, u32 id, wl_resource*) {
         auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
-        server->cursorShapeDevice = wl_resource_create(client, &wp_cursor_shape_device_v1_interface, 1, id);
+        server->cursorShapeDevice = wl_resource_create(client, &wp_cursor_shape_device_v1_interface, wl_resource_get_version(resource), id);
         wl_resource_set_implementation(server->cursorShapeDevice, &cursorShapeDeviceImplementation, server, nullptr);
     },
         .get_tablet_tool_v2 = nullptr,
@@ -690,7 +691,7 @@ namespace plt::test {
         wl_global_create(display, &wp_viewporter_interface, 1, this, bindViewporter);
         wl_global_create(display, &wp_fractional_scale_manager_v1_interface, 1, this, bindFractional);
         wl_global_create(display, &zwp_primary_selection_device_manager_v1_interface, 1, this, bindPrimary);
-        wl_global_create(display, &wp_cursor_shape_manager_v1_interface, 1, this, bindCursorShape);
+        cursorShapeGlobal = wl_global_create(display, &wp_cursor_shape_manager_v1_interface, 2, this, bindCursorShape);
         wl_global_create(display, &xdg_activation_v1_interface, 1, this, bindActivation);
         wl_global_create(display, &zxdg_decoration_manager_v1_interface, 1, this, bindDecoration);
         wl_global_create(display, &zwp_text_input_manager_v3_interface, 1, this, bindTextInputManager);
@@ -1099,6 +1100,14 @@ namespace plt::test {
                     reply.count = 1;
                 }
                 break;
+            case Command::CursorShapeV1:
+                if (cursorShapeGlobal != nullptr) {
+                    wl_global_destroy(cursorShapeGlobal);
+                    cursorShapeGlobal = wl_global_create(display, &wp_cursor_shape_manager_v1_interface, 1, this, bindCursorShape);
+                    wl_display_flush_clients(display);
+                    reply.count = cursorShapeGlobal != nullptr;
+                }
+                break;
             case Command::QuerySelectionSerial:
                 reply.count = selectionSerial;
                 reply.first = static_cast<i32>(serial);
@@ -1275,6 +1284,8 @@ int main() {
     success = runScenario("frame API", frameApi) && success;
     success = runScenario("frame retry", frameRetry) && success;
     success = runScenario("pointer input", pointerInput) && success;
+    success = runScenario("cursor shapes", cursorShapes) && success;
+    success = runScenario("cursor shapes v1", cursorShapesV1) && success;
     success = runScenario("keyboard input", keyboardInput) && success;
     success = runScenario("local selections", localSelections) && success;
     success = runScenario("missing selections", missingSelections) && success;

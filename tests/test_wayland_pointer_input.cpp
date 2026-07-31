@@ -10,7 +10,7 @@ namespace plt::test {
         Client client(fd, 800, 1, nullptr, &input);
         command(fd, Command::PointerEnter);
         pump(*client.platform);
-        client.window->requestPointerIcon(plt::PointerIcon::Link);
+        client.window->requestPointerIcon(plt::PointerIcon::Pointer);
         pump(*client.platform);
         const Reply cursor = command(fd, Command::QueryCursor);
         if (cursor.count < 2 || cursor.first != WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER) {

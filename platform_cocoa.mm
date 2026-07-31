@@ -18,6 +18,7 @@
 #import <Carbon/Carbon.h>
 #import <CoreVideo/CVDisplayLink.h>
 #import <IOKit/hidsystem/IOLLEvent.h>
+#import <QuartzCore/CADisplayLink.h>
 #import <QuartzCore/CALayer.h>
 
 #include <errno.h>
@@ -526,6 +527,116 @@ namespace {
 
     NSString* stringFromView(StringView value) {
         return [[NSString alloc] initWithBytes:value.data() length:value.length() encoding:NSUTF8StringEncoding];
+    }
+
+    // Mirrors NSCursorFrameResizePosition, whose name cannot appear outside
+    // an @available(macOS 15) scope without an availability warning.
+    constexpr NSUInteger frameResizeTop = 1 << 0;
+    constexpr NSUInteger frameResizeLeft = 1 << 1;
+    constexpr NSUInteger frameResizeBottom = 1 << 2;
+    constexpr NSUInteger frameResizeRight = 1 << 3;
+
+    NSCursor* frameResizeCursor(NSUInteger position, NSCursor* fallback) {
+        if (@available(macOS 15.0, *)) {
+            return [NSCursor frameResizeCursorFromPosition:(NSCursorFrameResizePosition)(position) inDirections:NSCursorFrameResizeDirectionsAll];
+        }
+        return fallback;
+    }
+
+    NSCursor* pointerCursor(PointerIcon icon) {
+        switch (icon) {
+            case PointerIcon::Default:
+                return [NSCursor arrowCursor];
+            case PointerIcon::ContextMenu:
+                return [NSCursor contextualMenuCursor];
+            case PointerIcon::Help:
+                // AppKit has no public help cursor.
+                return [NSCursor arrowCursor];
+            case PointerIcon::Pointer:
+                return [NSCursor pointingHandCursor];
+            case PointerIcon::Progress:
+            case PointerIcon::Wait:
+                // AppKit shows the system busy cursor on its own; a stand-in
+                // does not exist in the public API.
+                return [NSCursor arrowCursor];
+            case PointerIcon::Cell:
+            case PointerIcon::Crosshair:
+                return [NSCursor crosshairCursor];
+            case PointerIcon::Text:
+                return [NSCursor IBeamCursor];
+            case PointerIcon::VerticalText:
+                return [NSCursor IBeamCursorForVerticalLayout];
+            case PointerIcon::Alias:
+                return [NSCursor dragLinkCursor];
+            case PointerIcon::Copy:
+                return [NSCursor dragCopyCursor];
+            case PointerIcon::DndAsk:
+                // The undecided drag has no own cursor; copy is the usual
+                // visual until the target picks the operation.
+                return [NSCursor dragCopyCursor];
+            case PointerIcon::Move:
+            case PointerIcon::AllScroll:
+            case PointerIcon::ResizeAll:
+            case PointerIcon::Grab:
+                // The open hand is the only omnidirectional-manipulation
+                // cursor AppKit offers.
+                return [NSCursor openHandCursor];
+            case PointerIcon::Grabbing:
+                return [NSCursor closedHandCursor];
+            case PointerIcon::NoDrop:
+            case PointerIcon::NotAllowed:
+                return [NSCursor operationNotAllowedCursor];
+            case PointerIcon::ResizeEast:
+                return [NSCursor resizeRightCursor];
+            case PointerIcon::ResizeNorth:
+                return [NSCursor resizeUpCursor];
+            case PointerIcon::ResizeSouth:
+                return [NSCursor resizeDownCursor];
+            case PointerIcon::ResizeWest:
+                return [NSCursor resizeLeftCursor];
+            case PointerIcon::ResizeEastWest:
+                return [NSCursor resizeLeftRightCursor];
+            case PointerIcon::ResizeNorthSouth:
+                return [NSCursor resizeUpDownCursor];
+            // Diagonal resize cursors are public API only since macOS 15;
+            // older systems fall back to the horizontal resize cursor, the
+            // closest generic resize visual.
+            case PointerIcon::ResizeNorthEast:
+            case PointerIcon::ResizeNorthEastSouthWest:
+                return frameResizeCursor(frameResizeTop | frameResizeRight, [NSCursor resizeLeftRightCursor]);
+            case PointerIcon::ResizeNorthWest:
+            case PointerIcon::ResizeNorthWestSouthEast:
+                return frameResizeCursor(frameResizeTop | frameResizeLeft, [NSCursor resizeLeftRightCursor]);
+            case PointerIcon::ResizeSouthEast:
+                return frameResizeCursor(frameResizeBottom | frameResizeRight, [NSCursor resizeLeftRightCursor]);
+            case PointerIcon::ResizeSouthWest:
+                return frameResizeCursor(frameResizeBottom | frameResizeLeft, [NSCursor resizeLeftRightCursor]);
+            case PointerIcon::ResizeColumn:
+                if (@available(macOS 15.0, *)) {
+                    return [NSCursor columnResizeCursor];
+                }
+                return [NSCursor resizeLeftRightCursor];
+            case PointerIcon::ResizeRow:
+                if (@available(macOS 15.0, *)) {
+                    return [NSCursor rowResizeCursor];
+                }
+                return [NSCursor resizeUpDownCursor];
+            case PointerIcon::ZoomIn:
+                if (@available(macOS 15.0, *)) {
+                    return [NSCursor zoomInCursor];
+                }
+                // No magnifier before macOS 15; the crosshair at least keeps
+                // the aim-at-a-spot meaning.
+                return [NSCursor crosshairCursor];
+            case PointerIcon::ZoomOut:
+                if (@available(macOS 15.0, *)) {
+                    return [NSCursor zoomOutCursor];
+                }
+                return [NSCursor crosshairCursor];
+            case PointerIcon::DisappearingItem:
+                return [NSCursor disappearingItemCursor];
+        }
+        return [NSCursor arrowCursor];
     }
 
     CVReturn displayLinkCallback(CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp*, CVOptionFlags, CVOptionFlags*, void* context) {
@@ -1037,11 +1148,7 @@ void WindowImpl::removeClipboardOperation(ClipboardOperation& operation) {
 }
 
 void WindowImpl::requestPointerIcon(PointerIcon icon) {
-    if (icon == PointerIcon::Link) {
-        [[NSCursor pointingHandCursor] set];
-    } else {
-        [[NSCursor IBeamCursor] set];
-    }
+    [pointerCursor(icon) set];
 }
 
 RenderContext WindowImpl::renderContext() const {
