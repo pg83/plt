@@ -12,7 +12,7 @@ namespace plt::test {
         pump(*client.platform);
 
         ReadSink read;
-        client.window->requestReadClipboard(read);
+        client.window->secondary()->read(read);
         if (read.complete) {
             fprintf(stderr, "unsupported MIME: callback was synchronous\n");
             return false;

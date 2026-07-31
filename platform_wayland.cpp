@@ -111,6 +111,15 @@ namespace {
         const char* mime() const;
     };
 
+    struct ClipboardImpl final: public Clipboard {
+        void read(ClipboardRead& read) override;
+        void write(StringView content) override;
+        void cancel(ClipboardRead& read) override;
+
+        WindowImpl* window = nullptr;
+        bool primary = false;
+    };
+
     struct WindowImpl final: public Window, public TimerCallback {
         WindowImpl(PlatformImpl& platform, const WindowOptions& options);
         ~WindowImpl();
@@ -131,11 +140,8 @@ namespace {
         void requestMinimumSize(u32 width, u32 height) override;
         void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
         WindowInfo info() const override;
-        void requestReadPrimary(ClipboardRead& read) override;
-        void requestReadClipboard(ClipboardRead& read) override;
-        void cancelClipboardRead(ClipboardRead& read) override;
-        void requestWritePrimary(StringView content) override;
-        void requestWriteClipboard(StringView content) override;
+        Clipboard* primary() override;
+        Clipboard* secondary() override;
         void requestPointerIcon(PointerIcon icon) override;
         void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) override;
         RenderContext renderContext() const override;
@@ -172,6 +178,8 @@ namespace {
         struct wp_fractional_scale_v1* fractionalScale = nullptr;
         struct wl_callback* frameCallback = nullptr;
         struct xdg_activation_token_v1* activationToken = nullptr;
+        ClipboardImpl primarySelection;
+        ClipboardImpl clipboardSelection;
         Buffer title;
         u32 logicalWidth = 1;
         u32 logicalHeight = 1;
@@ -2199,6 +2207,9 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     , minimumWidth(max(1u, options.minimumWidth))
     , minimumHeight(max(1u, options.minimumHeight))
 {
+    primarySelection.window = this;
+    primarySelection.primary = true;
+    clipboardSelection.window = this;
     surface = wl_compositor_create_surface(platform.compositor);
     if (surface == nullptr) {
         fail(u8"wl_compositor_create_surface failed");
@@ -2525,32 +2536,41 @@ void WindowImpl::receive(Offer& offer, bool primary, ClipboardRead& read) {
     platform.readSelection(pipes[0], *this, read);
 }
 
-void WindowImpl::requestReadPrimary(ClipboardRead& read) {
-    if (platform.primarySource != nullptr) {
-        platform.completeSelection(*this, read, StringView(platform.primaryContent), true);
+Clipboard* WindowImpl::primary() {
+    return &primarySelection;
+}
+
+Clipboard* WindowImpl::secondary() {
+    return &clipboardSelection;
+}
+
+void ClipboardImpl::read(ClipboardRead& read) {
+    PlatformImpl& platform = window->platform;
+    if (primary) {
+        if (platform.primarySource != nullptr) {
+            platform.completeSelection(*window, read, StringView(platform.primaryContent), true);
+        } else {
+            window->receive(platform.primaryOffer, true, read);
+        }
     } else {
-        receive(platform.primaryOffer, true, read);
+        if (platform.clipboardSource != nullptr) {
+            platform.completeSelection(*window, read, StringView(platform.clipboardContent), true);
+        } else {
+            window->receive(platform.clipboardOffer, false, read);
+        }
     }
 }
 
-void WindowImpl::requestReadClipboard(ClipboardRead& read) {
-    if (platform.clipboardSource != nullptr) {
-        platform.completeSelection(*this, read, StringView(platform.clipboardContent), true);
+void ClipboardImpl::write(StringView content) {
+    if (primary) {
+        window->platform.setPrimary(content);
     } else {
-        receive(platform.clipboardOffer, false, read);
+        window->platform.setClipboard(content);
     }
 }
 
-void WindowImpl::cancelClipboardRead(ClipboardRead& read) {
-    platform.cancelSelection(*this, &read);
-}
-
-void WindowImpl::requestWritePrimary(StringView content) {
-    platform.setPrimary(content);
-}
-
-void WindowImpl::requestWriteClipboard(StringView content) {
-    platform.setClipboard(content);
+void ClipboardImpl::cancel(ClipboardRead& read) {
+    window->platform.cancelSelection(*window, &read);
 }
 
 void WindowImpl::requestPointerIcon(PointerIcon icon) {

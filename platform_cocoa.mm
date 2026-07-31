@@ -424,6 +424,15 @@ namespace {
         bool cancelled = false;
     };
 
+    struct ClipboardImpl final: public Clipboard {
+        void read(ClipboardRead& sink) override;
+        void write(StringView content) override;
+        void cancel(ClipboardRead& sink) override;
+
+        WindowImpl* window = nullptr;
+        bool primary = false;
+    };
+
     struct WindowImpl final: public Window {
         WindowImpl(PlatformImpl& platform, const WindowOptions& options);
         ~WindowImpl();
@@ -443,11 +452,8 @@ namespace {
         void requestMinimumSize(u32 width, u32 height) override;
         void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
         WindowInfo info() const override;
-        void requestReadPrimary(ClipboardRead& sink) override;
-        void requestReadClipboard(ClipboardRead& sink) override;
-        void cancelClipboardRead(ClipboardRead& sink) override;
-        void requestWritePrimary(StringView content) override;
-        void requestWriteClipboard(StringView content) override;
+        Clipboard* primary() override;
+        Clipboard* secondary() override;
         void requestPointerIcon(PointerIcon icon) override;
         void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) override;
         RenderContext renderContext() const override;
@@ -499,6 +505,8 @@ namespace {
         u32 resizeUnitHeight = 1;
         u32 resizeBaseWidth = 0;
         u32 resizeBaseHeight = 0;
+        ClipboardImpl primaryPasteboard;
+        ClipboardImpl generalPasteboard;
         ClipboardOperation* clipboardOperations = nullptr;
         bool frameRequested = false;
         bool layerFrameRequested = false;
@@ -762,6 +770,9 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     , events(options.events)
     , frame(options.frame)
 {
+    primaryPasteboard.window = this;
+    primaryPasteboard.primary = true;
+    generalPasteboard.window = this;
     const NSRect frame = NSMakeRect(0, 0, max(1u, options.width), max(1u, options.height));
     window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
     delegate = [PltWindowDelegate new];
@@ -986,30 +997,32 @@ void WindowImpl::writePasteboard(NSPasteboard* pasteboard, StringView content) {
     [pasteboard setString:value == nil ? @"" : value forType:NSPasteboardTypeString];
 }
 
-void WindowImpl::requestReadPrimary(ClipboardRead& sink) {
-    new ClipboardOperation(*this, ClipboardOperationKind::ReadPrimary, &sink, {});
+Clipboard* WindowImpl::primary() {
+    return &primaryPasteboard;
 }
 
-void WindowImpl::requestReadClipboard(ClipboardRead& sink) {
-    new ClipboardOperation(*this, ClipboardOperationKind::ReadClipboard, &sink, {});
+Clipboard* WindowImpl::secondary() {
+    return &generalPasteboard;
 }
 
-void WindowImpl::cancelClipboardRead(ClipboardRead& sink) {
-    for (ClipboardOperation* operation = clipboardOperations; operation != nullptr;) {
+void ClipboardImpl::read(ClipboardRead& sink) {
+    const ClipboardOperationKind kind = primary ? ClipboardOperationKind::ReadPrimary : ClipboardOperationKind::ReadClipboard;
+    new ClipboardOperation(*window, kind, &sink, {});
+}
+
+void ClipboardImpl::write(StringView content) {
+    const ClipboardOperationKind kind = primary ? ClipboardOperationKind::WritePrimary : ClipboardOperationKind::WriteClipboard;
+    new ClipboardOperation(*window, kind, nullptr, content);
+}
+
+void ClipboardImpl::cancel(ClipboardRead& sink) {
+    for (ClipboardOperation* operation = window->clipboardOperations; operation != nullptr;) {
         ClipboardOperation* const next = operation->next;
         if (operation->read == &sink) {
             operation->cancel();
         }
         operation = next;
     }
-}
-
-void WindowImpl::requestWritePrimary(StringView content) {
-    new ClipboardOperation(*this, ClipboardOperationKind::WritePrimary, nullptr, content);
-}
-
-void WindowImpl::requestWriteClipboard(StringView content) {
-    new ClipboardOperation(*this, ClipboardOperationKind::WriteClipboard, nullptr, content);
 }
 
 void WindowImpl::removeClipboardOperation(ClipboardOperation& operation) {

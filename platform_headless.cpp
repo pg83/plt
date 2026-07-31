@@ -29,6 +29,12 @@ namespace {
         }
     };
 
+    struct ClipboardHeadless final: Clipboard {
+        void read(ClipboardRead& read) override;
+        void write(StringView content) override;
+        void cancel(ClipboardRead& read) override;
+    };
+
     struct WindowHeadlessImpl final: WindowHeadless {
         explicit WindowHeadlessImpl(const WindowOptions& options);
 
@@ -46,11 +52,8 @@ namespace {
         void requestResize(u32 width, u32 height) override;
         void requestMinimumSize(u32 width, u32 height) override;
         void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
-        void requestReadPrimary(ClipboardRead& read) override;
-        void requestReadClipboard(ClipboardRead& read) override;
-        void cancelClipboardRead(ClipboardRead& read) override;
-        void requestWritePrimary(StringView content) override;
-        void requestWriteClipboard(StringView content) override;
+        Clipboard* primary() override;
+        Clipboard* secondary() override;
         void requestPointerIcon(PointerIcon icon) override;
         void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) override;
         WindowInfo info() const override;
@@ -67,6 +70,7 @@ namespace {
 
         WindowEvents* events = nullptr;
         FrameCallback* frame = nullptr;
+        ClipboardHeadless clipboard_;
         WindowInfo info_;
         WindowInfo restored_;
         mutable HeadlessRenderTarget target_;
@@ -232,21 +236,22 @@ void WindowHeadlessImpl::requestMinimumSize(u32, u32) {
 void WindowHeadlessImpl::requestResizeUnit(u32, u32, u32, u32) {
 }
 
-void WindowHeadlessImpl::requestReadPrimary(ClipboardRead& read) {
+Clipboard* WindowHeadlessImpl::primary() {
+    return &clipboard_;
+}
+
+Clipboard* WindowHeadlessImpl::secondary() {
+    return &clipboard_;
+}
+
+void ClipboardHeadless::read(ClipboardRead& read) {
     read.done(false);
 }
 
-void WindowHeadlessImpl::requestReadClipboard(ClipboardRead& read) {
-    read.done(false);
+void ClipboardHeadless::write(StringView) {
 }
 
-void WindowHeadlessImpl::cancelClipboardRead(ClipboardRead&) {
-}
-
-void WindowHeadlessImpl::requestWritePrimary(StringView) {
-}
-
-void WindowHeadlessImpl::requestWriteClipboard(StringView) {
+void ClipboardHeadless::cancel(ClipboardRead&) {
 }
 
 void WindowHeadlessImpl::requestPointerIcon(PointerIcon) {

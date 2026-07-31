@@ -37,7 +37,7 @@ namespace plt::test {
         for (u32 attempt = 0; attempt != 20 && input.repeatCount == repeatsBeforeProbe; ++attempt) {
             pump(*client.platform);
         }
-        client.window->requestWriteClipboard(stl::StringView(u8"serial-probe"));
+        client.window->secondary()->write(stl::StringView(u8"serial-probe"));
         pump(*client.platform);
         const Reply serialProbe = command(fd, Command::QuerySelectionSerial);
         if (serialProbe.count + 2 < (u32)(serialProbe.first)) {

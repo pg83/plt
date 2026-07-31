@@ -12,7 +12,7 @@ namespace plt::test {
         pump(*client.platform);
 
         ReadSink read;
-        client.window->requestReadClipboard(read);
+        client.window->secondary()->read(read);
         if (command(fd, Command::ReleaseRead).count != 1) {
             fprintf(stderr, "plain MIME: fallback was not requested\n");
             return false;

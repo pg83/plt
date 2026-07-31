@@ -7,8 +7,8 @@ namespace plt::test {
         Client client(fd);
         ReadSink primary;
         ReadSink clipboard;
-        client.window->requestReadPrimary(primary);
-        client.window->requestReadClipboard(clipboard);
+        client.window->primary()->read(primary);
+        client.window->secondary()->read(clipboard);
         if (primary.complete || clipboard.complete) {
             fprintf(stderr, "missing selections: callback was synchronous\n");
             return false;

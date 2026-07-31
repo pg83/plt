@@ -19,6 +19,7 @@ libstd = dependency(
 )
 
 common_sources = [
+    "$(S)/clipboard.cpp",
     "$(S)/input.cpp",
     "$(S)/poller.cpp",
     "$(S)/pointer_grab.cpp",

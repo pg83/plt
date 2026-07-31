@@ -7,7 +7,7 @@ namespace plt::test {
         static constexpr size_t contentSize = 2 * 1024 * 1024;
         stl::Buffer content = repeated(contentSize, 'w');
         Client client(fd);
-        client.window->requestWriteClipboard(stl::StringView(content));
+        client.window->secondary()->write(stl::StringView(content));
         command(fd, Command::PointerEnter);
         pump(*client.platform);
         if (command(fd, Command::RequestSourceData).count != 1) {

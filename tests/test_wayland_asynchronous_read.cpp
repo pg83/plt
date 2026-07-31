@@ -12,7 +12,7 @@ namespace plt::test {
         pump(*client.platform);
 
         ReadSink read;
-        client.window->requestReadClipboard(read);
+        client.window->secondary()->read(read);
         const Reply released = command(fd, Command::ReleaseRead);
         if (released.count != 1) {
             fprintf(

@@ -8,8 +8,8 @@ namespace plt::test {
         command(fd, Command::PointerEnter);
         pump(*client.platform);
 
-        client.window->requestWriteClipboard(stl::StringView(u8"clipboard one"));
-        client.window->requestWritePrimary(stl::StringView(u8"primary one"));
+        client.window->secondary()->write(stl::StringView(u8"clipboard one"));
+        client.window->primary()->write(stl::StringView(u8"primary one"));
         pump(*client.platform);
         if (command(fd, Command::QuerySelection).count != 1
             || command(fd, Command::QueryPrimarySelection).count != 1) {
@@ -22,8 +22,8 @@ namespace plt::test {
         }
         pump(*client.platform);
 
-        client.window->requestWriteClipboard(stl::StringView(u8"clipboard two"));
-        client.window->requestWritePrimary(stl::StringView(u8"primary two"));
+        client.window->secondary()->write(stl::StringView(u8"clipboard two"));
+        client.window->primary()->write(stl::StringView(u8"primary two"));
         pump(*client.platform);
         if (command(fd, Command::QuerySelection).count != 2
             || command(fd, Command::QueryPrimarySelection).count != 2) {
