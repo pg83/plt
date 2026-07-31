@@ -5,6 +5,7 @@
 #include <std/thr/poll_fd.h>
 #include <std/thr/runable.h>
 #include <std/mem/obj_pool.h>
+#include <std/mem/small_obj_allocator.h>
 
 using namespace plt;
 using namespace stl;
@@ -56,7 +57,7 @@ STD_TEST_SUITE(FiberScheduler) {
     STD_TEST(SpawnRunsImmediately) {
         ObjPool::Ref pool = ObjPool::fromMemory();
         ManualPoller poller;
-        Scheduler* const scheduler = Scheduler::create(*pool, poller);
+        Scheduler* const scheduler = Scheduler::create(*pool, *SmallObjAllocator::create(pool.mutPtr()), poller);
         int steps = 0;
         auto body = makeRunable([&] {
             ++steps;
@@ -69,7 +70,7 @@ STD_TEST_SUITE(FiberScheduler) {
     STD_TEST(AwaitResumesOnFd) {
         ObjPool::Ref pool = ObjPool::fromMemory();
         ManualPoller poller;
-        Scheduler* const scheduler = Scheduler::create(*pool, poller);
+        Scheduler* const scheduler = Scheduler::create(*pool, *SmallObjAllocator::create(pool.mutPtr()), poller);
         int phase = 0;
         bool ready = false;
         auto body = makeRunable([&] {
@@ -89,7 +90,7 @@ STD_TEST_SUITE(FiberScheduler) {
     STD_TEST(AwaitTimesOut) {
         ObjPool::Ref pool = ObjPool::fromMemory();
         ManualPoller poller;
-        Scheduler* const scheduler = Scheduler::create(*pool, poller);
+        Scheduler* const scheduler = Scheduler::create(*pool, *SmallObjAllocator::create(pool.mutPtr()), poller);
         bool ready = true;
         bool complete = false;
         auto body = makeRunable([&] {
@@ -106,7 +107,7 @@ STD_TEST_SUITE(FiberScheduler) {
     STD_TEST(SleepAndInterleave) {
         ObjPool::Ref pool = ObjPool::fromMemory();
         ManualPoller poller;
-        Scheduler* const scheduler = Scheduler::create(*pool, poller);
+        Scheduler* const scheduler = Scheduler::create(*pool, *SmallObjAllocator::create(pool.mutPtr()), poller);
         int order = 0;
         int firstAt = 0;
         int loopAt = 0;
@@ -126,7 +127,7 @@ STD_TEST_SUITE(FiberScheduler) {
     STD_TEST(NestedSpawn) {
         ObjPool::Ref pool = ObjPool::fromMemory();
         ManualPoller poller;
-        Scheduler* const scheduler = Scheduler::create(*pool, poller);
+        Scheduler* const scheduler = Scheduler::create(*pool, *SmallObjAllocator::create(pool.mutPtr()), poller);
         bool innerBlocked = false;
         bool innerDone = false;
         bool outerDone = false;

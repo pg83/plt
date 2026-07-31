@@ -5,6 +5,7 @@
 
 #include <std/mem/obj_pool.h>
 #include <std/thr/poll_fd.h>
+#include <std/mem/small_obj_allocator.h>
 
 #include <algorithm>
 #include <vector>
@@ -380,6 +381,6 @@ HeadlessFrame WindowHeadlessImpl::presentedFrame() const {
 
 Platform* plt::createHeadlessPlatform(ObjPool& owner) {
     PlatformHeadless* const platform = owner.make<PlatformHeadless>();
-    platform->scheduler_ = Scheduler::create(owner, platform->poller_);
+    platform->scheduler_ = Scheduler::create(owner, *SmallObjAllocator::create(&owner), platform->poller_);
     return platform;
 }

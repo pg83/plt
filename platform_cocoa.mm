@@ -15,6 +15,7 @@
 #include <std/lib/buffer.h>
 #include <std/thr/poll_fd.h>
 #include <std/mem/obj_pool.h>
+#include <std/mem/small_obj_allocator.h>
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
@@ -581,6 +582,7 @@ namespace {
         void stop() override;
 
         PollerImpl* poller_ = nullptr;
+        SmallObjAllocator* allocator_ = nullptr;
         Scheduler* scheduler_ = nullptr;
     };
 
@@ -718,7 +720,8 @@ namespace {
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
     : poller_(owner.make<PollerImpl>(owner))
-    , scheduler_(Scheduler::create(owner, *poller_))
+    , allocator_(SmallObjAllocator::create(&owner))
+    , scheduler_(Scheduler::create(owner, *allocator_, *poller_))
 {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -936,7 +939,7 @@ void ClipboardOperation::dispose() {
         timerArmed = false;
     }
     window.removeClipboardOperation(*this);
-    delete this;
+    window.platform.allocator_->release(this);
 }
 
 WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
@@ -1286,12 +1289,12 @@ Clipboard* WindowImpl::secondary() {
 
 void ClipboardImpl::read(ClipboardRead& sink) {
     const ClipboardOperationKind kind = primary ? ClipboardOperationKind::ReadPrimary : ClipboardOperationKind::ReadClipboard;
-    new ClipboardOperation(*window, kind, &sink, {});
+    window->platform.allocator_->make<ClipboardOperation>(*window, kind, &sink, StringView());
 }
 
 void ClipboardImpl::write(StringView content) {
     const ClipboardOperationKind kind = primary ? ClipboardOperationKind::WritePrimary : ClipboardOperationKind::WriteClipboard;
-    new ClipboardOperation(*window, kind, nullptr, content);
+    window->platform.allocator_->make<ClipboardOperation>(*window, kind, nullptr, content);
 }
 
 bool ClipboardImpl::readAll(Buffer& content) {

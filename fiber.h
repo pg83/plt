@@ -4,6 +4,7 @@
 
 namespace stl {
     class ObjPool;
+    class SmallObjAllocator;
     struct Runable;
 }
 
@@ -30,6 +31,8 @@ namespace plt {
         virtual void yield() = 0;
         virtual bool inFiber() const = 0;
 
-        static Scheduler* create(stl::ObjPool& owner, Poller& poller);
+        // Fiber control blocks come and go with every spawn, so they live in
+        // the platform's small-object allocator rather than its object pool.
+        static Scheduler* create(stl::ObjPool& owner, stl::SmallObjAllocator& allocator, Poller& poller);
     };
 }

@@ -35,6 +35,7 @@
 #include <std/lib/vector.h>
 #include <std/thr/poll_fd.h>
 #include <std/mem/obj_pool.h>
+#include <std/mem/small_obj_allocator.h>
 
 #include <cerrno>
 #include <poll.h>
@@ -321,6 +322,7 @@ namespace {
         void textInputRectChanged(WindowImpl& window, bool commit);
 
         PollerImpl* poller_ = nullptr;
+        SmallObjAllocator* allocator_ = nullptr;
         Scheduler* scheduler_ = nullptr;
         struct wl_display* display = nullptr;
         struct wl_registry* registry = nullptr;
@@ -1441,13 +1443,14 @@ void SelectionTransfer::dispose() {
         fd = -1;
     }
     platform.removeTransfer(*this);
-    delete this;
+    platform.allocator_->release(this);
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
     : poller_(owner.make<PollerImpl>(owner))
 {
-    scheduler_ = Scheduler::create(owner, *poller_);
+    allocator_ = SmallObjAllocator::create(&owner);
+    scheduler_ = Scheduler::create(owner, *allocator_, *poller_);
     dndTransfer.platform = this;
     display = wl_display_connect(nullptr);
     if (display == nullptr) {
@@ -2232,15 +2235,15 @@ void PlatformImpl::stopRepeat() {
 }
 
 void PlatformImpl::writeSelection(int fd, StringView content) {
-    (new SelectionTransfer(*this, fd, nullptr, nullptr, content, true, true))->start();
+    allocator_->make<SelectionTransfer>(*this, fd, nullptr, nullptr, content, true, true)->start();
 }
 
 void PlatformImpl::readSelection(int fd, WindowImpl& window, ClipboardRead& read) {
-    (new SelectionTransfer(*this, fd, &window, &read, {}, false, true))->start();
+    allocator_->make<SelectionTransfer>(*this, fd, &window, &read, StringView(), false, true)->start();
 }
 
 void PlatformImpl::completeSelection(WindowImpl& window, ClipboardRead& read, StringView content, bool success) {
-    (new SelectionTransfer(*this, -1, &window, &read, content, false, success))->start();
+    allocator_->make<SelectionTransfer>(*this, -1, &window, &read, content, false, success)->start();
 }
 
 void PlatformImpl::cancelSelection(WindowImpl& window, ClipboardRead* read) {

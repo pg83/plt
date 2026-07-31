@@ -7,6 +7,7 @@
 #include <std/thr/poll_fd.h>
 #include <std/thr/runable.h>
 #include <std/mem/obj_pool.h>
+#include <std/mem/small_obj_allocator.h>
 
 #include <alloca.h>
 
@@ -39,7 +40,7 @@ namespace {
     };
 
     struct SchedulerImpl final: public Scheduler {
-        explicit SchedulerImpl(Poller& poller);
+        SchedulerImpl(SmallObjAllocator& allocator, Poller& poller);
 
         void spawn(Runable& entry) override;
         bool awaitReadable(int fd, u64 timeoutUs) override;
@@ -51,6 +52,7 @@ namespace {
         bool awaitFd(int fd, u32 flags, u64 timeoutUs);
         void resume(FiberImpl& fiber);
 
+        SmallObjAllocator& allocator;
         Poller& poller;
         FiberImpl* active = nullptr;
     };
@@ -87,8 +89,9 @@ void FiberImpl::block() {
     context->switchTo(*resumeTo);
 }
 
-SchedulerImpl::SchedulerImpl(Poller& poller_)
-    : poller(poller_)
+SchedulerImpl::SchedulerImpl(SmallObjAllocator& allocator_, Poller& poller_)
+    : allocator(allocator_)
+    , poller(poller_)
 {
 }
 
@@ -102,12 +105,12 @@ void SchedulerImpl::resume(FiberImpl& fiber) {
     host->switchTo(*fiber.context);
     active = previous;
     if (fiber.finished) {
-        delete &fiber;
+        allocator.release(&fiber);
     }
 }
 
 void SchedulerImpl::spawn(Runable& entry) {
-    resume(*(new FiberImpl(*this, entry)));
+    resume(*allocator.make<FiberImpl>(*this, entry));
 }
 
 bool SchedulerImpl::awaitFd(int fd, u32 flags, u64 timeoutUs) {
@@ -158,6 +161,6 @@ bool SchedulerImpl::inFiber() const {
     return active != nullptr;
 }
 
-Scheduler* Scheduler::create(ObjPool& owner, Poller& poller) {
-    return owner.make<SchedulerImpl>(poller);
+Scheduler* Scheduler::create(ObjPool& owner, SmallObjAllocator& allocator, Poller& poller) {
+    return owner.make<SchedulerImpl>(allocator, poller);
 }
