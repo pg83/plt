@@ -12,15 +12,15 @@
 #include "cursor-shape-v1-client-protocol.h"
 #include "viewporter-client-protocol-code.h"
 #include "xdg-activation-v1-client-protocol.h"
-#include "tablet-unstable-v2-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
-#include "cursor-shape-v1-client-protocol-code.h"
+#include "tablet-unstable-v2-client-protocol.h"
 #include "text-input-unstable-v3-client-protocol.h"
-#include "xdg-activation-v1-client-protocol-code.h"
 #include "tablet-unstable-v2-client-protocol-code.h"
+#include "cursor-shape-v1-client-protocol-code.h"
+#include "xdg-activation-v1-client-protocol-code.h"
 #include "fractional-scale-v1-client-protocol-code.h"
-#include "xdg-decoration-unstable-v1-client-protocol.h"
 #include "text-input-unstable-v3-client-protocol-code.h"
+#include "xdg-decoration-unstable-v1-client-protocol.h"
 #include "primary-selection-unstable-v1-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol-code.h"
 #include "primary-selection-unstable-v1-client-protocol-code.h"
@@ -33,22 +33,21 @@
 #include <std/lib/vector.h>
 #include <std/thr/poll_fd.h>
 #include <std/mem/obj_pool.h>
-#include <std/mem/small_obj_allocator.h>
 
 #include <cerrno>
 #include <poll.h>
 #include <climits>
 #include <cstdlib>
 #include <fcntl.h>
+#include <pthread.h>
 #include <signal.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <sys/mman.h>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 #include <linux/input-event-codes.h>
-#include <xkbcommon/xkbcommon-compose.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
+#include <xkbcommon/xkbcommon-compose.h>
 
 using namespace stl;
 using namespace plt;
@@ -112,14 +111,6 @@ namespace {
         const char* mime() const;
     };
 
-    struct SelectionContent {
-        SelectionContent(StringView mime, StringView content);
-
-        SelectionContent* next = nullptr;
-        Buffer mime;
-        Buffer content;
-    };
-
     struct WindowImpl final: public Window, public TimerCallback {
         WindowImpl(PlatformImpl& platform, const WindowOptions& options);
         ~WindowImpl();
@@ -145,7 +136,6 @@ namespace {
         void cancelClipboardRead(ClipboardRead& read) override;
         void requestWritePrimary(StringView content) override;
         void requestWriteClipboard(StringView content) override;
-        void requestWriteClipboard(StringView mime, StringView content) override;
         void requestPointerIcon(PointerIcon icon) override;
         void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) override;
         RenderContext renderContext() const override;
@@ -253,9 +243,6 @@ namespace {
         void applyClipboardSelection();
         void applyPrimarySelection();
         void setClipboard(StringView content);
-        void setClipboard(StringView mime, StringView content);
-        void clearClipboard();
-        const SelectionContent* clipboardContent(StringView mime) const;
         void setPrimary(StringView content);
         void setCursor(WindowImpl& window);
         void activate(WindowImpl& window);
@@ -272,8 +259,6 @@ namespace {
         void textInputRectChanged(WindowImpl& window, bool commit);
 
         PollerImpl* poller_ = nullptr;
-        ObjPool::Ref smallObjectPool_;
-        SmallObjAllocator* smallObjects_ = nullptr;
         struct wl_display* display = nullptr;
         struct wl_registry* registry = nullptr;
         struct wl_compositor* compositor = nullptr;
@@ -330,7 +315,7 @@ namespace {
         Offer clipboardOffer;
         Offer pendingPrimaryOffer;
         Offer primaryOffer;
-        SelectionContent* clipboardContents = nullptr;
+        Buffer clipboardContent;
         Buffer primaryContent;
         SelectionTransfer* transfers = nullptr;
         bool clipboardPending = false;
@@ -532,14 +517,9 @@ namespace {
     void dataSourceTarget(void*, struct wl_data_source*, const char*) {
     }
 
-    void dataSourceSend(void* data, struct wl_data_source*, const char* mime, int fd) {
+    void dataSourceSend(void* data, struct wl_data_source*, const char*, int fd) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
-        const SelectionContent* const content = platform.clipboardContent(StringView(mime));
-        if (content == nullptr) {
-            close(fd);
-            return;
-        }
-        platform.writeSelection(fd, StringView(content->content));
+        platform.writeSelection(fd, StringView(platform.clipboardContent));
     }
 
     void dataSourceCancelled(void* data, struct wl_data_source* source) {
@@ -1032,12 +1012,6 @@ namespace {
     };
 }
 
-SelectionContent::SelectionContent(StringView mime_, StringView content_)
-    : mime(mime_)
-    , content(content_)
-{
-}
-
 void Offer::reset() {
     if (data != nullptr) {
         wl_data_offer_destroy(data);
@@ -1216,13 +1190,11 @@ void SelectionTransfer::dispose() {
         fd = -1;
     }
     platform.removeTransfer(*this);
-    platform.smallObjects_->release(this);
+    delete this;
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
     : poller_(owner.make<PollerImpl>(owner))
-    , smallObjectPool_(ObjPool::fromMemory())
-    , smallObjects_(SmallObjAllocator::create(smallObjectPool_.mutPtr()))
 {
     display = wl_display_connect(nullptr);
     if (display == nullptr) {
@@ -1273,7 +1245,6 @@ PlatformImpl::~PlatformImpl() {
     if (clipboardSource != nullptr) {
         wl_data_source_destroy(clipboardSource);
     }
-    clearClipboard();
     if (primarySource != nullptr) {
         zwp_primary_selection_source_v1_destroy(primarySource);
     }
@@ -1998,32 +1969,15 @@ void PlatformImpl::stopRepeat() {
 }
 
 void PlatformImpl::writeSelection(int fd, StringView content) {
-    smallObjects_->make<SelectionTransfer>(*this, fd, nullptr, nullptr, content, true, true)->start();
-}
-
-const SelectionContent* PlatformImpl::clipboardContent(StringView mime) const {
-    for (const SelectionContent* content = clipboardContents; content != nullptr; content = content->next) {
-        if (StringView(content->mime) == mime) {
-            return content;
-        }
-    }
-    return nullptr;
-}
-
-void PlatformImpl::clearClipboard() {
-    while (clipboardContents != nullptr) {
-        SelectionContent* const content = clipboardContents;
-        clipboardContents = content->next;
-        smallObjects_->release(content);
-    }
+    (new SelectionTransfer(*this, fd, nullptr, nullptr, content, true, true))->start();
 }
 
 void PlatformImpl::readSelection(int fd, WindowImpl& window, ClipboardRead& read) {
-    smallObjects_->make<SelectionTransfer>(*this, fd, &window, &read, StringView(), false, true)->start();
+    (new SelectionTransfer(*this, fd, &window, &read, {}, false, true))->start();
 }
 
 void PlatformImpl::completeSelection(WindowImpl& window, ClipboardRead& read, StringView content, bool success) {
-    smallObjects_->make<SelectionTransfer>(*this, -1, &window, &read, content, false, success)->start();
+    (new SelectionTransfer(*this, -1, &window, &read, content, false, success))->start();
 }
 
 void PlatformImpl::cancelSelection(WindowImpl& window, ClipboardRead* read) {
@@ -2055,9 +2009,8 @@ void PlatformImpl::applyClipboardSelection() {
     }
     clipboardSource = wl_data_device_manager_create_data_source(dataDeviceManager);
     wl_data_source_add_listener(clipboardSource, &dataSourceListener, this);
-    for (SelectionContent* content = clipboardContents; content != nullptr; content = content->next) {
-        wl_data_source_offer(clipboardSource, content->mime.cStr());
-    }
+    wl_data_source_offer(clipboardSource, "text/plain;charset=utf-8");
+    wl_data_source_offer(clipboardSource, "text/plain");
     wl_data_device_set_selection(dataDevice, clipboardSource, latestSerial);
     clipboardPending = false;
     flushDisplay();
@@ -2080,28 +2033,8 @@ void PlatformImpl::applyPrimarySelection() {
 }
 
 void PlatformImpl::setClipboard(StringView content) {
-    clearClipboard();
-    clipboardContents = smallObjects_->make<SelectionContent>(utf8Mime, content);
-    clipboardContents->next = smallObjects_->make<SelectionContent>(plainMime, content);
-    clipboardPending = true;
-    applyClipboardSelection();
-}
-
-void PlatformImpl::setClipboard(StringView mime, StringView content) {
-    SelectionContent* stored = nullptr;
-    for (SelectionContent* current = clipboardContents; current != nullptr; current = current->next) {
-        if (StringView(current->mime) == mime) {
-            stored = current;
-            break;
-        }
-    }
-    if (stored == nullptr) {
-        stored = smallObjects_->make<SelectionContent>(mime, content);
-        stored->next = clipboardContents;
-        clipboardContents = stored;
-    } else {
-        stored->content = Buffer(content);
-    }
+    clipboardContent.reset();
+    clipboardContent.append(content.data(), content.length());
     clipboardPending = true;
     applyClipboardSelection();
 }
@@ -2602,11 +2535,7 @@ void WindowImpl::requestReadPrimary(ClipboardRead& read) {
 
 void WindowImpl::requestReadClipboard(ClipboardRead& read) {
     if (platform.clipboardSource != nullptr) {
-        const SelectionContent* content = platform.clipboardContent(utf8Mime);
-        if (content == nullptr) {
-            content = platform.clipboardContent(plainMime);
-        }
-        platform.completeSelection(*this, read, content == nullptr ? StringView() : StringView(content->content), content != nullptr);
+        platform.completeSelection(*this, read, StringView(platform.clipboardContent), true);
     } else {
         receive(platform.clipboardOffer, false, read);
     }
@@ -2622,10 +2551,6 @@ void WindowImpl::requestWritePrimary(StringView content) {
 
 void WindowImpl::requestWriteClipboard(StringView content) {
     platform.setClipboard(content);
-}
-
-void WindowImpl::requestWriteClipboard(StringView mime, StringView content) {
-    platform.setClipboard(mime, content);
 }
 
 void WindowImpl::requestPointerIcon(PointerIcon icon) {

@@ -1,38 +1,38 @@
 #include "test.h"
 
-#include "xdg-shell-server-protocol.h"
-#include "viewporter-server-protocol.h"
 #include "cursor-shape-v1-server-protocol.h"
-#include "xdg-activation-v1-server-protocol.h"
 #include "fractional-scale-v1-server-protocol.h"
-#include "text-input-unstable-v3-server-protocol.h"
-#include "xdg-decoration-unstable-v1-server-protocol.h"
 #include "primary-selection-unstable-v1-server-protocol.h"
+#include "text-input-unstable-v3-server-protocol.h"
+#include "viewporter-server-protocol.h"
+#include "xdg-activation-v1-server-protocol.h"
+#include "xdg-decoration-unstable-v1-server-protocol.h"
+#include "xdg-shell-server-protocol.h"
 
-#include <std/sys/crt.h>
-#include <std/str/view.h>
+#include <std/mem/obj_pool.h>
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
 #include <std/lib/vector.h>
+#include <std/str/view.h>
+#include <std/sys/crt.h>
 #include <std/thr/poll_fd.h>
-#include <std/mem/obj_pool.h>
 
-#include <poll.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
-#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/mman.h>
-#include <sys/wait.h>
-#include <sys/socket.h>
-#include <wayland-client-core.h>
-#include <wayland-server-core.h>
-#include <xkbcommon/xkbcommon.h>
+#include <poll.h>
+#include <fcntl.h>
 #include <linux/input-event-codes.h>
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
+#include <wayland-client-core.h>
+#include <xkbcommon/xkbcommon.h>
 
 using namespace stl;
 
@@ -82,7 +82,6 @@ namespace plt::test {
         bool run(int controlFd, pid_t child);
         void handle(Command command, int controlFd);
         bool offerSelection(const char* mime);
-        bool requestSourceData(const char* mime, bool broken);
         void sendInitialConfigure(Surface& surface);
         void sendConfigure(Surface& surface, i32 width, i32 height, const u32* states, size_t stateCount);
 
@@ -108,8 +107,6 @@ namespace plt::test {
         int readWriteFd = -1;
         int writeReadFd = -1;
         u32 writtenBytes = 0;
-        u32 sourceFormats = 0;
-        u8 writtenValue = 0;
         u32 titleCount = 0;
         u32 targetTitleCount = 0;
         u32 serial = 1;
@@ -270,15 +267,7 @@ namespace plt::test {
     };
 
     const struct wl_data_source_interface dataSourceImplementation{
-        .offer =
-            [](wl_client*, wl_resource* resource, const char* mime) {
-        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
-        if (strcmp(mime, "image/png") == 0) {
-            server->sourceFormats |= SourcePng;
-        } else if (strcmp(mime, "image/jxl") == 0) {
-            server->sourceFormats |= SourceJxl;
-        }
-    },
+        .offer = [](wl_client*, wl_resource*, const char*) {},
         .destroy =
             [](wl_client*, wl_resource* resource) {
         auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
@@ -329,7 +318,6 @@ namespace plt::test {
         auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
         wl_resource* const source = wl_resource_create(client, &wl_data_source_interface, wl_resource_get_version(resource), id);
         server->dataSource = source;
-        server->sourceFormats = 0;
         wl_resource_set_implementation(source, &dataSourceImplementation, server, nullptr);
     },
         .get_data_device =
@@ -756,27 +744,6 @@ namespace plt::test {
         return true;
     }
 
-    bool Server::requestSourceData(const char* mime, bool broken) {
-        if (dataSource == nullptr || (!broken && (writeReadFd != -1 || writeSource != nullptr))) {
-            return false;
-        }
-        int pipes[2];
-        if (pipe(pipes) != 0) {
-            return false;
-        }
-        if (broken) {
-            close(pipes[0]);
-        } else {
-            writeReadFd = pipes[0];
-            writtenBytes = 0;
-            writtenValue = 0;
-        }
-        wl_data_source_send_send(dataSource, mime, pipes[1]);
-        close(pipes[1]);
-        wl_display_flush_clients(display);
-        return true;
-    }
-
     void Server::handle(Command command, int controlFd) {
         Reply reply;
         switch (command) {
@@ -811,9 +778,6 @@ namespace plt::test {
             case Command::QuerySelection:
                 reply.count = selectionCount;
                 break;
-            case Command::QuerySourceFormats:
-                reply.count = sourceFormats;
-                break;
             case Command::QueryMinimum:
                 reply.count = minimumCount;
                 reply.first = minimumWidth;
@@ -838,16 +802,28 @@ namespace plt::test {
                 }
                 break;
             case Command::RequestSourceData:
-                reply.count = requestSourceData("text/plain;charset=utf-8", false);
-                break;
-            case Command::RequestPngSourceData:
-                reply.count = requestSourceData("image/png", false);
-                break;
-            case Command::RequestJxlSourceData:
-                reply.count = requestSourceData("image/jxl", false);
+                if (dataSource != nullptr) {
+                    int pipes[2];
+                    if (pipe(pipes) == 0) {
+                        writeReadFd = pipes[0];
+                        wl_data_source_send_send(dataSource, "text/plain;charset=utf-8", pipes[1]);
+                        close(pipes[1]);
+                        wl_display_flush_clients(display);
+                        reply.count = 1;
+                    }
+                }
                 break;
             case Command::RequestBrokenSourceData:
-                reply.count = requestSourceData("text/plain;charset=utf-8", true);
+                if (dataSource != nullptr) {
+                    int pipes[2];
+                    if (pipe(pipes) == 0) {
+                        close(pipes[0]);
+                        wl_data_source_send_send(dataSource, "text/plain;charset=utf-8", pipes[1]);
+                        close(pipes[1]);
+                        wl_display_flush_clients(display);
+                        reply.count = 1;
+                    }
+                }
                 break;
             case Command::CancelSources:
                 if (dataSource != nullptr) {
@@ -869,9 +845,6 @@ namespace plt::test {
                         for (;;) {
                             const ssize_t count = read(fd, buffer, sizeof(buffer));
                             if (count > 0) {
-                                if (server->writtenBytes == 0) {
-                                    server->writtenValue = static_cast<u8>(buffer[0]);
-                                }
                                 server->writtenBytes += static_cast<u32>(count);
                             } else if (count < 0 && errno == EINTR) {
                                 continue;
@@ -899,7 +872,6 @@ namespace plt::test {
             case Command::QueryWrite:
                 reply.count = writtenBytes;
                 reply.first = writeReadFd == -1;
-                reply.second = writtenValue;
                 break;
             case Command::AwaitTitles:
                 targetTitleCount = static_cast<u32>(reply.first = 2049);
@@ -1113,11 +1085,7 @@ namespace plt::test {
                 if (textInput != nullptr) {
                     // Overlong '/', a UTF-16 surrogate, and an F5-lead
                     // sequence past U+10FFFF, then one valid scalar.
-                    zwp_text_input_v3_send_commit_string(
-                        textInput,
-                        "\xc0\xaf\xed\xa0\x80\xf5\x8f\xbf\xbf"
-                        "A"
-                    );
+                    zwp_text_input_v3_send_commit_string(textInput, "\xc0\xaf\xed\xa0\x80\xf5\x8f\xbf\xbf" "A");
                     zwp_text_input_v3_send_done(textInput, textInputCommitCount);
                     wl_display_flush_clients(display);
                     reply.count = 1;
@@ -1323,7 +1291,6 @@ int main() {
     success = runScenario("cancel asynchronous clipboard read", cancelAsynchronousRead) && success;
     success = runScenario("cancel ready clipboard read", cancelReadyClipboardRead) && success;
     success = runScenario("asynchronous clipboard write", asynchronousWrite) && success;
-    success = runScenario("MIME clipboard write", mimeClipboard) && success;
     success = runScenario("broken clipboard consumer", brokenClipboardConsumer) && success;
     success = runScenario("Wayland flush backpressure", flushBackpressure) && success;
     success = runScenario("queued Wayland event", queuedWaylandEvent) && success;

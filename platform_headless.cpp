@@ -2,11 +2,11 @@
 
 #include "poller.h"
 
-#include <std/thr/poll_fd.h>
 #include <std/mem/obj_pool.h>
+#include <std/thr/poll_fd.h>
 
-#include <vector>
 #include <algorithm>
+#include <vector>
 
 using namespace plt;
 using namespace stl;
@@ -51,7 +51,6 @@ namespace {
         void cancelClipboardRead(ClipboardRead& read) override;
         void requestWritePrimary(StringView content) override;
         void requestWriteClipboard(StringView content) override;
-        void requestWriteClipboard(StringView mime, StringView content) override;
         void requestPointerIcon(PointerIcon icon) override;
         void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) override;
         WindowInfo info() const override;
@@ -248,9 +247,6 @@ void WindowHeadlessImpl::requestWritePrimary(StringView) {
 }
 
 void WindowHeadlessImpl::requestWriteClipboard(StringView) {
-}
-
-void WindowHeadlessImpl::requestWriteClipboard(StringView, StringView) {
 }
 
 void WindowHeadlessImpl::requestPointerIcon(PointerIcon) {

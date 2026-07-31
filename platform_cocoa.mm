@@ -7,13 +7,12 @@
 #include "timer_queue.h"
 
 #include <std/sys/crt.h>
+#include <std/dbg/verify.h>
 #include <std/sym/i_map.h>
 #include <std/alg/minmax.h>
-#include <std/dbg/verify.h>
 #include <std/lib/buffer.h>
 #include <std/thr/poll_fd.h>
 #include <std/mem/obj_pool.h>
-#include <std/mem/small_obj_allocator.h>
 
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
@@ -371,10 +370,6 @@ namespace {
     struct WindowImpl;
     struct ClipboardOperation;
 
-    const StringView utf8Mime(u8"text/plain;charset=utf-8");
-    const StringView plainMime(u8"text/plain");
-    const StringView pngMime(u8"image/png");
-
     struct ArmedFD {
         ArmedFD(PollFD fd, PollCallback* callback, CFFileDescriptorRef descriptor, CFRunLoopSourceRef source);
         ~ArmedFD();
@@ -410,14 +405,6 @@ namespace {
         ReadClipboard,
         WritePrimary,
         WriteClipboard,
-    };
-
-    struct SelectionContent {
-        SelectionContent(StringView mime, StringView content);
-
-        SelectionContent* next = nullptr;
-        Buffer mime;
-        Buffer content;
     };
 
     struct ClipboardOperation final: public TimerCallback {
@@ -461,7 +448,6 @@ namespace {
         void cancelClipboardRead(ClipboardRead& sink) override;
         void requestWritePrimary(StringView content) override;
         void requestWriteClipboard(StringView content) override;
-        void requestWriteClipboard(StringView mime, StringView content) override;
         void requestPointerIcon(PointerIcon icon) override;
         void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) override;
         RenderContext renderContext() const override;
@@ -489,9 +475,6 @@ namespace {
         void emitText(NSString* string, u16 modifiers);
         NSPoint pointerPosition(NSEvent* event) const;
         void writePasteboard(NSPasteboard* pasteboard, StringView content);
-        void writeClipboardPasteboard(NSPasteboard* pasteboard);
-        void clearClipboardContents();
-        void setClipboardContent(StringView mime, StringView content);
         void removeClipboardOperation(ClipboardOperation& operation);
         void applySizeConstraints();
 
@@ -516,7 +499,6 @@ namespace {
         u32 resizeUnitHeight = 1;
         u32 resizeBaseWidth = 0;
         u32 resizeBaseHeight = 0;
-        SelectionContent* clipboardContents = nullptr;
         ClipboardOperation* clipboardOperations = nullptr;
         bool frameRequested = false;
         bool layerFrameRequested = false;
@@ -532,8 +514,6 @@ namespace {
         void stop() override;
 
         PollerImpl* poller_ = nullptr;
-        ObjPool::Ref smallObjectPool_;
-        SmallObjAllocator* smallObjects_ = nullptr;
     };
 
     NSString* stringFromView(StringView value) {
@@ -560,18 +540,10 @@ namespace {
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
     : poller_(owner.make<PollerImpl>(owner))
-    , smallObjectPool_(ObjPool::fromMemory())
-    , smallObjects_(SmallObjAllocator::create(smallObjectPool_.mutPtr()))
 {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp finishLaunching];
-}
-
-SelectionContent::SelectionContent(StringView mime_, StringView content_)
-    : mime(mime_)
-    , content(content_)
-{
 }
 
 Window* PlatformImpl::createWindow(ObjPool& owner, const WindowOptions& options) {
@@ -739,13 +711,8 @@ void ClipboardOperation::ready() {
 
     const bool primary = kind == ClipboardOperationKind::ReadPrimary || kind == ClipboardOperationKind::WritePrimary;
     NSPasteboard* const pasteboard = primary ? [NSPasteboard pasteboardWithName:NSPasteboardNameFind] : [NSPasteboard generalPasteboard];
-    if (kind == ClipboardOperationKind::WritePrimary) {
+    if (kind == ClipboardOperationKind::WritePrimary || kind == ClipboardOperationKind::WriteClipboard) {
         window.writePasteboard(pasteboard, StringView(content));
-        dispose();
-        return;
-    }
-    if (kind == ClipboardOperationKind::WriteClipboard) {
-        window.writeClipboardPasteboard(pasteboard);
         dispose();
         return;
     }
@@ -786,7 +753,7 @@ void ClipboardOperation::dispose() {
         timerArmed = false;
     }
     window.removeClipboardOperation(*this);
-    window.platform.smallObjects_->release(this);
+    delete this;
 }
 
 WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
@@ -842,7 +809,6 @@ WindowImpl::~WindowImpl() {
     while (clipboardOperations != nullptr) {
         clipboardOperations->cancel();
     }
-    clearClipboardContents();
     if (displayLinkTarget != nil) {
         displayLinkTarget->gate.detach();
     }
@@ -1020,50 +986,12 @@ void WindowImpl::writePasteboard(NSPasteboard* pasteboard, StringView content) {
     [pasteboard setString:value == nil ? @"" : value forType:NSPasteboardTypeString];
 }
 
-void WindowImpl::writeClipboardPasteboard(NSPasteboard* pasteboard) {
-    [pasteboard clearContents];
-    for (SelectionContent* content = clipboardContents; content != nullptr; content = content->next) {
-        const StringView mime(content->mime);
-        if (mime == utf8Mime || mime == plainMime) {
-            NSString* value = stringFromView(StringView(content->content));
-            [pasteboard setString:value == nil ? @"" : value forType:NSPasteboardTypeString];
-            continue;
-        }
-        NSString* const value = stringFromView(mime);
-        NSPasteboardType type = mime == pngMime ? NSPasteboardTypePNG : value;
-        if (type != nil) {
-            NSData* const data = [NSData dataWithBytes:content->content.data() length:content->content.length()];
-            [pasteboard setData:data forType:type];
-        }
-    }
-}
-
-void WindowImpl::clearClipboardContents() {
-    while (clipboardContents != nullptr) {
-        SelectionContent* const content = clipboardContents;
-        clipboardContents = content->next;
-        platform.smallObjects_->release(content);
-    }
-}
-
-void WindowImpl::setClipboardContent(StringView mime, StringView content) {
-    for (SelectionContent* stored = clipboardContents; stored != nullptr; stored = stored->next) {
-        if (StringView(stored->mime) == mime) {
-            stored->content = Buffer(content);
-            return;
-        }
-    }
-    SelectionContent* const stored = platform.smallObjects_->make<SelectionContent>(mime, content);
-    stored->next = clipboardContents;
-    clipboardContents = stored;
-}
-
 void WindowImpl::requestReadPrimary(ClipboardRead& sink) {
-    platform.smallObjects_->make<ClipboardOperation>(*this, ClipboardOperationKind::ReadPrimary, &sink, StringView());
+    new ClipboardOperation(*this, ClipboardOperationKind::ReadPrimary, &sink, {});
 }
 
 void WindowImpl::requestReadClipboard(ClipboardRead& sink) {
-    platform.smallObjects_->make<ClipboardOperation>(*this, ClipboardOperationKind::ReadClipboard, &sink, StringView());
+    new ClipboardOperation(*this, ClipboardOperationKind::ReadClipboard, &sink, {});
 }
 
 void WindowImpl::cancelClipboardRead(ClipboardRead& sink) {
@@ -1077,19 +1005,11 @@ void WindowImpl::cancelClipboardRead(ClipboardRead& sink) {
 }
 
 void WindowImpl::requestWritePrimary(StringView content) {
-    platform.smallObjects_->make<ClipboardOperation>(*this, ClipboardOperationKind::WritePrimary, nullptr, content);
+    new ClipboardOperation(*this, ClipboardOperationKind::WritePrimary, nullptr, content);
 }
 
 void WindowImpl::requestWriteClipboard(StringView content) {
-    clearClipboardContents();
-    setClipboardContent(utf8Mime, content);
-    setClipboardContent(plainMime, content);
-    platform.smallObjects_->make<ClipboardOperation>(*this, ClipboardOperationKind::WriteClipboard, nullptr, StringView());
-}
-
-void WindowImpl::requestWriteClipboard(StringView mime, StringView content) {
-    setClipboardContent(mime, content);
-    platform.smallObjects_->make<ClipboardOperation>(*this, ClipboardOperationKind::WriteClipboard, nullptr, StringView());
+    new ClipboardOperation(*this, ClipboardOperationKind::WriteClipboard, nullptr, content);
 }
 
 void WindowImpl::removeClipboardOperation(ClipboardOperation& operation) {

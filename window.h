@@ -93,7 +93,6 @@ namespace plt {
         virtual void cancelClipboardRead(ClipboardRead& read) = 0;
         virtual void requestWritePrimary(stl::StringView content) = 0;
         virtual void requestWriteClipboard(stl::StringView content) = 0;
-        virtual void requestWriteClipboard(stl::StringView mime, stl::StringView content) = 0;
         virtual void requestPointerIcon(PointerIcon icon) = 0;
         // Caret rectangle in surface pixels. Input methods position their
         // candidate window next to it (text-input-v3 cursor rectangle on
