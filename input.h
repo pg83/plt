@@ -194,6 +194,10 @@ namespace plt {
         // into text, or -1 when the input method hides the preedit cursor.
         // An empty text clears the preview.
         virtual void preedit(stl::StringView text, i32 cursorBegin, i32 cursorEnd) = 0;
+        // Text dropped onto the window by a drag-and-drop session. text is
+        // UTF-8 and valid only for the duration of the call. The consumer
+        // applies its own paste semantics, e.g. bracketed paste.
+        virtual void drop(stl::StringView text) = 0;
         virtual void pointerMotion(const PointerMotionInput& input) = 0;
         virtual void pointerButton(const PointerButtonInput& input) = 0;
         virtual void scroll(const ScrollInput& input) = 0;

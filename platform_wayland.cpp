@@ -63,6 +63,9 @@ namespace {
     // long; otherwise a stalled clipboard source or consumer pins the pipe
     // descriptors and the transfer object forever.
     constexpr u64 selectionTransferTimeoutUs = 30'000'000;
+    // A dropped payload is buffered whole before delivery, so a hostile drag
+    // source must not be able to make the buffer arbitrarily large.
+    constexpr size_t dropPayloadLimit = 16u << 20;
     const StringView utf8Mime(u8"text/plain;charset=utf-8");
     const StringView plainMime(u8"text/plain");
     const StringView utf8StringMime(u8"UTF8_STRING");
@@ -105,10 +108,23 @@ namespace {
         struct wl_data_offer* data = nullptr;
         struct zwp_primary_selection_offer_v1* primary = nullptr;
         bool utf8 = false;
+        bool utf8String = false;
         bool plain = false;
 
         void reset();
         const char* mime() const;
+    };
+
+    // Receives one dropped payload and hands it to the window's input sink.
+    // Owns the wl_data_offer from drop until the transfer settles.
+    struct DropReceiver final: public ClipboardRead {
+        bool data(StringView chunk) override;
+        void done(bool success) override;
+
+        WindowImpl* window = nullptr;
+        struct wl_data_offer* offer = nullptr;
+        Buffer content;
+        bool active = false;
     };
 
     struct ClipboardImpl final: public Clipboard {
@@ -165,6 +181,7 @@ namespace {
         u32 snappedLogical(u32 suggested, u32 unit, u32 base) const;
         void setLogicalSize(u32 width, u32 height);
         void receive(Offer& offer, bool primary, ClipboardRead& read);
+        void dropped(Offer& offer);
 
         PlatformImpl& platform;
         InputSink* input = nullptr;
@@ -180,6 +197,7 @@ namespace {
         struct xdg_activation_token_v1* activationToken = nullptr;
         ClipboardImpl primarySelection;
         ClipboardImpl clipboardSelection;
+        DropReceiver dropReceiver;
         Buffer title;
         u32 logicalWidth = 1;
         u32 logicalHeight = 1;
@@ -250,6 +268,9 @@ namespace {
         size_t composeFeed(xkb_keysym_t symbol, u32 codepoint, u32* codepoints, size_t capacity);
         void applyClipboardSelection();
         void applyPrimarySelection();
+        void dragEntered(u32 serial, struct wl_surface* surface, struct wl_data_offer* offer);
+        void dragLeft();
+        void dragDropped();
         void setClipboard(StringView content);
         void setPrimary(StringView content);
         void setCursor(WindowImpl& window);
@@ -324,6 +345,9 @@ namespace {
         Offer clipboardOffer;
         Offer pendingPrimaryOffer;
         Offer primaryOffer;
+        Offer dndOffer;
+        WindowImpl* dndWindow = nullptr;
+        u32 dndEnterSerial = 0;
         Buffer clipboardContent;
         Buffer primaryContent;
         SelectionTransfer* transfers = nullptr;
@@ -498,8 +522,10 @@ namespace {
         if (!textMime(mime)) {
             return;
         }
-        if (StringView(mime) == utf8Mime || StringView(mime) == utf8StringMime) {
+        if (StringView(mime) == utf8Mime) {
             offer.utf8 = true;
+        } else if (StringView(mime) == utf8StringMime) {
+            offer.utf8String = true;
         } else {
             offer.plain = true;
         }
@@ -590,10 +616,19 @@ namespace {
 
     const struct wl_data_device_listener dataDeviceListener{
         .data_offer = dataDeviceDataOffer,
-        .enter = [](void*, struct wl_data_device*, u32, struct wl_surface*, wl_fixed_t, wl_fixed_t, struct wl_data_offer*) {},
-        .leave = [](void*, struct wl_data_device*) {},
+        .enter =
+            [](void* data, struct wl_data_device*, u32 serial, struct wl_surface* surface, wl_fixed_t, wl_fixed_t, struct wl_data_offer* offer) {
+        ((PlatformImpl*)(data))->dragEntered(serial, surface, offer);
+    },
+        .leave =
+            [](void* data, struct wl_data_device*) {
+        ((PlatformImpl*)(data))->dragLeft();
+    },
         .motion = [](void*, struct wl_data_device*, u32, wl_fixed_t, wl_fixed_t) {},
-        .drop = [](void*, struct wl_data_device*) {},
+        .drop =
+            [](void* data, struct wl_data_device*) {
+        ((PlatformImpl*)(data))->dragDropped();
+    },
         .selection = dataDeviceSelection,
     };
 
@@ -1124,10 +1159,41 @@ void Offer::reset() {
 }
 
 const char* Offer::mime() const {
+    // receive and accept must name a mime the source actually offered, so
+    // the flags track the exact offered spellings.
     if (utf8) {
         return "text/plain;charset=utf-8";
     }
+    if (utf8String) {
+        return "UTF8_STRING";
+    }
     return plain ? "text/plain" : nullptr;
+}
+
+bool DropReceiver::data(StringView chunk) {
+    if (chunk.length() > dropPayloadLimit - content.length()) {
+        return false;
+    }
+    content.append(chunk.data(), chunk.length());
+    return true;
+}
+
+void DropReceiver::done(bool success) {
+    struct wl_data_offer* const finished = offer;
+    offer = nullptr;
+    active = false;
+    if (finished != nullptr) {
+        if (success && wl_data_offer_get_version(finished) >= WL_DATA_OFFER_FINISH_SINCE_VERSION) {
+            wl_data_offer_finish(finished);
+        }
+        wl_data_offer_destroy(finished);
+        window->platform.flushDisplay();
+    }
+    if (success && !content.empty() && window->input != nullptr) {
+        window->input->drop(StringView(content));
+        window->input->flush();
+    }
+    content.reset();
 }
 
 SelectionTransfer::SelectionTransfer(PlatformImpl& platform_, int fd_, WindowImpl* window_, ClipboardRead* read_, StringView content_, bool writing_, bool success_)
@@ -1343,6 +1409,7 @@ PlatformImpl::~PlatformImpl() {
     clipboardOffer.reset();
     pendingPrimaryOffer.reset();
     primaryOffer.reset();
+    dndOffer.reset();
     if (clipboardSource != nullptr) {
         wl_data_source_destroy(clipboardSource);
     }
@@ -2102,6 +2169,46 @@ void PlatformImpl::removeTransfer(SelectionTransfer& transfer) {
     }
 }
 
+void PlatformImpl::dragEntered(u32 serial, struct wl_surface* surface, struct wl_data_offer* offer) {
+    dndOffer.reset();
+    dndWindow = surface == nullptr ? nullptr : (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
+    dndEnterSerial = serial;
+    if (offer == nullptr) {
+        return;
+    }
+    if (pendingClipboardOffer.data == offer) {
+        dndOffer = pendingClipboardOffer;
+        pendingClipboardOffer = {};
+    } else {
+        dndOffer.data = offer;
+        wl_data_offer_add_listener(offer, &dataOfferListener, &dndOffer);
+    }
+    // A null mime tells the source nothing here can consume the drag.
+    wl_data_offer_accept(dndOffer.data, dndEnterSerial, dndOffer.mime());
+    if (dndOffer.mime() != nullptr && wl_data_offer_get_version(dndOffer.data) >= WL_DATA_OFFER_SET_ACTIONS_SINCE_VERSION) {
+        wl_data_offer_set_actions(dndOffer.data, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY);
+    }
+    flushDisplay();
+}
+
+void PlatformImpl::dragLeft() {
+    dndOffer.reset();
+    dndWindow = nullptr;
+    dndEnterSerial = 0;
+}
+
+void PlatformImpl::dragDropped() {
+    WindowImpl* const window = dndWindow;
+    dndWindow = nullptr;
+    dndEnterSerial = 0;
+    if (window == nullptr || dndOffer.data == nullptr || dndOffer.mime() == nullptr) {
+        dndOffer.reset();
+        flushDisplay();
+        return;
+    }
+    window->dropped(dndOffer);
+}
+
 void PlatformImpl::applyClipboardSelection() {
     if (!clipboardPending || dataDeviceManager == nullptr || dataDevice == nullptr || latestSerial == 0) {
         return;
@@ -2303,6 +2410,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     primarySelection.window = this;
     primarySelection.primary = true;
     clipboardSelection.window = this;
+    dropReceiver.window = this;
     surface = wl_compositor_create_surface(platform.compositor);
     if (surface == nullptr) {
         fail(u8"wl_compositor_create_surface failed");
@@ -2340,6 +2448,13 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
 WindowImpl::~WindowImpl() {
     platform.poller_->cancel(*this);
     platform.cancelSelection(*this, nullptr);
+    if (dropReceiver.offer != nullptr) {
+        wl_data_offer_destroy(dropReceiver.offer);
+        dropReceiver.offer = nullptr;
+    }
+    if (platform.dndWindow == this) {
+        platform.dndWindow = nullptr;
+    }
     if (platform.keyboardFocus == this) {
         platform.keyboardFocus = nullptr;
         platform.stopRepeat();
@@ -2627,6 +2742,24 @@ void WindowImpl::receive(Offer& offer, bool primary, ClipboardRead& read) {
         return;
     }
     platform.readSelection(pipes[0], *this, read);
+}
+
+void WindowImpl::dropped(Offer& offer) {
+    if (dropReceiver.active) {
+        // A second drop landed while the previous payload was still
+        // draining; the newest drop wins.
+        platform.cancelSelection(*this, &dropReceiver);
+        if (dropReceiver.offer != nullptr) {
+            wl_data_offer_destroy(dropReceiver.offer);
+            dropReceiver.offer = nullptr;
+        }
+        dropReceiver.content.reset();
+    }
+    Offer taken = offer;
+    offer = {};
+    dropReceiver.offer = taken.data;
+    dropReceiver.active = true;
+    receive(taken, false, dropReceiver);
 }
 
 Clipboard* WindowImpl::primary() {

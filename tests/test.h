@@ -55,6 +55,13 @@ namespace plt::test {
         TextInputCommitString,
         TextInputCommitInvalid,
         RemoveSeat,
+        DragEnter,
+        DragEnterUtf8String,
+        DragDrop,
+        DragLeave,
+        DragData,
+        QueryDragAccept,
+        QueryDragFinish,
         CursorShapeV1,
         QuerySelectionSerial,
         QueryTextInput,
@@ -167,6 +174,12 @@ namespace plt::test {
             ++preeditCount;
         }
 
+        void drop(stl::StringView text) override {
+            lastDrop.reset();
+            lastDrop.append(text.data(), text.length());
+            ++dropCount;
+        }
+
         void pointerMotion(const PointerMotionInput& input) override {
             lastMotion = input;
             ++motionCount;
@@ -213,6 +226,8 @@ namespace plt::test {
         i32 lastPreeditCursorBegin = -1;
         i32 lastPreeditCursorEnd = -1;
         u32 preeditCount = 0;
+        stl::Buffer lastDrop;
+        u32 dropCount = 0;
         PointerMotionInput lastMotion;
         PointerButtonInput lastButton;
         ScrollInput lastScroll;
@@ -278,4 +293,7 @@ namespace plt::test {
     bool textInput(int fd);
     bool cursorShapes(int fd);
     bool cursorShapesV1(int fd);
+    bool textDrop(int fd);
+    bool utf8StringDrop(int fd);
+    bool cancelledDrag(int fd);
 }

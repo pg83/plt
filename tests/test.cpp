@@ -82,6 +82,7 @@ namespace plt::test {
         bool run(int controlFd, pid_t child);
         void handle(Command command, int controlFd);
         bool offerSelection(const char* mime);
+        bool dragEnter(const char* mime);
         void sendInitialConfigure(Surface& surface);
         void sendConfigure(Surface& surface, i32 width, i32 height, const u32* states, size_t stateCount);
 
@@ -118,6 +119,12 @@ namespace plt::test {
         u32 cursorShapeCount = 0;
         u32 cursorShape = 0;
         u32 cursorShapeSerial = 0;
+        wl_resource* dragOffer = nullptr;
+        u32 dragAcceptCount = 0;
+        i32 dragAcceptMime = 0;
+        u32 dragPreferredAction = 0;
+        u32 dragFinishCount = 0;
+        i32 receiveMime = 0;
         u32 pointerEnterSerial = 0;
         u32 textInputCommitCount = 0;
         u32 textInputPurpose = 0;
@@ -280,15 +287,38 @@ namespace plt::test {
         .set_actions = [](wl_client*, wl_resource*, u32) {},
     };
 
+    i32 mimeCode(const char* mime) {
+        if (mime == nullptr) {
+            return 0;
+        }
+        const stl::StringView value(mime);
+        if (value == stl::StringView(u8"text/plain;charset=utf-8")) {
+            return 1;
+        }
+        if (value == stl::StringView(u8"text/plain")) {
+            return 2;
+        }
+        if (value == stl::StringView(u8"UTF8_STRING")) {
+            return 3;
+        }
+        return -1;
+    }
+
     const struct wl_data_offer_interface dataOfferImplementation{
-        .accept = [](wl_client*, wl_resource*, u32, const char*) {},
+        .accept =
+            [](wl_client*, wl_resource* resource, u32, const char* mime) {
+        auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
+        ++server->dragAcceptCount;
+        server->dragAcceptMime = mimeCode(mime);
+    },
         .receive =
-            [](wl_client*, wl_resource* resource, const char*, i32 fd) {
+            [](wl_client*, wl_resource* resource, const char* mime, i32 fd) {
         auto* const server = static_cast<Server*>(wl_resource_get_user_data(resource));
         if (server->readWriteFd != -1) {
             close(server->readWriteFd);
         }
         server->readWriteFd = fd;
+        server->receiveMime = mimeCode(mime);
     },
         .destroy =
             [](wl_client*, wl_resource* resource) {
@@ -296,10 +326,19 @@ namespace plt::test {
         if (server->dataOffer == resource) {
             server->dataOffer = nullptr;
         }
+        if (server->dragOffer == resource) {
+            server->dragOffer = nullptr;
+        }
         wl_resource_destroy(resource);
     },
-        .finish = [](wl_client*, wl_resource*) {},
-        .set_actions = [](wl_client*, wl_resource*, u32, u32) {},
+        .finish =
+            [](wl_client*, wl_resource* resource) {
+        ++static_cast<Server*>(wl_resource_get_user_data(resource))->dragFinishCount;
+    },
+        .set_actions =
+            [](wl_client*, wl_resource* resource, u32, u32 preferred) {
+        static_cast<Server*>(wl_resource_get_user_data(resource))->dragPreferredAction = preferred;
+    },
     };
 
     const struct wl_data_device_interface dataDeviceImplementation{
@@ -745,6 +784,20 @@ namespace plt::test {
         return true;
     }
 
+    bool Server::dragEnter(const char* mime) {
+        if (dataDevice == nullptr || window == nullptr) {
+            return false;
+        }
+        dragOffer = wl_resource_create(client, &wl_data_offer_interface, wl_resource_get_version(dataDevice), 0);
+        wl_resource_set_implementation(dragOffer, &dataOfferImplementation, this, nullptr);
+        wl_data_device_send_data_offer(dataDevice, dragOffer);
+        wl_data_offer_send_offer(dragOffer, mime);
+        wl_data_offer_send_source_actions(dragOffer, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY | WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE);
+        wl_data_device_send_enter(dataDevice, serial++, window->surface, wl_fixed_from_int(15), wl_fixed_from_int(25), dragOffer);
+        wl_display_flush_clients(display);
+        return true;
+    }
+
     void Server::handle(Command command, int controlFd) {
         Reply reply;
         switch (command) {
@@ -1100,6 +1153,44 @@ namespace plt::test {
                     reply.count = 1;
                 }
                 break;
+            case Command::DragEnter:
+                reply.count = dragEnter("text/plain;charset=utf-8");
+                break;
+            case Command::DragEnterUtf8String:
+                reply.count = dragEnter("UTF8_STRING");
+                break;
+            case Command::DragDrop:
+                if (dataDevice != nullptr) {
+                    wl_data_device_send_drop(dataDevice);
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
+            case Command::DragLeave:
+                if (dataDevice != nullptr) {
+                    wl_data_device_send_leave(dataDevice);
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
+            case Command::DragData:
+                reply.count = readWriteFd != -1;
+                if (readWriteFd != -1) {
+                    static constexpr char content[] = "hermetic Wayland drop";
+                    transfer(readWriteFd, const_cast<char*>(content), sizeof(content) - 1, true);
+                    close(readWriteFd);
+                    readWriteFd = -1;
+                }
+                break;
+            case Command::QueryDragAccept:
+                reply.count = dragAcceptCount;
+                reply.first = dragAcceptMime;
+                reply.second = static_cast<i32>(dragPreferredAction);
+                break;
+            case Command::QueryDragFinish:
+                reply.count = dragFinishCount;
+                reply.first = receiveMime;
+                break;
             case Command::CursorShapeV1:
                 if (cursorShapeGlobal != nullptr) {
                     wl_global_destroy(cursorShapeGlobal);
@@ -1301,6 +1392,9 @@ int main() {
     success = runScenario("asynchronous primary selection", asynchronousPrimary) && success;
     success = runScenario("cancel asynchronous clipboard read", cancelAsynchronousRead) && success;
     success = runScenario("cancel ready clipboard read", cancelReadyClipboardRead) && success;
+    success = runScenario("text drop", textDrop) && success;
+    success = runScenario("UTF8_STRING drop", utf8StringDrop) && success;
+    success = runScenario("cancelled drag", cancelledDrag) && success;
     success = runScenario("asynchronous clipboard write", asynchronousWrite) && success;
     success = runScenario("broken clipboard consumer", brokenClipboardConsumer) && success;
     success = runScenario("Wayland flush backpressure", flushBackpressure) && success;
