@@ -108,6 +108,11 @@ elif system == "Darwin":
         "-Wno-availability",
         "-Wno-missing-method-return-type",
         "-Wno-unused-parameter",
+        # Cross builds receive the SDK frameworks through -F, a user search
+        # path, so clang diagnoses the SDK headers themselves. Xcode gets the
+        # same headers as system headers and never sees these warnings.
+        "-Wno-nullability-completeness",
+        "-Wno-unguarded-availability-new",
     ]
     backend_deps = [
         dependency(ldflags=[
