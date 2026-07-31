@@ -133,16 +133,16 @@ STD_TEST_SUITE(FiberScheduler) {
         auto body = makeRunable([&] {
             handle = scheduler->current();
             phase = 1;
-            scheduler->park();
+            scheduler->current()->park();
             phase = 2;
-            scheduler->park();
+            scheduler->current()->park();
             phase = 3;
         });
         scheduler->spawn(body);
         STD_INSIST(phase == 1);
-        scheduler->wake(*handle);
+        handle->wake();
         STD_INSIST(phase == 2);
-        scheduler->wake(*handle);
+        handle->wake();
         STD_INSIST(phase == 3);
     }
 
@@ -155,11 +155,11 @@ STD_TEST_SUITE(FiberScheduler) {
         auto body = makeRunable([&] {
             handle = scheduler->current();
             scheduler->sleep(1000);
-            scheduler->park();
+            scheduler->current()->park();
             woken = true;
         });
         scheduler->spawn(body);
-        scheduler->wake(*handle);
+        handle->wake();
         STD_INSIST(!woken);
         poller.fireTimer();
         STD_INSIST(woken);

@@ -1324,7 +1324,7 @@ PlatformImpl::~PlatformImpl() {
         // The session fiber owns the offer; ending the session synchronously
         // makes it release the proxy before the display goes away.
         dndSession->window = nullptr;
-        scheduler_->wake(*dndSession->fiber);
+        dndSession->fiber->wake();
     }
     if (clipboardSource != nullptr) {
         wl_data_source_destroy(clipboardSource);
@@ -2173,7 +2173,7 @@ void PlatformImpl::dragEntered(u32 serial, struct wl_surface* surface, wl_fixed_
         // A new session begins before the old one saw leave; end it. The
         // fiber tears down synchronously and detaches itself.
         dndSession->leavePending = true;
-        scheduler_->wake(*dndSession->fiber);
+        dndSession->fiber->wake();
     }
     WindowImpl* const window = surface == nullptr ? nullptr : (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
     Offer adopted;
@@ -2253,7 +2253,7 @@ void PlatformImpl::runDragSession(DndSession& session) {
             }
             continue;
         }
-        scheduler_->park();
+        session.fiber->park();
     }
 }
 
@@ -2346,7 +2346,7 @@ void PlatformImpl::dragMoved(wl_fixed_t x, wl_fixed_t y) {
     dndSession->motionX = x;
     dndSession->motionY = y;
     dndSession->motionPending = true;
-    scheduler_->wake(*dndSession->fiber);
+    dndSession->fiber->wake();
 }
 
 void PlatformImpl::dragLeft() {
@@ -2354,7 +2354,7 @@ void PlatformImpl::dragLeft() {
         return;
     }
     dndSession->leavePending = true;
-    scheduler_->wake(*dndSession->fiber);
+    dndSession->fiber->wake();
 }
 
 void PlatformImpl::dragDropped() {
@@ -2362,7 +2362,7 @@ void PlatformImpl::dragDropped() {
         return;
     }
     dndSession->dropPending = true;
-    scheduler_->wake(*dndSession->fiber);
+    dndSession->fiber->wake();
 }
 
 void PlatformImpl::applyClipboardSelection() {
@@ -2606,7 +2606,7 @@ WindowImpl::~WindowImpl() {
     platform.cancelSelection(*this, nullptr);
     if (platform.dndSession != nullptr && platform.dndSession->window == this) {
         platform.dndSession->window = nullptr;
-        platform.scheduler_->wake(*platform.dndSession->fiber);
+        platform.dndSession->fiber->wake();
     }
     if (platform.keyboardFocus == this) {
         platform.keyboardFocus = nullptr;
