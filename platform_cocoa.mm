@@ -506,6 +506,7 @@ namespace {
         Clipboard* primary() override;
         Clipboard* secondary() override;
         void requestPointerIcon(PointerIcon icon) override;
+        void requestOpenUri(StringView uri) override;
         void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) override;
         RenderContext renderContext() const override;
 
@@ -1307,6 +1308,17 @@ void WindowImpl::removeClipboardOperation(ClipboardOperation& operation) {
 
 void WindowImpl::requestPointerIcon(PointerIcon icon) {
     [pointerCursor(icon) set];
+}
+
+void WindowImpl::requestOpenUri(StringView uri) {
+    NSString* const text = [[NSString alloc] initWithBytes:uri.data() length:uri.length() encoding:NSUTF8StringEncoding];
+    if (text == nil) {
+        return;
+    }
+    NSURL* const url = [NSURL URLWithString:text];
+    if (url != nil) {
+        [[NSWorkspace sharedWorkspace] openURL:url];
+    }
 }
 
 RenderContext WindowImpl::renderContext() const {

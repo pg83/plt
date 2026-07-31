@@ -35,6 +35,11 @@ namespace plt {
         virtual void configure(const WindowInfo& info) = 0;
         virtual void failNextPresentation() = 0;
         virtual HeadlessFrame presentedFrame() const = 0;
+
+        // Requests recorded for tests instead of reaching a real desktop.
+        virtual PointerIcon pointerIcon() const = 0;
+        virtual stl::StringView openedUri() const = 0;
+        virtual u64 openUriCount() const = 0;
     };
 
     Platform* createHeadlessPlatform(stl::ObjPool& owner);

@@ -55,6 +55,7 @@ namespace {
         Clipboard* primary() override;
         Clipboard* secondary() override;
         void requestPointerIcon(PointerIcon icon) override;
+        void requestOpenUri(StringView uri) override;
         void requestTextInputRect(i32 x, i32 y, u32 width, u32 height) override;
         WindowInfo info() const override;
         RenderContext renderContext() const override;
@@ -64,6 +65,9 @@ namespace {
         void configure(const WindowInfo& info) override;
         void failNextPresentation() override;
         HeadlessFrame presentedFrame() const override;
+        PointerIcon pointerIcon() const override;
+        stl::StringView openedUri() const override;
+        u64 openUriCount() const override;
 
         void resizeBackBuffer();
         void restoreSize();
@@ -73,6 +77,9 @@ namespace {
         ClipboardHeadless clipboard_;
         WindowInfo info_;
         WindowInfo restored_;
+        PointerIcon icon_ = PointerIcon::Default;
+        std::vector<u8> uri_;
+        u64 openCount_ = 0;
         mutable HeadlessRenderTarget target_;
         std::vector<u8> front_;
         std::vector<u8> back_;
@@ -254,7 +261,25 @@ void ClipboardHeadless::write(StringView) {
 void ClipboardHeadless::cancel(ClipboardRead&) {
 }
 
-void WindowHeadlessImpl::requestPointerIcon(PointerIcon) {
+void WindowHeadlessImpl::requestPointerIcon(PointerIcon icon) {
+    icon_ = icon;
+}
+
+void WindowHeadlessImpl::requestOpenUri(StringView uri) {
+    uri_.assign(uri.data(), uri.data() + uri.length());
+    ++openCount_;
+}
+
+PointerIcon WindowHeadlessImpl::pointerIcon() const {
+    return icon_;
+}
+
+StringView WindowHeadlessImpl::openedUri() const {
+    return StringView(uri_.data(), uri_.size());
+}
+
+u64 WindowHeadlessImpl::openUriCount() const {
+    return openCount_;
 }
 
 void WindowHeadlessImpl::requestTextInputRect(i32, i32, u32, u32) {
