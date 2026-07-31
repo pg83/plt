@@ -20,6 +20,7 @@ libstd = dependency(
 
 common_sources = [
     "$(S)/clipboard.cpp",
+    "$(S)/drop.cpp",
     "$(S)/input.cpp",
     "$(S)/poller.cpp",
     "$(S)/pointer_grab.cpp",
@@ -142,6 +143,7 @@ if build.target == build.host:
         output="$(B)/plt_unit_tests",
         srcs=[
             "$(S)/tests/test_ut.cpp",
+            "$(S)/drop_ut.cpp",
             "$(S)/pointer_grab_ut.cpp",
             "$(S)/timer_queue_ut.cpp",
         ],

@@ -82,7 +82,7 @@ namespace plt::test {
         bool run(int controlFd, pid_t child);
         void handle(Command command, int controlFd);
         bool offerSelection(const char* mime);
-        bool dragEnter(const char* mime);
+        bool dragEnter(const char* mime, const char* extraMime = nullptr);
         void sendInitialConfigure(Surface& surface);
         void sendConfigure(Surface& surface, i32 width, i32 height, const u32* states, size_t stateCount);
 
@@ -300,6 +300,9 @@ namespace plt::test {
         }
         if (value == stl::StringView(u8"UTF8_STRING")) {
             return 3;
+        }
+        if (value == stl::StringView(u8"text/uri-list")) {
+            return 4;
         }
         return -1;
     }
@@ -784,7 +787,7 @@ namespace plt::test {
         return true;
     }
 
-    bool Server::dragEnter(const char* mime) {
+    bool Server::dragEnter(const char* mime, const char* extraMime) {
         if (dataDevice == nullptr || window == nullptr) {
             return false;
         }
@@ -792,6 +795,9 @@ namespace plt::test {
         wl_resource_set_implementation(dragOffer, &dataOfferImplementation, this, nullptr);
         wl_data_device_send_data_offer(dataDevice, dragOffer);
         wl_data_offer_send_offer(dragOffer, mime);
+        if (extraMime != nullptr) {
+            wl_data_offer_send_offer(dragOffer, extraMime);
+        }
         wl_data_offer_send_source_actions(dragOffer, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY | WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE);
         wl_data_device_send_enter(dataDevice, serial++, window->surface, wl_fixed_from_int(15), wl_fixed_from_int(25), dragOffer);
         wl_display_flush_clients(display);
@@ -1159,6 +1165,16 @@ namespace plt::test {
             case Command::DragEnterUtf8String:
                 reply.count = dragEnter("UTF8_STRING");
                 break;
+            case Command::DragEnterUriList:
+                reply.count = dragEnter("text/uri-list", "text/plain;charset=utf-8");
+                break;
+            case Command::DragMotion:
+                if (dataDevice != nullptr) {
+                    wl_data_device_send_motion(dataDevice, 0, wl_fixed_from_int(30), wl_fixed_from_int(35));
+                    wl_display_flush_clients(display);
+                    reply.count = 1;
+                }
+                break;
             case Command::DragDrop:
                 if (dataDevice != nullptr) {
                     wl_data_device_send_drop(dataDevice);
@@ -1177,6 +1193,15 @@ namespace plt::test {
                 reply.count = readWriteFd != -1;
                 if (readWriteFd != -1) {
                     static constexpr char content[] = "hermetic Wayland drop";
+                    transfer(readWriteFd, const_cast<char*>(content), sizeof(content) - 1, true);
+                    close(readWriteFd);
+                    readWriteFd = -1;
+                }
+                break;
+            case Command::DragUriData:
+                reply.count = readWriteFd != -1;
+                if (readWriteFd != -1) {
+                    static constexpr char content[] = "file:///tmp/plt%20drop.txt\r\n# comment\r\nhttps://example.com/plt\r\n";
                     transfer(readWriteFd, const_cast<char*>(content), sizeof(content) - 1, true);
                     close(readWriteFd);
                     readWriteFd = -1;
@@ -1296,7 +1321,7 @@ namespace plt::test {
         platform.run();
     }
 
-    Client::Client(int controlFd_, u32 width, u32 minimum, plt::WindowEvents* events, plt::InputSink* input, bool waitForConfigure, plt::FrameCallback* frame)
+    Client::Client(int controlFd_, u32 width, u32 minimum, plt::WindowEvents* events, plt::InputSink* input, bool waitForConfigure, plt::FrameCallback* frame, plt::DropTarget* drop)
         : controlFd(controlFd_)
         , owner(stl::ObjPool::fromMemory())
     {
@@ -1313,6 +1338,7 @@ namespace plt::test {
                 .input = input,
                 .events = events,
                 .frame = frame,
+                .drop = drop,
             }
         );
         window->requestShow();
@@ -1394,6 +1420,9 @@ int main() {
     success = runScenario("cancel ready clipboard read", cancelReadyClipboardRead) && success;
     success = runScenario("text drop", textDrop) && success;
     success = runScenario("UTF8_STRING drop", utf8StringDrop) && success;
+    success = runScenario("uri-list drop", uriListDrop) && success;
+    success = runScenario("raw drop API", rawDropApi) && success;
+    success = runScenario("rejected drag", rejectedDrag) && success;
     success = runScenario("cancelled drag", cancelledDrag) && success;
     success = runScenario("asynchronous clipboard write", asynchronousWrite) && success;
     success = runScenario("broken clipboard consumer", brokenClipboardConsumer) && success;

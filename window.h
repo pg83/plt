@@ -6,6 +6,7 @@
 #include <std/sys/types.h>
 
 namespace plt {
+    struct DropTarget;
     struct InputSink;
 
     enum class RenderBackend : u8 {
@@ -99,6 +100,8 @@ namespace plt {
         InputSink* input = nullptr;
         WindowEvents* events = nullptr;
         FrameCallback* frame = nullptr;
+        // Null leaves the window rejecting every drag.
+        DropTarget* drop = nullptr;
     };
 
     struct Window {

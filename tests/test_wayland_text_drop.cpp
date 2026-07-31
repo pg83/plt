@@ -3,9 +3,79 @@
 #include <stdio.h>
 
 namespace plt::test {
+    namespace {
+        // Exercises the raw session API: records hover positions, picks an
+        // explicit mime over the canonical preference and can abort the
+        // payload stream from data().
+        struct RawTarget final: DropTarget, ClipboardRead {
+            DropReply dragOver(const DropOffer& offer, i32 x, i32 y) override {
+                ++overCount;
+                lastFormats = offer.formats();
+                lastX = x;
+                lastY = y;
+                return {
+                    .mime = stl::StringView(u8"text/plain;charset=utf-8"),
+                    .action = DropAction::Copy,
+                };
+            }
+
+            void dragLeft() override {
+                ++leftCount;
+            }
+
+            void dropped(Drop& drop) override {
+                ++droppedCount;
+                drop.read(stl::StringView(u8"text/plain;charset=utf-8"), *this);
+            }
+
+            bool data(stl::StringView chunk) override {
+                if (abortNext) {
+                    return false;
+                }
+                content.append(chunk.data(), chunk.length());
+                return true;
+            }
+
+            void done(bool success_) override {
+                ++doneCount;
+                success = success_;
+                abortNext = false;
+            }
+
+            stl::Buffer content;
+            size_t lastFormats = 0;
+            i32 lastX = 0;
+            i32 lastY = 0;
+            u32 overCount = 0;
+            u32 leftCount = 0;
+            u32 droppedCount = 0;
+            u32 doneCount = 0;
+            bool success = false;
+            bool abortNext = false;
+        };
+
+        struct RejectingTarget final: DropTarget {
+            DropReply dragOver(const DropOffer&, i32, i32) override {
+                ++overCount;
+                return {};
+            }
+
+            void dragLeft() override {
+            }
+
+            void dropped(Drop&) override {
+                ++droppedCount;
+            }
+
+            u32 overCount = 0;
+            u32 droppedCount = 0;
+        };
+    }
+
     bool textDrop(int fd) {
         InputRecorder input;
-        Client client(fd, 800, 1, nullptr, &input);
+        stl::ObjPool::Ref pool = stl::ObjPool::fromMemory();
+        Client client(fd, 800, 1, nullptr, &input, true, nullptr, DropTarget::create(*pool, input));
         if (command(fd, Command::DragEnter).count != 1) {
             fprintf(stderr, "text drop: drag enter was not delivered\n");
             return false;
@@ -13,7 +83,7 @@ namespace plt::test {
         pump(*client.platform);
 
         const Reply accept = command(fd, Command::QueryDragAccept);
-        if (accept.count == 0 || accept.first != 1 || accept.second != 1) {
+        if (accept.count != 1 || accept.first != 1 || accept.second != 1) {
             fprintf(
                 stderr,
                 "text drop: offer was not accepted with the utf-8 mime and the copy action\n"
@@ -43,7 +113,8 @@ namespace plt::test {
 
     bool utf8StringDrop(int fd) {
         InputRecorder input;
-        Client client(fd, 800, 1, nullptr, &input);
+        stl::ObjPool::Ref pool = stl::ObjPool::fromMemory();
+        Client client(fd, 800, 1, nullptr, &input, true, nullptr, DropTarget::create(*pool, input));
         if (command(fd, Command::DragEnterUtf8String).count != 1) {
             fprintf(stderr, "UTF8_STRING drop: drag enter was not delivered\n");
             return false;
@@ -53,7 +124,7 @@ namespace plt::test {
         // The source offers only UTF8_STRING; accept and receive must name
         // that exact mime instead of a preferred spelling.
         const Reply accept = command(fd, Command::QueryDragAccept);
-        if (accept.count == 0 || accept.first != 3) {
+        if (accept.count != 1 || accept.first != 3) {
             fprintf(stderr, "UTF8_STRING drop: offer was not accepted as UTF8_STRING\n");
             return false;
         }
@@ -78,24 +149,142 @@ namespace plt::test {
         return true;
     }
 
-    bool cancelledDrag(int fd) {
+    bool uriListDrop(int fd) {
         InputRecorder input;
-        Client client(fd, 800, 1, nullptr, &input);
+        stl::ObjPool::Ref pool = stl::ObjPool::fromMemory();
+        Client client(fd, 800, 1, nullptr, &input, true, nullptr, DropTarget::create(*pool, input));
+        if (command(fd, Command::DragEnterUriList).count != 1) {
+            fprintf(stderr, "uri-list drop: drag enter was not delivered\n");
+            return false;
+        }
+        pump(*client.platform);
+
+        // Both text and uri-list are on offer; the canonical target must
+        // prefer the file list.
+        const Reply accept = command(fd, Command::QueryDragAccept);
+        if (accept.count != 1 || accept.first != 4) {
+            fprintf(stderr, "uri-list drop: offer was not accepted as text/uri-list\n");
+            return false;
+        }
+
+        command(fd, Command::DragDrop);
+        pump(*client.platform);
+        if (command(fd, Command::DragUriData).count != 1) {
+            fprintf(stderr, "uri-list drop: no transfer fd was available after drop\n");
+            return false;
+        }
+        pump(*client.platform);
+
+        // The file URI decodes to a local path, the comment is skipped and
+        // the foreign scheme passes through verbatim.
+        if (input.pathCount != 2 || input.dropCount != 0 || stl::StringView(input.lastPaths) != stl::StringView(u8"/tmp/plt drop.txt\nhttps://example.com/plt\n")) {
+            fprintf(stderr, "uri-list drop: entries were not delivered as paths\n");
+            return false;
+        }
+        const Reply finish = command(fd, Command::QueryDragFinish);
+        if (finish.count != 1 || finish.first != 4) {
+            fprintf(stderr, "uri-list drop: the offer was not received as text/uri-list\n");
+            return false;
+        }
+        return true;
+    }
+
+    bool rawDropApi(int fd) {
+        RawTarget target;
+        Client client(fd, 800, 1, nullptr, nullptr, true, nullptr, &target);
+        command(fd, Command::DragEnterUriList);
+        pump(*client.platform);
+        if (target.overCount != 1 || target.lastFormats != 2 || target.lastX != 15 || target.lastY != 25) {
+            fprintf(stderr, "raw drop API: enter did not reach the target intact\n");
+            return false;
+        }
+
+        // The target picks utf-8 over the offered uri-list: the consumer's
+        // choice must win over any built-in preference.
+        Reply accept = command(fd, Command::QueryDragAccept);
+        if (accept.count != 1 || accept.first != 1) {
+            fprintf(stderr, "raw drop API: the chosen mime was not accepted\n");
+            return false;
+        }
+
+        command(fd, Command::DragMotion);
+        pump(*client.platform);
+        accept = command(fd, Command::QueryDragAccept);
+        if (target.overCount != 2 || target.lastX != 30 || target.lastY != 35 || accept.count != 1) {
+            fprintf(stderr, "raw drop API: motion re-sent an unchanged reply\n");
+            return false;
+        }
+
+        // First drop: the stream is aborted from data(), so the offer must
+        // be destroyed without finish.
+        target.abortNext = true;
+        command(fd, Command::DragDrop);
+        pump(*client.platform);
+        command(fd, Command::DragData);
+        pump(*client.platform);
+        if (target.droppedCount != 1 || target.doneCount != 1 || target.success) {
+            fprintf(stderr, "raw drop API: aborted transfer did not complete with failure\n");
+            return false;
+        }
+        Reply finish = command(fd, Command::QueryDragFinish);
+        if (finish.count != 0) {
+            fprintf(stderr, "raw drop API: an aborted transfer was finished\n");
+            return false;
+        }
+
+        // Second session completes normally.
+        command(fd, Command::DragEnterUriList);
+        pump(*client.platform);
+        command(fd, Command::DragDrop);
+        pump(*client.platform);
+        command(fd, Command::DragData);
+        pump(*client.platform);
+        finish = command(fd, Command::QueryDragFinish);
+        if (target.doneCount != 2 || !target.success || finish.count != 1 || stl::StringView(target.content) != stl::StringView(u8"hermetic Wayland drop")) {
+            fprintf(stderr, "raw drop API: second transfer did not complete\n");
+            return false;
+        }
+        return true;
+    }
+
+    bool rejectedDrag(int fd) {
+        RejectingTarget target;
+        Client client(fd, 800, 1, nullptr, nullptr, true, nullptr, &target);
+        command(fd, Command::DragEnter);
+        pump(*client.platform);
+        const Reply accept = command(fd, Command::QueryDragAccept);
+        if (target.overCount != 1 || accept.count != 1 || accept.first != 0 || accept.second != 0) {
+            fprintf(stderr, "rejected drag: the rejection did not reach the source\n");
+            return false;
+        }
+
+        command(fd, Command::DragDrop);
+        pump(*client.platform);
+        if (target.droppedCount != 1 || command(fd, Command::DragData).count != 0) {
+            fprintf(stderr, "rejected drag: an unread drop started a transfer\n");
+            return false;
+        }
+        return true;
+    }
+
+    bool cancelledDrag(int fd) {
+        RawTarget target;
+        Client client(fd, 800, 1, nullptr, nullptr, true, nullptr, &target);
         command(fd, Command::DragEnter);
         pump(*client.platform);
         command(fd, Command::DragLeave);
         pump(*client.platform);
+        if (target.leftCount != 1) {
+            fprintf(stderr, "cancelled drag: leave did not reach the target\n");
+            return false;
+        }
 
         // A drop after leave belongs to no session; nothing may be received
         // or delivered.
         command(fd, Command::DragDrop);
         pump(*client.platform);
-        if (command(fd, Command::DragData).count != 0) {
+        if (target.droppedCount != 0 || command(fd, Command::DragData).count != 0) {
             fprintf(stderr, "cancelled drag: a transfer was started after leave\n");
-            return false;
-        }
-        if (input.dropCount != 0) {
-            fprintf(stderr, "cancelled drag: a payload was delivered after leave\n");
             return false;
         }
         return true;
