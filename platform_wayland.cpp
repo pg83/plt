@@ -34,6 +34,7 @@
 #include <std/lib/buffer.h>
 #include <std/lib/vector.h>
 #include <std/thr/poll_fd.h>
+#include <std/thr/runable.h>
 #include <std/mem/obj_pool.h>
 #include <std/mem/small_obj_allocator.h>
 
@@ -62,7 +63,20 @@ namespace {
     struct PlatformImpl;
     struct PollerImpl;
     struct WindowImpl;
-    struct SelectionTransfer;
+
+    // One live selection transfer, linked from the platform and owned by the
+    // stack of the fiber that runs it. Cancellation nulls read; the fiber
+    // checks it around every blocking point and delivery.
+    struct TransferRecord {
+        WindowImpl* window = nullptr;
+        ClipboardRead* read = nullptr;
+        TransferRecord* next = nullptr;
+    };
+
+    // A fiber body carved out of the platform allocator; releases itself
+    // when the fiber finishes.
+    template <typename F>
+    struct FiberTask;
 
     constexpr u32 scaleDenominator = 120;
     // Abort a selection transfer when the peer makes no progress for this
@@ -313,7 +327,12 @@ namespace {
         void readSelection(int fd, WindowImpl& window, ClipboardRead& read);
         void completeSelection(WindowImpl& window, ClipboardRead& read, StringView content, bool success);
         void cancelSelection(WindowImpl& window, ClipboardRead* read);
-        void removeTransfer(SelectionTransfer& transfer);
+        void removeRecord(TransferRecord& record);
+
+        template <typename F>
+        void spawnTask(F body) {
+            scheduler_->spawn(*allocator_->make<FiberTask<F>>(*this, body));
+        }
         void enableTextInput(WindowImpl& window);
         void disableTextInput();
         void textInputEntered(struct wl_surface* surface);
@@ -390,36 +409,27 @@ namespace {
         DndTransfer dndTransfer;
         Buffer clipboardContent;
         Buffer primaryContent;
-        SelectionTransfer* transfers = nullptr;
+        TransferRecord* transferRecords = nullptr;
         bool clipboardPending = false;
         bool primaryPending = false;
         bool running = false;
     };
 
-    struct SelectionTransfer final: public PollCallback, public TimerCallback {
-        SelectionTransfer(PlatformImpl& platform, int fd, WindowImpl* window, ClipboardRead* read, StringView content, bool writing, bool success);
+    template <typename F>
+    struct FiberTask final: public Runable {
+        FiberTask(PlatformImpl& platform_, F body_)
+            : platform(platform_)
+            , body(body_)
+        {
+        }
 
-        void start();
-        void armFd(u32 flags);
-        void ready(PollFD event) override;
-        void ready() override;
-        void cancel();
-        void finish(bool success);
-        void dispose();
+        void run() override {
+            body();
+            platform.allocator_->release(this);
+        }
 
         PlatformImpl& platform;
-        SelectionTransfer* next = nullptr;
-        WindowImpl* window = nullptr;
-        ClipboardRead* read = nullptr;
-        Buffer content;
-        size_t offset = 0;
-        int fd = -1;
-        bool writing = false;
-        bool success = false;
-        bool fdArmed = false;
-        bool timerArmed = false;
-        bool dispatching = false;
-        bool cancelled = false;
+        F body;
     };
 
     bool textMime(const char* mime) {
@@ -1282,170 +1292,6 @@ void DndTransfer::done(bool success) {
     consumer->done(success);
 }
 
-SelectionTransfer::SelectionTransfer(PlatformImpl& platform_, int fd_, WindowImpl* window_, ClipboardRead* read_, StringView content_, bool writing_, bool success_)
-    : platform(platform_)
-    , window(window_)
-    , read(read_)
-    , content(content_)
-    , fd(fd_)
-    , writing(writing_)
-    , success(success_)
-{
-    next = platform.transfers;
-    platform.transfers = this;
-}
-
-void SelectionTransfer::start() {
-    if (fd < 0) {
-        timerArmed = true;
-        platform.poller_->timeout(0, *this);
-        return;
-    }
-    const int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        if (writing) {
-            dispose();
-        } else {
-            close(fd);
-            fd = -1;
-            success = false;
-            timerArmed = true;
-            platform.poller_->timeout(0, *this);
-        }
-        return;
-    }
-    armFd(writing ? PollFlag::Out : PollFlag::In);
-}
-
-void SelectionTransfer::armFd(u32 flags) {
-    fdArmed = true;
-    platform.poller_->arm(
-        {
-            .fd = fd,
-            .flags = flags,
-        },
-        *this
-    );
-    // Watchdog: every fd wait re-arms the deadline, so it fires only when the
-    // peer stops making the descriptor ready at all.
-    timerArmed = true;
-    platform.poller_->timeout(selectionTransferTimeoutUs, *this);
-}
-
-void SelectionTransfer::ready(PollFD) {
-    fdArmed = false;
-    if (cancelled) {
-        dispose();
-        return;
-    }
-    if (writing) {
-        const size_t remaining = content.length() - offset;
-        if (remaining == 0) {
-            dispose();
-            return;
-        }
-        const size_t chunk = min<size_t>(remaining, 64 * 1024);
-        const ssize_t count = writeNoSignal(fd, (const u8*)(content.data()) + offset, chunk);
-        if (count > 0) {
-            offset += (size_t)(count);
-            if (offset == content.length()) {
-                dispose();
-                return;
-            }
-        } else if (count < 0 && errno == EINTR) {
-        } else if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            dispose();
-            return;
-        }
-        armFd(PollFlag::Out);
-        return;
-    }
-
-    u8 bytes[64 * 1024];
-    const ssize_t count = ::read(fd, bytes, sizeof(bytes));
-    if (count > 0) {
-        dispatching = true;
-        ClipboardRead* const target = read;
-        const bool accepted = target != nullptr && target->data(StringView(bytes, (size_t)(count)));
-        dispatching = false;
-        if (cancelled) {
-            dispose();
-            return;
-        }
-        if (!accepted) {
-            finish(false);
-            return;
-        }
-        armFd(PollFlag::In);
-    } else if (count == 0) {
-        finish(true);
-    } else if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-        armFd(PollFlag::In);
-    } else {
-        finish(false);
-    }
-}
-
-void SelectionTransfer::ready() {
-    timerArmed = false;
-    if (cancelled) {
-        dispose();
-        return;
-    }
-    if (fd >= 0) {
-        // The watchdog fired: the peer stalled, abort the transfer.
-        finish(false);
-        return;
-    }
-    bool accepted = success;
-    if (accepted && !content.empty()) {
-        dispatching = true;
-        ClipboardRead* const target = read;
-        accepted = target != nullptr && target->data(StringView(content));
-        dispatching = false;
-    }
-    if (cancelled) {
-        dispose();
-        return;
-    }
-    finish(accepted);
-}
-
-void SelectionTransfer::cancel() {
-    read = nullptr;
-    if (dispatching) {
-        cancelled = true;
-        return;
-    }
-    dispose();
-}
-
-void SelectionTransfer::finish(bool completed) {
-    ClipboardRead* const target = read;
-    read = nullptr;
-    dispose();
-    if (target != nullptr) {
-        target->done(completed);
-    }
-}
-
-void SelectionTransfer::dispose() {
-    if (fdArmed) {
-        platform.poller_->disarm(fd);
-        fdArmed = false;
-    }
-    if (timerArmed) {
-        platform.poller_->cancel(*this);
-        timerArmed = false;
-    }
-    if (fd >= 0) {
-        close(fd);
-        fd = -1;
-    }
-    platform.removeTransfer(*this);
-    platform.allocator_->release(this);
-}
-
 PlatformImpl::PlatformImpl(ObjPool& owner)
     : poller_(owner.make<PollerImpl>(owner))
 {
@@ -1490,8 +1336,8 @@ PlatformImpl::PlatformImpl(ObjPool& owner)
 
 PlatformImpl::~PlatformImpl() {
     poller_->disarm(wl_display_get_fd(display));
-    while (transfers != nullptr) {
-        transfers->cancel();
+    for (TransferRecord* record = transferRecords; record != nullptr; record = record->next) {
+        record->read = nullptr;
     }
     stopRepeat();
     pendingClipboardOffer.reset();
@@ -2235,34 +2081,113 @@ void PlatformImpl::stopRepeat() {
 }
 
 void PlatformImpl::writeSelection(int fd, StringView content) {
-    allocator_->make<SelectionTransfer>(*this, fd, nullptr, nullptr, content, true, true)->start();
+    spawnTask([this, fd, owned = Buffer(content)] {
+        const int flags = fcntl(fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(fd);
+            return;
+        }
+        size_t offset = 0;
+        while (offset != owned.length()) {
+            if (!scheduler_->awaitWritable(fd, selectionTransferTimeoutUs)) {
+                break;
+            }
+            const size_t chunk = min<size_t>(owned.length() - offset, 64 * 1024);
+            const ssize_t count = writeNoSignal(fd, (const u8*)(owned.data()) + offset, chunk);
+            if (count > 0) {
+                offset += (size_t)(count);
+            } else if (count < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
+                break;
+            }
+        }
+        close(fd);
+    });
 }
 
 void PlatformImpl::readSelection(int fd, WindowImpl& window, ClipboardRead& read) {
-    allocator_->make<SelectionTransfer>(*this, fd, &window, &read, StringView(), false, true)->start();
+    spawnTask([this, fd, window = &window, target = &read] {
+        TransferRecord record;
+        record.window = window;
+        record.read = target;
+        record.next = transferRecords;
+        transferRecords = &record;
+        const int flags = fcntl(fd, F_GETFL, 0);
+        const bool broken = flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0;
+        bool success = false;
+        if (broken) {
+            // The consumer saw readSelection return; completion must stay
+            // asynchronous even when the descriptor is unusable.
+            scheduler_->yield();
+        } else {
+            while (record.read != nullptr) {
+                // The watchdog: a peer that stops making progress for this
+                // long aborts the transfer instead of pinning the pipe.
+                if (!scheduler_->awaitReadable(fd, selectionTransferTimeoutUs)) {
+                    break;
+                }
+                if (record.read == nullptr) {
+                    break;
+                }
+                u8 bytes[64 * 1024];
+                const ssize_t count = ::read(fd, bytes, sizeof(bytes));
+                if (count > 0) {
+                    if (!record.read->data(StringView(bytes, (size_t)(count)))) {
+                        break;
+                    }
+                } else if (count == 0) {
+                    success = true;
+                    break;
+                } else if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    break;
+                }
+            }
+        }
+        close(fd);
+        removeRecord(record);
+        if (record.read != nullptr) {
+            ClipboardRead* const consumer = record.read;
+            record.read = nullptr;
+            consumer->done(success);
+        }
+    });
 }
 
 void PlatformImpl::completeSelection(WindowImpl& window, ClipboardRead& read, StringView content, bool success) {
-    allocator_->make<SelectionTransfer>(*this, -1, &window, &read, content, false, success)->start();
+    spawnTask([this, window = &window, target = &read, owned = Buffer(content), success] {
+        TransferRecord record;
+        record.window = window;
+        record.read = target;
+        record.next = transferRecords;
+        transferRecords = &record;
+        scheduler_->yield();
+        bool accepted = success;
+        if (record.read != nullptr && accepted && !owned.empty()) {
+            accepted = record.read->data(StringView(owned));
+        }
+        removeRecord(record);
+        if (record.read != nullptr) {
+            ClipboardRead* const consumer = record.read;
+            record.read = nullptr;
+            consumer->done(accepted);
+        }
+    });
 }
 
 void PlatformImpl::cancelSelection(WindowImpl& window, ClipboardRead* read) {
-    for (SelectionTransfer* transfer = transfers; transfer != nullptr;) {
-        SelectionTransfer* const next = transfer->next;
-        if (transfer->window == &window && (read == nullptr || transfer->read == read)) {
-            transfer->cancel();
+    for (TransferRecord* record = transferRecords; record != nullptr; record = record->next) {
+        if (record->window == &window && (read == nullptr || record->read == read)) {
+            record->read = nullptr;
         }
-        transfer = next;
     }
 }
 
-void PlatformImpl::removeTransfer(SelectionTransfer& transfer) {
-    SelectionTransfer** current = &transfers;
-    while (*current != nullptr && *current != &transfer) {
+void PlatformImpl::removeRecord(TransferRecord& record) {
+    TransferRecord** current = &transferRecords;
+    while (*current != nullptr && *current != &record) {
         current = &(*current)->next;
     }
-    if (*current == &transfer) {
-        *current = transfer.next;
+    if (*current == &record) {
+        *current = record.next;
     }
 }
 
