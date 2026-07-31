@@ -76,6 +76,7 @@ void cocoaPointerImpl(void* owner, NSEvent* event);
 void cocoaButtonImpl(void* owner, NSEvent* event, bool pressed);
 void cocoaScrollImpl(void* owner, NSEvent* event);
 void cocoaPointerPresenceImpl(void* owner, bool present);
+bool cocoaDropImpl(void* owner, NSPasteboard* pasteboard);
 void cocoaFileDescriptorReady(CFFileDescriptorRef descriptor, CFOptionFlags types, void* owner);
 void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
@@ -83,7 +84,7 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 @property(nonatomic, assign) void* owner;
 @end
 
-@interface PltView: NSView <NSTextInputClient> {
+@interface PltView: NSView <NSTextInputClient, NSDraggingDestination> {
     NSMutableAttributedString* markedText_;
     NSRange selectedTextRange_;
     NSMutableSet<NSNumber*>* composedKeys_;
@@ -176,6 +177,22 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
     self.tracking = [[NSTrackingArea alloc] initWithRect:self.bounds options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveInKeyWindow owner:self userInfo:nil];
     [self addTrackingArea:self.tracking];
     [super updateTrackingAreas];
+}
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    if ([[sender draggingPasteboard] availableTypeFromArray:@[ NSPasteboardTypeString ]] == nil) {
+        return NSDragOperationNone;
+    }
+    return NSDragOperationCopy;
+}
+
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender {
+    (void)sender;
+    return YES;
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    return cocoaDropImpl(self.owner, [sender draggingPasteboard]);
 }
 
 - (void)keyDown:(NSEvent*)event {
@@ -371,6 +388,10 @@ namespace {
     struct WindowImpl;
     struct ClipboardOperation;
 
+    // A dropped payload is delivered whole, so a hostile drag source must not
+    // be able to make it arbitrarily large. Matches the Wayland backend.
+    constexpr NSUInteger dropPayloadLimit = 16u << 20;
+
     struct ArmedFD {
         ArmedFD(PollFD fd, PollCallback* callback, CFFileDescriptorRef descriptor, CFRunLoopSourceRef source);
         ~ArmedFD();
@@ -482,6 +503,7 @@ namespace {
         void emitText(NSString* string, u16 modifiers);
         NSPoint pointerPosition(NSEvent* event) const;
         void writePasteboard(NSPasteboard* pasteboard, StringView content);
+        bool drop(NSPasteboard* pasteboard);
         void removeClipboardOperation(ClipboardOperation& operation);
         void applySizeConstraints();
 
@@ -895,6 +917,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     view.layerContentsRedrawPolicy = NSViewLayerContentsRedrawDuringViewResize;
     window.contentView = view;
     window.acceptsMouseMovedEvents = YES;
+    [view registerForDraggedTypes:@[ NSPasteboardTypeString ]];
     requestTitle(options.title);
     requestMinimumSize(options.minimumWidth, options.minimumHeight);
     // Prefer the view display link: it runs on the main run loop and follows
@@ -1100,6 +1123,20 @@ WindowInfo WindowImpl::info() const {
         .maximized = (bool)([window isZoomed]),
         .fullscreen = (window.styleMask & NSWindowStyleMaskFullScreen) != 0,
     };
+}
+
+bool WindowImpl::drop(NSPasteboard* pasteboard) {
+    if (input == nullptr) {
+        return false;
+    }
+    NSString* const value = [pasteboard stringForType:NSPasteboardTypeString];
+    NSData* const data = value == nil ? nil : [value dataUsingEncoding:NSUTF8StringEncoding];
+    if (data == nil || data.length == 0 || data.length > dropPayloadLimit) {
+        return false;
+    }
+    input->drop(StringView((const u8*)(data.bytes), data.length));
+    input->flush();
+    return true;
 }
 
 void WindowImpl::writePasteboard(NSPasteboard* pasteboard, StringView content) {
@@ -1578,6 +1615,10 @@ void cocoaScrollImpl(void* owner, NSEvent* event) {
 
 void cocoaPointerPresenceImpl(void* owner, bool present) {
     ((WindowImpl*)(owner))->pointerPresence(present);
+}
+
+bool cocoaDropImpl(void* owner, NSPasteboard* pasteboard) {
+    return ((WindowImpl*)(owner))->drop(pasteboard);
 }
 
 void cocoaFileDescriptorReady(CFFileDescriptorRef descriptor, CFOptionFlags types, void* owner) {
