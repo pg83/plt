@@ -305,6 +305,7 @@ namespace plt::test {
     bool textInput(int fd);
     bool cursorShapes(int fd);
     bool cursorShapesV1(int fd);
+    bool fiberClipboard(int fd);
     bool textDrop(int fd);
     bool utf8StringDrop(int fd);
     bool uriListDrop(int fd);

@@ -1,6 +1,7 @@
 #include "platform_cocoa.h"
 
 #include "drop.h"
+#include "fiber.h"
 #include "input.h"
 #include "poller.h"
 #include "window.h"
@@ -479,6 +480,7 @@ namespace {
         void read(ClipboardRead& sink) override;
         void write(StringView content) override;
         void cancel(ClipboardRead& sink) override;
+        bool readAll(Buffer& content) override;
 
         WindowImpl* window = nullptr;
         bool primary = false;
@@ -574,10 +576,12 @@ namespace {
 
         Window* createWindow(ObjPool& owner, const WindowOptions& options) override;
         Poller* poller() override;
+        Scheduler* scheduler() override;
         void run() override;
         void stop() override;
 
         PollerImpl* poller_ = nullptr;
+        Scheduler* scheduler_ = nullptr;
     };
 
     NSString* stringFromView(StringView value) {
@@ -714,6 +718,7 @@ namespace {
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
     : poller_(owner.make<PollerImpl>(owner))
+    , scheduler_(Scheduler::create(owner, *poller_))
 {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -726,6 +731,10 @@ Window* PlatformImpl::createWindow(ObjPool& owner, const WindowOptions& options)
 
 Poller* PlatformImpl::poller() {
     return poller_;
+}
+
+Scheduler* PlatformImpl::scheduler() {
+    return scheduler_;
 }
 
 PollerImpl::PollerImpl(ObjPool& owner)
@@ -1283,6 +1292,19 @@ void ClipboardImpl::read(ClipboardRead& sink) {
 void ClipboardImpl::write(StringView content) {
     const ClipboardOperationKind kind = primary ? ClipboardOperationKind::WritePrimary : ClipboardOperationKind::WriteClipboard;
     new ClipboardOperation(*window, kind, nullptr, content);
+}
+
+bool ClipboardImpl::readAll(Buffer& content) {
+    // The pasteboard is synchronous: the payload is already materialized by
+    // the system, so no fiber blocking is involved.
+    NSPasteboard* const pasteboard = primary ? [NSPasteboard pasteboardWithName:NSPasteboardNameFind] : [NSPasteboard generalPasteboard];
+    NSString* const value = [pasteboard stringForType:NSPasteboardTypeString];
+    NSData* const data = value == nil ? nil : [value dataUsingEncoding:NSUTF8StringEncoding];
+    if (data == nil) {
+        return false;
+    }
+    content.append(data.bytes, data.length);
+    return true;
 }
 
 void ClipboardImpl::cancel(ClipboardRead& sink) {

@@ -1,6 +1,7 @@
 #include "platform_wayland.h"
 
 #include "drop.h"
+#include "fiber.h"
 #include "input.h"
 #include "poller.h"
 #include "window.h"
@@ -159,6 +160,7 @@ namespace {
         void read(ClipboardRead& read) override;
         void write(StringView content) override;
         void cancel(ClipboardRead& read) override;
+        bool readAll(Buffer& content) override;
 
         WindowImpl* window = nullptr;
         bool primary = false;
@@ -271,6 +273,7 @@ namespace {
 
         Window* createWindow(ObjPool& owner, const WindowOptions& options) override;
         Poller* poller() override;
+        Scheduler* scheduler() override;
         void run() override;
         void stop() override;
         void ready(PollFD event) override;
@@ -318,6 +321,7 @@ namespace {
         void textInputRectChanged(WindowImpl& window, bool commit);
 
         PollerImpl* poller_ = nullptr;
+        Scheduler* scheduler_ = nullptr;
         struct wl_display* display = nullptr;
         struct wl_registry* registry = nullptr;
         struct wl_compositor* compositor = nullptr;
@@ -1443,6 +1447,7 @@ void SelectionTransfer::dispose() {
 PlatformImpl::PlatformImpl(ObjPool& owner)
     : poller_(owner.make<PollerImpl>(owner))
 {
+    scheduler_ = Scheduler::create(owner, *poller_);
     dndTransfer.platform = this;
     display = wl_display_connect(nullptr);
     if (display == nullptr) {
@@ -1584,6 +1589,10 @@ Window* PlatformImpl::createWindow(ObjPool& windowOwner, const WindowOptions& op
 
 Poller* PlatformImpl::poller() {
     return poller_;
+}
+
+Scheduler* PlatformImpl::scheduler() {
+    return scheduler_;
 }
 
 void PlatformImpl::armDisplay(bool write) {
@@ -2952,6 +2961,62 @@ void ClipboardImpl::write(StringView content) {
 
 void ClipboardImpl::cancel(ClipboardRead& read) {
     window->platform.cancelSelection(*window, &read);
+}
+
+bool ClipboardImpl::readAll(Buffer& content) {
+    PlatformImpl& platform = window->platform;
+    if (!platform.scheduler_->inFiber()) {
+        return false;
+    }
+    if (primary && platform.primarySource != nullptr) {
+        const StringView local(platform.primaryContent);
+        content.append(local.data(), local.length());
+        return true;
+    }
+    if (!primary && platform.clipboardSource != nullptr) {
+        const StringView local(platform.clipboardContent);
+        content.append(local.data(), local.length());
+        return true;
+    }
+    Offer& offer = primary ? platform.primaryOffer : platform.clipboardOffer;
+    const char* const mime = offer.mime();
+    if (mime == nullptr) {
+        return false;
+    }
+    int pipes[2];
+    if (pipe2(pipes, O_CLOEXEC) != 0) {
+        return false;
+    }
+    if (primary) {
+        zwp_primary_selection_offer_v1_receive(offer.primary, mime, pipes[1]);
+    } else {
+        wl_data_offer_receive(offer.data, mime, pipes[1]);
+    }
+    close(pipes[1]);
+    if (!platform.flushDisplay()) {
+        close(pipes[0]);
+        return false;
+    }
+    // The consuming fiber reads the pipe itself: while it is busy elsewhere
+    // the pipe fills up and the source blocks, so backpressure reaches the
+    // other client without any buffering on this side.
+    while (true) {
+        if (!platform.scheduler_->awaitReadable(pipes[0], selectionTransferTimeoutUs)) {
+            close(pipes[0]);
+            return false;
+        }
+        u8 bytes[64 * 1024];
+        const ssize_t count = ::read(pipes[0], bytes, sizeof(bytes));
+        if (count > 0) {
+            content.append(bytes, (size_t)(count));
+        } else if (count == 0) {
+            close(pipes[0]);
+            return true;
+        } else if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
+            close(pipes[0]);
+            return false;
+        }
+    }
 }
 
 void WindowImpl::requestPointerIcon(PointerIcon icon) {

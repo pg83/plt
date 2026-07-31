@@ -1418,6 +1418,7 @@ int main() {
     success = runScenario("asynchronous primary selection", asynchronousPrimary) && success;
     success = runScenario("cancel asynchronous clipboard read", cancelAsynchronousRead) && success;
     success = runScenario("cancel ready clipboard read", cancelReadyClipboardRead) && success;
+    success = runScenario("fiber clipboard", fiberClipboard) && success;
     success = runScenario("text drop", textDrop) && success;
     success = runScenario("UTF8_STRING drop", utf8StringDrop) && success;
     success = runScenario("uri-list drop", uriListDrop) && success;
