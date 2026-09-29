@@ -56,6 +56,7 @@ bool FiberMutexImpl::tryLock() {
         return false;
     }
     held = true;
+    owner = scheduler->current();
     return true;
 }
 

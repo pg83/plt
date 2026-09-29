@@ -21,6 +21,7 @@ cg.CGEventCreateMouseEvent.argtypes = [C.c_void_p, C.c_uint32, Point, C.c_uint32
 cg.CGEventCreateMouseEvent.restype = C.c_void_p
 cg.CGEventSetFlags.argtypes = [C.c_void_p, C.c_uint64]
 cg.CGEventPostToPid.argtypes = [C.c_int, C.c_void_p]
+cg.CGEventPost.argtypes = [C.c_uint32, C.c_void_p]
 cf.CFRelease.argtypes = [C.c_void_p]
 
 with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
@@ -108,7 +109,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             for kind in (5, 1, 2, 3, 4, 25, 26):
                 button = 1 if kind in (3, 4) else 2 if kind in (25, 26) else 0
                 event = cg.CGEventCreateMouseEvent(None, kind, point, button)
-                cg.CGEventPostToPid(app.pid, event)
+                cg.CGEventPost(0, event)
                 cf.CFRelease(event)
                 time.sleep(.05)
             wait(lambda: "BUTTON 0 1" in text(), "mouse input")

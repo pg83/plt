@@ -1,9 +1,11 @@
+from pathlib import Path
 from session import Session
 
 with Session("file_transfer") as s:
-    first = s.artifacts / "first.bin"
-    second = s.artifacts / "second.bin"
-    output = s.artifacts / "received.bin"
+    work = Path(s.env["XDG_RUNTIME_DIR"])
+    first = work / "first.bin"
+    second = work / "second.bin"
+    output = work / "received.bin"
     first.write_bytes(bytes(range(256)) * 4096)
     second.write_bytes(bytes(range(255, -1, -1)) * 3072)
     s.launch(PLT_TRANSFER_FIRST=str(first), PLT_TRANSFER_SECOND=str(second), PLT_TRANSFER_OUTPUT=str(output))
