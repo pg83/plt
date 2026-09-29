@@ -29,7 +29,7 @@ def main():
         parser.error("no test executables found for coverage export")
     # Include every library object, even if no executable links
     # it yet. Unused backends and helpers must count as uncovered code.
-    binaries.append(args.build_dir / "libplt_test.a")
+    binaries.extend(args.build_dir / name for name in ("libplt.a", "libplt_test.a"))
     objects = [str(binaries[0])]
     for binary in binaries[1:]:
         objects.extend(["-object", str(binary)])

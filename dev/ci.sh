@@ -44,9 +44,9 @@ esac
 export CPPFLAGS="${CPPFLAGS:-} -I$std_source"
 export LDFLAGS="${LDFLAGS:-} -L$build_dir/std"
 if [[ "$mode" == build ]]; then
-    python3 ./build -B "$build_dir/plt" -j "$jobs" plt plt_wayland_integration_tests e2e-binaries
+    python3 ./build -B "$build_dir/plt" -j "$jobs" plt plt_test plt_wayland_integration_tests e2e-binaries
 elif [[ "$mode" != e2e ]]; then
-    test_targets=(test plt)
+    test_targets=(test plt plt_test)
     if [[ "$(uname -s)" == Linux ]]; then
         test_targets+=(plt_wayland_integration_tests)
     else
@@ -54,6 +54,16 @@ elif [[ "$mode" != e2e ]]; then
     fi
     # Export the executable paths as well as the test stamp for llvm-cov.
     python3 ./build -B "$build_dir/plt" -j "$jobs" "${test_targets[@]}"
+fi
+if [[ "$mode" != e2e ]]; then
+    # Test controls must never be shipped in the installed production archive.
+    python3 - "$build_dir/plt/libplt.a" "$build_dir/plt/libplt_test.a" <<'PY_CHECK'
+from pathlib import Path
+import sys
+production, testing = (Path(name).read_bytes() for name in sys.argv[1:])
+assert b"PLT_CHAOS" not in production, "test fault controls in production archive"
+assert b"PLT_CHAOS" in testing, "test archive lacks fault controls"
+PY_CHECK
 fi
 if [[ "$(uname -s)" == Linux && "$mode" != build ]]; then
     python3 ./build -B "$build_dir/plt" -j "$jobs" e2e-binaries
