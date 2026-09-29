@@ -50,19 +50,22 @@ namespace {
 Desktop::Desktop()
     : platform(Platform::create(*owner))
 {
-    window = platform->createWindow(*owner, {
-        .appId = StringView(u8"plt-cocoa-desktop"),
-        .title = StringView(u8"PLT desktop"),
-        .width = 400,
-        .height = 280,
-        .minimumWidth = 160,
-        .minimumHeight = 120,
-        .decorations = true,
-        .input = createFiberInputSink(*owner, *platform->scheduler(), *this),
-        .events = this,
-        .frame = this,
-        .appName = StringView(u8"PLT E2E"),
-    });
+    window = platform->createWindow(
+        *owner,
+        {
+            .appId = StringView(u8"plt-cocoa-desktop"),
+            .title = StringView(u8"PLT desktop"),
+            .width = 400,
+            .height = 280,
+            .minimumWidth = 160,
+            .minimumHeight = 120,
+            .decorations = true,
+            .input = createFiberInputSink(*owner, *platform->scheduler(), *this),
+            .events = this,
+            .frame = this,
+            .appName = StringView(u8"PLT E2E"),
+        }
+    );
     canvas = MetalCanvas::create(*owner, window->renderContext());
     pipe = ::open(getenv("PLT_COMMAND_PIPE"), O_RDWR | O_NONBLOCK | O_CLOEXEC);
     STD_INSIST(pipe >= 0);
@@ -78,8 +81,7 @@ bool Desktop::frame(const WindowInfo& info) {
     if (canvas == nullptr || !canvas->paint(info, color)) {
         return false;
     }
-    printf("FRAME %u %u %.3f %d %d %d %06x\n", info.width, info.height,
-        info.contentScale, info.focused, info.maximized, info.fullscreen, color);
+    printf("FRAME %u %u %.3f %d %d %d %06x\n", info.width, info.height, info.contentScale, info.focused, info.maximized, info.fullscreen, color);
     return true;
 }
 

@@ -38,9 +38,15 @@ namespace {
 Document::Document(ObjPool& owner)
     : platform(createHeadlessPlatform(owner))
 {
-    window = static_cast<WindowHeadless*>(platform->createWindow(owner, {
-        .width = 96, .height = 64, .events = this, .frame = this,
-    }));
+    window = static_cast<WindowHeadless*>(platform->createWindow(
+        owner,
+        {
+            .width = 96,
+            .height = 64,
+            .events = this,
+            .frame = this,
+        }
+    ));
     auto info = window->info();
     info.screenPixelWidth = 640;
     info.screenPixelHeight = 480;
@@ -126,8 +132,7 @@ void Preview::paint(Canvas& c) {
     for (size_t i = 0; i < pixels.length(); ++i) {
         pixels.mut(i) = 0xff000000 | (frame.pixels[i * 3] << 16) | (frame.pixels[i * 3 + 1] << 8) | frame.pixels[i * 3 + 2];
     }
-    cairo_surface_t* const image = cairo_image_surface_create_for_data(
-        reinterpret_cast<unsigned char*>(pixels.mutData()), CAIRO_FORMAT_ARGB32, frame.width, frame.height, frame.width * 4);
+    cairo_surface_t* const image = cairo_image_surface_create_for_data(reinterpret_cast<unsigned char*>(pixels.mutData()), CAIRO_FORMAT_ARGB32, frame.width, frame.height, frame.width * 4);
     cairo_save(c.context);
     cairo_translate(c.context, 40, 60);
     cairo_scale(c.context, 320.0 / frame.width, 160.0 / frame.height);

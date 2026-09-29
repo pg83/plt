@@ -49,8 +49,7 @@ bool Canvas::paint(const WindowInfo& info, u32 color) {
         pass.colorAttachments[0].texture = drawable.texture;
         pass.colorAttachments[0].loadAction = MTLLoadActionClear;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        pass.colorAttachments[0].clearColor = MTLClearColorMake(
-            ((color >> 16) & 255) / 255.0, ((color >> 8) & 255) / 255.0, (color & 255) / 255.0, 1);
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(((color >> 16) & 255) / 255.0, ((color >> 8) & 255) / 255.0, (color & 255) / 255.0, 1);
         id<MTLCommandBuffer> command = [queue commandBuffer];
         id<MTLRenderCommandEncoder> encoder = [command renderCommandEncoderWithDescriptor:pass];
         [encoder endEncoding];
@@ -65,8 +64,7 @@ bool Canvas::paint(const WindowInfo& info, u32 color) {
 void Canvas::describe() {
     const NSRect frame = window.frame;
     const CGRect screen = CGDisplayBounds(CGMainDisplayID());
-    printf("WINDOW %ld %.0f %.0f %.0f %.0f\n", (long)window.windowNumber,
-        frame.origin.x, screen.size.height - NSMaxY(frame), frame.size.width, frame.size.height);
+    printf("WINDOW %ld %.0f %.0f %.0f %.0f\n", (long)window.windowNumber, frame.origin.x, screen.size.height - NSMaxY(frame), frame.size.width, frame.size.height);
 }
 
 MetalCanvas* MetalCanvas::create(ObjPool& owner, const RenderContext& context) {
