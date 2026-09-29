@@ -1104,8 +1104,8 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
         // application bundle.
         typedef const void* (*CurrentAsn)(void);
         typedef OSStatus (*SetItem)(int, const void*, CFStringRef, CFStringRef, CFDictionaryRef*);
-        const auto currentAsn = (CurrentAsn)(dlsym(RTLD_DEFAULT, "_LSGetCurrentApplicationASN"));
-        const auto setItem = (SetItem)(dlsym(RTLD_DEFAULT, "_LSSetApplicationInformationItem"));
+        const auto currentAsn = chaos(Fault::NoAppAsn) ? nullptr : (CurrentAsn)(dlsym(RTLD_DEFAULT, "_LSGetCurrentApplicationASN"));
+        const auto setItem = chaos(Fault::NoAppLabel) ? nullptr : (SetItem)(dlsym(RTLD_DEFAULT, "_LSSetApplicationInformationItem"));
         if (currentAsn != nullptr && setItem != nullptr) {
             CFStringRef name = CFStringCreateWithBytes(kCFAllocatorDefault, (const UInt8*)(options.appName.data()), (CFIndex)(options.appName.length()), kCFStringEncodingUTF8, false);
             if (name != nullptr) {
@@ -1736,18 +1736,19 @@ static InputKey inputKey(NSEvent* event) {
 // QWERTY for a Russian user, AZERTY for a French one - the way kitty and
 // iTerm2 derive their base-layout key.
 static u32 asciiBaseCodepoint(NSEvent* event) {
-    TISInputSourceRef source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
+    TISInputSourceRef source = chaos(Fault::CocoaKeySource) ? nullptr : TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
     if (source == nullptr) {
         return 0;
     }
     u32 result = 0;
-    auto layoutData = (CFDataRef)(TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData));
+    auto layoutData = chaos(Fault::CocoaKeyLayout) ? nullptr : (CFDataRef)(TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData));
     if (layoutData != nullptr) {
         const auto* layout = (const UCKeyboardLayout*)(CFDataGetBytePtr(layoutData));
         UInt32 deadKeys = 0;
         UniChar characters[4];
         UniCharCount length = 0;
-        if (UCKeyTranslate(layout, event.keyCode, kUCKeyActionDisplay, 0, LMGetKbdType(), kUCKeyTranslateNoDeadKeysBit, &deadKeys, 4, &length, characters) == noErr && length != 0) {
+        const OSStatus status = chaos(Fault::CocoaKeyTranslate) ? paramErr : UCKeyTranslate(layout, event.keyCode, kUCKeyActionDisplay, 0, LMGetKbdType(), kUCKeyTranslateNoDeadKeysBit, &deadKeys, 4, &length, characters);
+        if (status == noErr && length != 0) {
             result = characters[0];
         }
     }

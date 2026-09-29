@@ -28,6 +28,13 @@ void Viewer::key(const KeyInput& input) {
         window->requestFullscreen(!window->info().fullscreen);
     } else if (input.baseCodepoint == 'r') {
         window->requestResize(640, 360);
+    } else if (input.baseCodepoint == 'g') {
+        window->requestResizeUnit(13, 17, 300, 200);
+        window->requestMinimumSize(20, 20);
+        puts("GRID READY");
+    } else if (input.baseCodepoint == 'u') {
+        window->requestResizeUnit(1, 1, 0, 0);
+        puts("FREE RESIZE READY");
     } else if (input.baseCodepoint == 't') {
         window->requestTitle(StringView(u8"Updated document"));
     }

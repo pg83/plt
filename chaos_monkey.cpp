@@ -57,6 +57,11 @@ namespace {
         "wake-pipe",
         "signal-mask",
         "signal-pending",
+        "cocoa-key-source",
+        "cocoa-key-layout",
+        "cocoa-key-translate",
+        "no-app-asn",
+        "no-app-label",
     };
     static_assert(sizeof(names) / sizeof(*names) == (unsigned)Fault::Count);
 

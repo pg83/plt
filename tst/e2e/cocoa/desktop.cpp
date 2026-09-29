@@ -141,7 +141,7 @@ void Desktop::command(const char* line) {
     } else if (strcmp(line, "resize-base") == 0) {
         window->requestResizeUnit(8, 16, 2000, 2000);
     } else if (strcmp(line, "open-document") == 0) {
-        window->requestOpenUri(StringView("\xff", 1));
+        window->requestOpenUri(StringView(u8"\xff", 1));
         window->requestOpenUri(StringView(u8"http://["));
         Buffer uri;
         uri.append("file://", 7);
@@ -196,7 +196,7 @@ void Desktop::command(const char* line) {
         color = 0x40a060;
     } else if (strcmp(line, "auxiliary") == 0) {
         auxiliary = ObjPool::fromMemory();
-        Window* pending = platform->createWindow(*auxiliary, {.appName = StringView("\xff", 1)});
+        Window* pending = platform->createWindow(*auxiliary, {.appName = StringView(u8"\xff", 1)});
         canvas->holdInput(pending->renderContext());
         pending->info();
         pending->requestFrame();

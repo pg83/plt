@@ -47,6 +47,11 @@ namespace plt {
         WakePipe,
         SignalMask,
         SignalPending,
+        CocoaKeySource,
+        CocoaKeyLayout,
+        CocoaKeyTranslate,
+        NoAppAsn,
+        NoAppLabel,
         Count,
     };
 

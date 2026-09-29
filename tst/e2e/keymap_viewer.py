@@ -1,7 +1,11 @@
 """Shortcut inspection with uncommon hardware keysyms, compose and held keys."""
+import os
+from pathlib import Path
 import re
 from session import Session
 
+root = Path(os.environ["PLT_E2E_ARTIFACTS"])
+os.environ["PLT_E2E_ARTIFACTS"] = str(root / "standard")
 with Session("keymap-viewer") as s:
     s.launch(LC_ALL="C.UTF-8")
     s.focus()
@@ -22,5 +26,28 @@ with Session("keymap-viewer") as s:
     s.ipc("input * repeat_delay 30")
     s.command("wtype", "-P", "a", "-s", "200", "-p", "a")
     s.wait(lambda: re.search(r"KEY 1 2 ", (s.artifacts / "client.log").read_text()), "held key repeats")
+    s.command("wtype", "-P", "dead_acute", "-s", "150", "-p", "dead_acute", "-k", "e")
+    s.command("wtype", "-P", "F1", "-s", "150", "-p", "F1")
     s.screenshot("keys", [(.1, .5, .9, .8, "40a060")])
+    s.close()
+
+# User compose rules can emit multiple characters or only a non-text keysym.
+os.environ["PLT_E2E_ARTIFACTS"] = str(root / "custom-compose")
+with Session("custom-compose") as s:
+    compose = Path(s.runtime.name) / "Compose"
+    compose.write_text('<Multi_key> <a> : "ABCDEFGHIJK"\n<Multi_key> <b> : F1\n')
+    s.launch(XCOMPOSEFILE=str(compose), LC_ALL="C.UTF-8")
+    s.focus()
+    s.command("wtype", "-k", "Multi_key", "-k", "a")
+    s.logged("TEXT 72")
+    log = (s.artifacts / "client.log").read_text()
+    assert all(f"TEXT {value}\n" in log for value in range(65, 73)), log
+    assert "TEXT 73\n" not in log, log
+    start = len(log)
+    s.command("wtype", "-k", "Multi_key", "-k", "b")
+    s.key("z")
+    s.logged("TEXT 122")
+    log = (s.artifacts / "client.log").read_text()[start:]
+    assert "TEXT 98\n" not in log, log
+    s.screenshot("composed", [(.1, .5, .9, .8, "40a060")])
     s.close()

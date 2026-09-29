@@ -13,6 +13,8 @@ for fault in ("selection-pipe", "selection-flags", "selection-set-flags", "selec
         injected = {"send-flags": "selection-flags", "send-set-flags": "selection-set-flags", "frame-read": "read-again"}.get(fault, fault)
         s.launch(PLT_CHAOS="" if fault == "utf8-string" else f"{injected}@0")
         s.focus()
+        if fault == "compose-table":
+            s.command("wtype", "-P", "a", "-s", "700", "-p", "a")
         if fault in ("selection-write", "write-interrupted", "write-again", "write-zero", "send-flags", "send-set-flags", "signal-mask", "signal-pending"):
             s.key("c")
             s.logged("COPY")
