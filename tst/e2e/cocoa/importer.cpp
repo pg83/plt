@@ -4,9 +4,9 @@
 #include "platform.h"
 #include "poller.h"
 #include "loop_wake.h"
-#include "poller_loop.h"
 
 #include <std/dbg/insist.h>
+#include <std/sys/crt.h>
 #include <std/mem/obj_pool.h>
 #include <std/thr/runable.h>
 
@@ -34,6 +34,15 @@ namespace {
         bool notified = false;
         unsigned long long checksum = 0;
         size_t total = 0;
+    };
+
+    // A speculative import is cancelled when a newer document replaces it.
+    // Its pending OS readiness/deadline must never resume the freed task.
+    struct Preview final: public Runable {
+        Preview(Importer& app, u64 timeout);
+        void run() override;
+        Importer& app;
+        u64 timeout;
     };
 
     struct Progress final: public TimerCallback {
@@ -110,6 +119,18 @@ void Importer::ready() {
     }
 }
 
+Preview::Preview(Importer& app_, u64 timeout_)
+    : app(app_)
+    , timeout(timeout_)
+{
+}
+
+void Preview::run() {
+    app.platform->scheduler()->awaitReadable(app.sockets[0], timeout);
+    // This request was replaced before the worker produced any bytes.
+    STD_INSIST(false);
+}
+
 Progress::Progress(Importer& app_)
     : app(app_)
 {
@@ -126,6 +147,13 @@ int main() {
     Importer app;
     Progress progress(app);
     app.platform->poller()->timeout(1000, progress);
+    Preview obsolete(app, 0);
+    Preview expired(app, 2000);
+    {
+        ObjPool::Ref requests = ObjPool::fromMemory();
+        app.platform->scheduler()->create(*requests, obsolete);
+        app.platform->scheduler()->create(*requests, expired);
+    }
     pthread_t thread;
     STD_INSIST(pthread_create(&thread, nullptr, Importer::produce, &app) == 0);
     app.platform->scheduler()->create(*app.owner, app, 128 * 1024);
