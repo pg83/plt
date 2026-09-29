@@ -14,6 +14,7 @@
 #include <std/lib/list.h>
 #include <std/ios/input.h>
 #include <std/sym/i_map.h>
+#include <std/sys/throw.h>
 #include <std/alg/minmax.h>
 #include <std/dbg/verify.h>
 #include <std/ios/output.h>
@@ -619,10 +620,14 @@ namespace {
         {
             CFMachPortContext context{};
             context.info = this;
-            port = CFMachPortCreate(kCFAllocatorDefault, cocoaWakeReady, &context, nullptr);
+            port = chaos(Fault::CocoaMachPort) ? nullptr : CFMachPortCreate(kCFAllocatorDefault, cocoaWakeReady, &context, nullptr);
             STD_VERIFY(port != nullptr);
-            CFRunLoopSourceRef source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0);
-            STD_VERIFY(source != nullptr);
+            CFRunLoopSourceRef source = chaos(Fault::CocoaWakeSource) ? nullptr : CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0);
+            if (source == nullptr) {
+                CFMachPortInvalidate(port);
+                CFRelease(port);
+                Errno(ENOMEM).raise(u8"Cannot create Mach wake source");
+            }
             CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
             CFRelease(source);
         }
@@ -881,7 +886,7 @@ PollerImpl::PollerImpl(ObjPool& owner)
 {
     CFRunLoopTimerContext context{};
     context.info = this;
-    runLoopTimer = CFRunLoopTimerCreate(kCFAllocatorDefault, DBL_MAX, 0.000'000'1, 0, 0, cocoaTimerReady, &context);
+    runLoopTimer = chaos(Fault::CocoaTimer) ? nullptr : CFRunLoopTimerCreate(kCFAllocatorDefault, DBL_MAX, 0.000'000'1, 0, 0, cocoaTimerReady, &context);
     STD_VERIFY(runLoopTimer != nullptr);
     CFRunLoopAddTimer(CFRunLoopGetMain(), runLoopTimer, kCFRunLoopCommonModes);
 }
@@ -898,14 +903,10 @@ ArmedFD::ArmedFD(CFFileDescriptorRef descriptor_, CFRunLoopSourceRef source_)
 }
 
 ArmedFD::~ArmedFD() {
-    if (source != nullptr) {
-        CFRunLoopRemoveSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
-        CFRelease(source);
-    }
-    if (descriptor != nullptr) {
-        CFFileDescriptorInvalidate(descriptor);
-        CFRelease(descriptor);
-    }
+    CFRunLoopRemoveSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+    CFRelease(source);
+    CFFileDescriptorInvalidate(descriptor);
+    CFRelease(descriptor);
 }
 
 namespace {
@@ -936,10 +937,14 @@ void PollerImpl::arm(PollWaiter& waiter) {
     if (entry == nullptr) {
         CFFileDescriptorContext context{};
         context.info = this;
-        CFFileDescriptorRef descriptor = CFFileDescriptorCreate(kCFAllocatorDefault, waiter.fd.fd, false, cocoaFileDescriptorReady, &context);
+        CFFileDescriptorRef descriptor = chaos(Fault::CocoaDescriptor) ? nullptr : CFFileDescriptorCreate(kCFAllocatorDefault, waiter.fd.fd, false, cocoaFileDescriptorReady, &context);
         STD_VERIFY(descriptor != nullptr);
-        CFRunLoopSourceRef source = CFFileDescriptorCreateRunLoopSource(kCFAllocatorDefault, descriptor, 0);
-        STD_VERIFY(source != nullptr);
+        CFRunLoopSourceRef source = chaos(Fault::CocoaDescriptorSource) ? nullptr : CFFileDescriptorCreateRunLoopSource(kCFAllocatorDefault, descriptor, 0);
+        if (source == nullptr) {
+            CFFileDescriptorInvalidate(descriptor);
+            CFRelease(descriptor);
+            Errno(ENOMEM).raise(u8"Cannot create descriptor source");
+        }
         armed.insert(waiter.fd.fd, descriptor, source);
         CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
         entry = armed.find(waiter.fd.fd);
@@ -1009,7 +1014,7 @@ void PollerImpl::descriptorReady(CFFileDescriptorRef descriptor) {
     struct pollfd event{fd, (short)0, 0};
     event.events = PollFD{.fd = fd, .flags = entryFlags(*entry)}.toPollEvents();
     const int pollResult = chaos(Fault::PollInterrupted) ? -1 : ::poll(&event, 1, 0);
-    if (pollResult <= 0 || event.revents == 0) {
+    if (pollResult <= 0) {
         enableEntryCallbacks(*entry);
         return;
     }
@@ -1137,7 +1142,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     // change and the old surface flashes at the new size. screenChanged()
     // retargets this link across displays.
     const CVReturn linkStatus = chaos(Fault::DisplayLink) ? kCVReturnError : CVDisplayLinkCreateWithActiveCGDisplays(&displayLink);
-    if (linkStatus == kCVReturnSuccess && displayLink != nullptr) {
+    if (linkStatus == kCVReturnSuccess) {
         displayLinkTarget = [PltDisplayLinkTarget new];
         displayLinkTarget->gate.attach(this);
         displayLinkContext = (__bridge_retained void*)(displayLinkTarget);
@@ -1316,7 +1321,7 @@ void WindowImpl::applySizeConstraints() {
 }
 
 bool WindowImpl::inLiveResize() const {
-    return view != nil && view.inLiveResize;
+    return view.inLiveResize;
 }
 
 WindowInfo WindowImpl::info() const {

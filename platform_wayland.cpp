@@ -1975,7 +1975,7 @@ size_t PlatformImpl::composeFeed(xkb_keysym_t symbol, u32 codepoint, u32* codepo
             case XKB_COMPOSE_CANCELLED:
                 xkb_compose_state_reset(composeState);
                 return 0;
-            case XKB_COMPOSE_NOTHING:
+            default: // XKB_COMPOSE_NOTHING: the key starts no compose sequence.
                 break;
         }
     }
@@ -3035,7 +3035,7 @@ void WindowImpl::pointerFrame() {
             lineX = -scrollStepsX / 120.0;
             lineY = -scrollStepsY / 120.0;
         }
-        if (lineX != 0 || lineY != 0 || scrollPhase == ScrollPhase::End || scrollPhase == ScrollPhase::Cancel) {
+        if (lineX != 0 || lineY != 0 || scrollPhase == ScrollPhase::End) {
             input->scroll({
                 .x = lineX,
                 .y = lineY,

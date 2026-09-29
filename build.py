@@ -320,4 +320,11 @@ if system == "Darwin" and not platforms_headless:
         cxxflags=backend_cxxflags,
         deps=[libplt_test, libstd],
     )
-    group("e2e-binaries", cocoa_e2e, cocoa_recovery, cocoa_importer, cocoa_passive, cocoa_no_drop)
+    cocoa_startup = program(
+        name="e2e_cocoa_startup",
+        output="$(B)/e2e/startup",
+        srcs=["$(S)/tst/e2e/cocoa/startup.cpp", "$(S)/tst/e2e/cocoa/native.mm"],
+        cxxflags=backend_cxxflags,
+        deps=[libplt_test, libstd],
+    )
+    group("e2e-binaries", cocoa_e2e, cocoa_recovery, cocoa_importer, cocoa_passive, cocoa_no_drop, cocoa_startup)

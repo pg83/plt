@@ -69,6 +69,11 @@ namespace {
         "selection-flush",
         "drop-flush",
         "signal-wait-interrupted",
+        "cocoa-mach-port",
+        "cocoa-timer",
+        "cocoa-descriptor",
+        "cocoa-wake-source",
+        "cocoa-descriptor-source",
     };
     static_assert(sizeof(names) / sizeof(*names) == (unsigned)Fault::Count);
 

@@ -59,6 +59,11 @@ namespace plt {
         SelectionFlush,
         DropFlush,
         SignalWaitInterrupted,
+        CocoaMachPort,
+        CocoaTimer,
+        CocoaDescriptor,
+        CocoaWakeSource,
+        CocoaDescriptorSource,
         Count,
     };
 

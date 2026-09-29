@@ -271,6 +271,7 @@ int main() {
     setvbuf(stdout, nullptr, _IOLBF, 0);
     Desktop desktop;
     desktop.platform->run();
+    return 0;
 }
 
 DropReply Desktop::dragOver(const DropOffer& offer, i32 x, i32 y) {
