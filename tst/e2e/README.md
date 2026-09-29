@@ -77,3 +77,42 @@ at least **80% line coverage**. This is coverage from the complete test suite
 separately. Dependencies, drivers and sample programs do not count as production
 code. The new e2e scenarios brought the full suite to 83.47% (3935/4714 lines)
 in run [36612648647](https://github.com/pg83/plt/actions/runs/36612648647).
+
+## Production and test archives
+
+`./build plt` produces the installed production `libplt.a`.
+`./build plt_test` produces `libplt_test.a` with `PLATFORM_FOR_TESTS=1`;
+all integration and e2e programs link this archive. The test-only chaos parser
+lives in `tst/chaos_monkey.cpp`. Production links an inert implementation from
+`chaos_monkey.cpp`. CI checks both archives for the presence/absence of the
+`PLT_CHAOS` control string. Coverage exports both full archives, so production
+objects not linked by any test still count in the denominator. The test-only
+parser does not count toward library coverage.
+
+The deterministic fault script is passed to each client through its environment:
+
+```sh
+PLT_CHAOS='selection-pipe@0,read-interrupted@1' path/to/client
+```
+
+Each `name@skip` rule lets `skip` matching calls pass, then fails the next call
+once. Rules are independent and reset for each process. A fired rule logs
+`CHAOS name`; drivers assert that the requested fault actually fired and that
+the client subsequently recovers. Invalid and duplicate rules fail immediately.
+Faults are injected before resource creation or I/O, preserving OS ownership
+rules and preventing successful resources from being leaked by replacement.
+
+Available points:
+
+- Wayland: `keymap-map`, `keymap-compile`, `keymap-state`, `compose-table`,
+  `selection-pipe`, `selection-flags`, `selection-read`, `selection-write`,
+  `read-interrupted`, `write-interrupted`.
+- Cocoa: `display-link`, `display-callback`, `poll-interrupted`.
+
+`fault_recovery` uses real clipboard peers under Sway and checks failed/recovered
+frames. Native `recovery` checks drawing and input after display-link setup
+failure or interrupted descriptor polling. The desktop scenario also operates
+as an embedded input-method client and imports text/files from a separate native
+drag-source window via WindowServer. `async_import`/`importer` import a real file
+from a background worker, verify its complete length and checksum, and cancel
+obsolete requests while descriptors and deadlines remain pending.

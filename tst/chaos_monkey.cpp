@@ -1,5 +1,9 @@
 #include "chaos_monkey.h"
 
+#ifndef PLATFORM_FOR_TESTS
+    #error "The chaos script belongs only to the plt_test target"
+#endif
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -95,6 +95,8 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             screenshot("initial", "204060")
             command("title")
             command("caret")
+            command("mark")
+            key(125)  # The candidate-navigation press/release belongs to the IME.
             command("compose")
             wait(lambda: "TEXT 127757" in text() and "PREEDIT 0 -1 -1" in text(), "IME commit and preedit clear")
             key(0)  # Physical A, delivered by WindowServer to the application.
@@ -139,6 +141,15 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             wait(lambda: "FRAME 640 360 " in text(), "resize in pixels")
             command("move")
             screenshot("resized", "8040a0")
+            # Resize through WindowServer's interactive border tracking.
+            _, x, y, width, height = geometry()
+            for kind, dx, dy in ((5, 0, 0), (1, 0, 0), (6, 20, 20), (6, 57, 41), (2, 57, 41)):
+                event = cg.CGEventCreateMouseEvent(None, kind, Point(x + width - 2 + dx, y + height - 2 + dy), 0)
+                cg.CGEventPost(0, event)
+                cf.CFRelease(event)
+                time.sleep(.1)
+            wait(lambda: geometry()[3:] != (width, height), "interactive window resize")
+            screenshot("live-resized", "8040a0")
             for icon in range(37):
                 command(f"cursor {icon}")
             command("copy")

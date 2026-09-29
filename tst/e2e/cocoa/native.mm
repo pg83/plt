@@ -105,7 +105,9 @@ MetalCanvas* MetalCanvas::create(ObjPool& owner, const RenderContext& context) {
 
 bool Canvas::command(const char* value) {
     id<NSTextInputClient> client = (id<NSTextInputClient>)window.contentView;
-    if (strcmp(value, "compose") == 0) {
+    if (strcmp(value, "mark") == 0) {
+        [client setMarkedText:@"にほん" selectedRange:NSMakeRange(1, 1) replacementRange:NSMakeRange(NSNotFound, 0)];
+    } else if (strcmp(value, "compose") == 0) {
         // Embedded IME client: exercise the public NSTextInputClient contract
         // with marked text, candidate geometry, replacement and cancellation.
         [client setMarkedText:@"にほん" selectedRange:NSMakeRange(1, 1) replacementRange:NSMakeRange(NSNotFound, 0)];
