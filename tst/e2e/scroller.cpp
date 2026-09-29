@@ -24,7 +24,7 @@ void Scroller::paint(Canvas& c) {
 
 void Scroller::scroll(const ScrollInput& input) {
     position += input.y;
-    printf("SCROLL %.3f\n", position);
+    printf("SCROLL %.3f %u %d %.3f\n", position, (unsigned)input.phase, input.precise, input.x);
     window->requestFrame();
 }
 

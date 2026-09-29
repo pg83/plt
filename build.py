@@ -235,12 +235,17 @@ if system == "Linux" and not platforms_headless:
     pointer_xml = "$(S)/tst/e2e/support/wlr-virtual-pointer-unstable-v1.xml"
     pointer_header = "$(B)/e2e-protocol/virtual-pointer-client.h"
     pointer_code = "$(B)/e2e-protocol/virtual-pointer-code.h"
+    ime_xml = "$(S)/tst/e2e/support/input-method-unstable-v2.xml"
+    ime_header = "$(B)/e2e-protocol/input-method-client.h"
+    ime_code = "$(B)/e2e-protocol/input-method-code.h"
     pointer_protocol = command(
-        inputs=[pointer_xml],
-        outputs=[pointer_header, pointer_code],
+        inputs=[pointer_xml, ime_xml],
+        outputs=[pointer_header, pointer_code, ime_header, ime_code],
         cmd=[
             ["wayland-scanner", "client-header", pointer_xml, pointer_header],
             ["wayland-scanner", "private-code", pointer_xml, pointer_code],
+            ["wayland-scanner", "client-header", ime_xml, ime_header],
+            ["wayland-scanner", "private-code", ime_xml, ime_code],
         ],
         cflags=["-I$(B)/e2e-protocol"],
         descr="WL",
@@ -249,7 +254,7 @@ if system == "Linux" and not platforms_headless:
     devices = program(
         name="e2e_devices",
         output="$(B)/e2e/devices",
-        srcs=[{"src": "$(S)/tst/e2e/support/devices.cpp", "inputs": [pointer_header, pointer_code]}],
+        srcs=[{"src": "$(S)/tst/e2e/support/devices.cpp", "inputs": [pointer_header, pointer_code, ime_header, ime_code]}],
         deps=[pointer_protocol, pkg_config("wayland-client")],
     )
     e2e_binaries = [devices]
