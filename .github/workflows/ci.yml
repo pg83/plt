@@ -480,8 +480,8 @@ jobs:
           mkdir -p "$report"
           coverage_status=0
           python3 dev/merge_lcov.py \
-            --minimum-line-coverage 90 \
-            --minimum-branch-coverage 90 \
+            --minimum-line-coverage 100 \
+            --minimum-branch-coverage 100 \
             --output "$report/coverage.info" \
             --summary "$report/summary.txt" \
             "$RUNNER_TEMP/coverage-inputs/coverage-linux/coverage.info" \

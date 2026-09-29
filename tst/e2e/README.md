@@ -78,6 +78,11 @@ python3 tst/e2e/run.py --binary-dir .build/e2e \
 The macOS 14 coverage job exercises the cursor fallbacks on their actual OS.
 GitHub [retires this runner on November 2, 2026](https://github.com/actions/runner-images/issues/13518);
 retaining the compatibility test after that date requires another macOS 14 runner.
+The desktop changes the monitor ICC profile through ColorSync, waits for the
+system backing-property notification, restores the saved custom profiles, and
+checks the rendered image. This reaches the Cocoa backing-property callback on
+runners whose displays expose only a 1x scale, without invoking the delegate
+or posting its notification from the test.
 The `backing-mode` probe records every advertised display mode, uses a different
 backing scale when the runner exposes one, and restores the original mode.
 
@@ -85,7 +90,7 @@ backing scale when the runner exposes one, and restores the original mode.
 
 The merged Linux/Darwin report includes all compiled production objects in
 `libplt.a`, including code no test executable links. The CI coverage job requires
-at least **90% line coverage and 90% branch coverage** across the library.
+**100% line coverage and 100% branch coverage** across the library.
 This is coverage from the complete test suite (Wayland integration, Cocoa checks
 and e2e). Dependencies, drivers and sample programs do not count as production
 code. CI saves the merged tracefile and summary even when a threshold fails;
