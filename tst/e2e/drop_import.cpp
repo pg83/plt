@@ -1,5 +1,6 @@
 #include "app.h"
 #include "drop.h"
+#include "fiber.h"
 
 #include <std/ios/input.h>
 #include <std/dbg/insist.h>
@@ -35,12 +36,15 @@ namespace {
 
     struct Target final: public App, public DropTarget {
         explicit Target(Platform* shared);
+        ~Target();
         void paint(Canvas& canvas) override;
         void key(const KeyInput& input) override;
         DropReply dragOver(const DropOffer& offer, i32 x, i32 y) override;
         void dragLeft() override;
         void dropped(Drop& drop) override;
         ObjPool::Ref preview = ObjPool::fromMemory();
+        int validation[2] = {-1, -1};
+        unsigned hovers = 0;
         u32 color = 0x204060;
     };
 
@@ -198,6 +202,10 @@ void Source::connect() {
 }
 
 void Source::drag(u32 serial) {
+    if (source != nullptr) {
+        wl_data_source_destroy(source);
+        source = nullptr;
+    }
     if (strcmp(setting("PLT_DROP_MODE", ""), "no-offer") == 0) {
         wl_data_device_start_drag(device, nullptr, (wl_surface*)window->renderContext().window, nullptr, serial);
         puts("DRAG STARTED");
@@ -227,6 +235,16 @@ void Source::paint(Canvas& canvas) {
 Target::Target(Platform* shared)
     : App(shared)
 {
+    if (strncmp(setting("PLT_DROP_MODE", ""), "pending-", 8) == 0) {
+        STD_INSIST(pipe(validation) == 0);
+    }
+}
+
+Target::~Target() {
+    if (validation[0] >= 0) {
+        ::close(validation[0]);
+        ::close(validation[1]);
+    }
 }
 
 void Target::paint(Canvas& canvas) {
@@ -250,6 +268,14 @@ void Target::key(const KeyInput& input) {
 DropReply Target::dragOver(const DropOffer& offer, i32 x, i32) {
     const char* mode = setting("PLT_DROP_MODE", "copy");
     printf("HOVER %d\n", x);
+    ++hovers;
+    if (validation[0] >= 0 && (hovers == 1 || strcmp(mode, "pending-replace") != 0)) {
+        // An importer waits for its background file validator. Closing the
+        // application must reclaim the platform's session while this waits.
+        printf("VALIDATING %u\n", hovers);
+        platform->scheduler()->awaitReadable(validation[0], 0);
+        STD_INSIST(false);
+    }
     if (strcmp(mode, "close-preview") == 0) {
         preview = ObjPool::fromMemory();
         puts("PREVIEW CLOSED");

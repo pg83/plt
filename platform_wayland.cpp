@@ -176,10 +176,17 @@ namespace {
         bool drained = false;
     };
 
-    // One drag session, owned by the stack of its fiber. The platform points
-    // at it only during the hover phase and feeds it events; the fiber
-    // consumes them between parks and runs the drop transfer inline.
-    struct DndSession {
+    // The platform owns sessions independently of their stacks: a target
+    // may await I/O inside a callback when the application shuts down.
+    struct DndSession final: public Runable {
+        explicit DndSession(PlatformImpl& platform);
+        void run() override;
+        void dispose();
+        PlatformImpl& platform;
+        TaskBlock* block;
+        DndSession* next;
+        DndSession** previous;
+        Buffer acceptedMime;
         WindowImpl* window = nullptr;
         Offer offer;
         Fiber* fiber = nullptr;
@@ -432,6 +439,7 @@ namespace {
         Offer pendingPrimaryOffer;
         Offer primaryOffer;
         DndSession* dndSession = nullptr;
+        DndSession* dndTasks = nullptr;
         Buffer clipboardContent;
         Buffer primaryContent;
         bool clipboardPending = false;
@@ -1370,11 +1378,9 @@ PlatformImpl::~PlatformImpl() {
     clipboardOffer.reset();
     pendingPrimaryOffer.reset();
     primaryOffer.reset();
-    if (dndSession != nullptr) {
-        // The session fiber owns the offer; ending the session synchronously
-        // makes it release the proxy before the display goes away.
-        dndSession->window = nullptr;
-        dndSession->fiber->wake();
+    while (dndTasks != nullptr) {
+        dndTasks->fiber->release();
+        dndTasks->dispose();
     }
     if (clipboardSource != nullptr) {
         wl_data_source_destroy(clipboardSource);
@@ -2219,32 +2225,56 @@ void PlatformImpl::dragEntered(u32 serial, struct wl_surface* surface, wl_fixed_
         dndSession->fiber->wake();
     }
     WindowImpl* const window = surface == nullptr ? nullptr : (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
-    Offer adopted;
+    auto* const session = allocator_->make<DndSession>(*this);
+    session->window = window;
     if (offer != nullptr) {
-        adopted = pendingClipboardOffer;
+        session->offer = pendingClipboardOffer;
         pendingClipboardOffer = {};
     }
-    spawnTask([this, window, serial, x, y, adopted] {
-        DndSession session;
-        session.window = window;
-        session.offer = adopted;
-        session.fiber = scheduler_->current();
-        session.serial = serial;
-        session.motionX = x;
-        session.motionY = y;
-        session.motionPending = true;
-        dndSession = &session;
-        runDragSession(session);
-        if (dndSession == &session) {
-            dndSession = nullptr;
-        }
-        session.offer.reset();
-        flushDisplay();
-    });
+    session->serial = serial;
+    session->motionX = x;
+    session->motionY = y;
+    session->motionPending = true;
+    scheduler_->spawn(*session, session->block->stack, sizeof(session->block->stack));
+}
+
+DndSession::DndSession(PlatformImpl& platform_)
+    : platform(platform_)
+    , block(platform.takeTaskBlock())
+    , next(platform.dndTasks)
+    , previous(&platform.dndTasks)
+{
+    if (next != nullptr) {
+        next->previous = &this->next;
+    }
+    platform.dndTasks = this;
+}
+
+void DndSession::run() {
+    fiber = platform.scheduler_->current();
+    platform.dndSession = this;
+    platform.runDragSession(*this);
+    if (platform.dndSession == this) {
+        platform.dndSession = nullptr;
+    }
+    offer.reset();
+    platform.flushDisplay();
+    dispose();
+}
+
+void DndSession::dispose() {
+    *previous = next;
+    if (next != nullptr) {
+        next->previous = previous;
+    }
+    offer.reset();
+    PlatformImpl& owner = platform;
+    TaskBlock* const spent = block;
+    owner.allocator_->release(this);
+    owner.recycleTaskBlock(spent);
 }
 
 void PlatformImpl::runDragSession(DndSession& session) {
-    Buffer acceptedMime;
     DropAction lastAction = DropAction::None;
     bool replySent = false;
     for (;;) {
@@ -2271,10 +2301,10 @@ void PlatformImpl::runDragSession(DndSession& session) {
             const char* const accepted = reply.mime.empty() ? nullptr : session.offer.offered(reply.mime);
             const DropAction action = accepted == nullptr ? DropAction::None : reply.action;
             const StringView acceptedView = accepted == nullptr ? StringView() : StringView(accepted);
-            if (!replySent || action != lastAction || StringView(acceptedMime) != acceptedView) {
+            if (!replySent || action != lastAction || StringView(session.acceptedMime) != acceptedView) {
                 replySent = true;
                 lastAction = action;
-                acceptedMime = Buffer(acceptedView);
+                session.acceptedMime = Buffer(acceptedView);
                 // A null accept mime tells the source nothing here can
                 // consume the drag.
                 wl_data_offer_accept(session.offer.data, session.serial, accepted);
@@ -2308,7 +2338,6 @@ void PlatformImpl::runDropTransfer(DndSession& session) {
     DndOfferView view;
     view.offer = &session.offer;
     struct wl_data_offer* const taken = session.offer.data;
-    session.offer.data = nullptr;
     DndDrop drop;
     drop.platform = this;
     drop.view = &view;
@@ -2319,7 +2348,7 @@ void PlatformImpl::runDropTransfer(DndSession& session) {
     if (drop.drained && wl_data_offer_get_version(taken) >= WL_DATA_OFFER_FINISH_SINCE_VERSION) {
         wl_data_offer_finish(taken);
     }
-    wl_data_offer_destroy(taken);
+    session.offer.reset();
     flushDisplay();
 }
 
