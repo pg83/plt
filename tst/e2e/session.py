@@ -62,7 +62,7 @@ class Session:
             self.socket = self.wait(lambda: next(runtime.glob("sway-ipc.*.sock"), None), "Sway IPC", client=False)
             self.env["WAYLAND_DISPLAY"] = wayland.name
             self.env["SWAYSOCK"] = str(self.socket)
-            self.start([str(self.binary.parent / "devices")], "devices", stdin=subprocess.PIPE)
+            self.start([os.environ["PLT_E2E_DEVICES"]], "devices", stdin=subprocess.PIPE)
             self.wait(lambda: "READY" in (self.artifacts / "devices.log").read_text(), "virtual pointer", client=False)
             self.start(["wtype", "-s", "60000"], "keyboard")
             self.wait(lambda: any(item["type"] == "keyboard" for item in json.loads(
