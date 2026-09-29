@@ -8,10 +8,13 @@ for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "
     os.environ["PLT_E2E_ARTIFACTS"] = str(root / mode)
     with Session(mode) as s:
         s.launch(PLT_DROP_MODE=mode, PLT_CHAOS="selection-pipe@0" if mode == "pipe-failure" else "")
+        s.logged("SOURCE READY")
         source = s.window("plt-drag-source")
         target = s.window("plt-drop-target")
         s.ipc(f'[con_id={source["id"]}] move position 20 50')
         s.ipc(f'[con_id={target["id"]}] move position 450 50')
+        s.focus("plt-drag-source")
+        s.screenshot("source", [(.1, .5, .9, .8, "e0b040")], app_id="plt-drag-source")
         s.pointer(100, 100, "plt-drag-source")
         s.button()
         s.logged("DRAG STARTED")

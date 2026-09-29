@@ -190,6 +190,8 @@ void Source::connect() {
     wl_pointer_add_listener(pointer, &pointerListener, this);
     device = wl_data_device_manager_get_data_device(manager, seat);
     wl_data_device_add_listener(device, &deviceListener, this);
+    STD_INSIST(wl_display_roundtrip(display) >= 0);
+    puts("SOURCE READY");
 }
 
 void Source::drag(u32 serial) {
