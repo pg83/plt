@@ -317,6 +317,11 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             wait(lambda: "MODIFIED IME COMMITTED" in text()[before:], "modified IME commit")
             assert "TEXT 90\n" not in text()[before:]
             screenshot("modified-ime", "40a060")
+            before = len(text())
+            command("color-proof")
+            wait(lambda: "BACKING PROPERTIES CHANGED" in text()[before:], "native color-space notification")
+            command("restore-color-proof")
+            screenshot("color-proof-restored", "40a060")
             command("backing-mode")
             screenshot("backing-mode", "40a060")
             command("restore-backing-mode")

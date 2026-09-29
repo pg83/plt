@@ -17,12 +17,15 @@ using namespace stl;
 namespace {
     struct Canvas final: public MetalCanvas {
         explicit Canvas(const RenderContext& context);
+        ~Canvas();
         bool paint(const WindowInfo& info, u32 color) override;
         void describe() override;
         bool command(const char* value) override;
         void holdInput(const RenderContext& context) override;
         id<NSTextInputClient> savedInput = nil;
         id dataProvider = nil;
+        id backingObserver = nil;
+        NSColorSpace* originalColorSpace = nil;
         NSWindow* source = nil;
         CGDisplayModeRef originalMode = nullptr;
 
@@ -43,6 +46,16 @@ Canvas::Canvas(const RenderContext& context)
     layer.presentsWithTransaction = YES;
     queue = [layer.device newCommandQueue];
     STD_INSIST(queue != nil);
+    backingObserver = [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidChangeBackingPropertiesNotification
+                                                                        object:window
+                                                                         queue:nil
+                                                                    usingBlock:^(NSNotification*) {
+                                                                      puts("BACKING PROPERTIES CHANGED");
+                                                                    }];
+}
+
+Canvas::~Canvas() {
+    [[NSNotificationCenter defaultCenter] removeObserver:backingObserver];
 }
 
 bool Canvas::paint(const WindowInfo& info, u32 color) {
@@ -153,6 +166,14 @@ bool Canvas::command(const char* value) {
                                                         }];
         NSEvent* event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagControl timestamp:0 windowNumber:window.windowNumber context:nil characters:@"π" charactersIgnoringModifiers:@"π" isARepeat:NO keyCode:0xff];
         [NSApp postEvent:event atStart:NO];
+    } else if (strcmp(value, "color-proof") == 0) {
+        // Document soft proofing changes real window backing properties even
+        // when WindowServer exposes only monitors with a 1x pixel scale.
+        originalColorSpace = window.colorSpace;
+        window.colorSpace = [NSColorSpace displayP3ColorSpace];
+    } else if (strcmp(value, "restore-color-proof") == 0) {
+        window.colorSpace = originalColorSpace;
+        originalColorSpace = nil;
     } else if (strcmp(value, "backing-mode") == 0) {
         const CGDirectDisplayID display = CGMainDisplayID();
         originalMode = CGDisplayCopyDisplayMode(display);
