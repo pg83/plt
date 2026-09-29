@@ -3,27 +3,30 @@
 #include <std/str/view.h>
 
 namespace stl {
-    class Buffer;
+    class Input;
+    class Output;
 }
 
 namespace plt {
+    // Streams one payload of a drag-and-drop transfer. chunk is valid only
+    // for the duration of the call. Returning false stops the transfer and
+    // completes it with success=false; done() is called exactly once unless
+    // the transfer is cancelled.
     struct ClipboardRead {
-        // chunk is valid only for the duration of this call. Returning false
-        // stops the transfer and completes it with success=false.
         virtual bool data(stl::StringView chunk) = 0;
-        // Called exactly once unless the transfer is cancelled.
         virtual void done(bool success) = 0;
     };
 
+    // Fiber-only clipboard streams. Both calls return an object owned by
+    // the caller; plain delete releases it. Deleting the Input before end
+    // of stream cancels the transfer; deleting the Output before finish()
+    // abandons the write without touching the selection.
     struct Clipboard {
-        virtual void read(ClipboardRead& read) = 0;
-        virtual void write(stl::StringView content) = 0;
-        // After this returns, read receives no more callbacks for cancelled transfers.
-        virtual void cancel(ClipboardRead& read) = 0;
-        // Fiber-only: appends the whole selection to content, blocking the
-        // calling fiber while the event loop keeps running. Callable from
-        // any depth of the fiber's call stack; false on failure, timeout or
-        // when called outside a fiber.
-        virtual bool readAll(stl::Buffer& content) = 0;
+        // Streams the current selection; an absent selection reads as
+        // empty. A read that would block parks the calling fiber while the
+        // event loop keeps running.
+        virtual stl::Input* read() = 0;
+        // Accumulates a replacement selection; finish() publishes it.
+        virtual stl::Output* write() = 0;
     };
 }

@@ -3,34 +3,62 @@
 #include "drop.h"
 #include "fiber.h"
 #include "input.h"
+#include "loop_wake.h"
 #include "poller.h"
+#include "poller_loop.h"
 #include "window.h"
 #include "platform.h"
-#include "timer_queue.h"
 
 #include <std/sys/crt.h>
+#include <dlfcn.h>
 #include <std/dbg/verify.h>
 #include <std/sym/i_map.h>
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
+#include <std/lib/list.h>
+#include <std/ios/input.h>
+#include <std/ios/output.h>
 #include <std/thr/poll_fd.h>
 #include <std/mem/obj_pool.h>
 #include <std/mem/small_obj_allocator.h>
 
 #import <AppKit/AppKit.h>
+#import <mach/mach.h>
 #import <Carbon/Carbon.h>
 #import <CoreVideo/CVDisplayLink.h>
 #import <IOKit/hidsystem/IOLLEvent.h>
-#import <QuartzCore/CADisplayLink.h>
-#import <QuartzCore/CALayer.h>
+#import <QuartzCore/CAMetalLayer.h>
+
+// @available guards the runtime, but building against an older SDK also
+// needs the declarations to exist at all; these gate every use of an API
+// newer than the SDK the build runs on.
+#if defined(MAC_OS_VERSION_15_0) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_VERSION_15_0
+#define PLT_SDK_MACOS_15 1
+#else
+#define PLT_SDK_MACOS_15 0
+#endif
+
 
 #include <errno.h>
 #include <float.h>
 #include <limits.h>
+#include <new>
 #include <poll.h>
 
 using namespace stl;
 using namespace plt;
+
+unsigned long plt::cocoaWindowStyleMask(bool decorations) {
+    if (!decorations) {
+        return NSWindowStyleMaskBorderless | NSWindowStyleMaskResizable;
+    }
+    return NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+        | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+}
+
+bool plt::cocoaResizeUsesExactProposal(bool fullscreen, bool viewAvailable, bool liveResize) {
+    return fullscreen || (viewAvailable && !liveResize);
+}
 
 namespace plt::cocoa_detail {
     struct DisplayLinkGate {
@@ -64,7 +92,7 @@ namespace plt::cocoa_detail {
 void cocoaCloseImpl(void* owner);
 void cocoaResizeImpl(void* owner);
 void cocoaFrameImpl(void* owner);
-void cocoaFallbackFrameImpl(void* owner);
+void cocoaDisplayLayerImpl(void* owner);
 void cocoaInvalidateImpl(void* owner);
 void cocoaScreenChangedImpl(void* owner);
 NSRect cocoaTextInputRectImpl(void* owner);
@@ -84,6 +112,10 @@ void cocoaDragExitedImpl(void* owner);
 BOOL cocoaPerformDropImpl(void* owner, id<NSDraggingInfo> sender);
 void cocoaFileDescriptorReady(CFFileDescriptorRef descriptor, CFOptionFlags types, void* owner);
 void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
+void cocoaWakeReady(CFMachPortRef port, void* message, CFIndex size, void* owner);
+
+@interface PltWindow: NSWindow
+@end
 
 @interface PltWindowDelegate: NSObject <NSWindowDelegate>
 @property(nonatomic, assign) void* owner;
@@ -98,14 +130,19 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 @property(nonatomic, strong) NSTrackingArea* tracking;
 @end
 
-@interface PltRootLayer: CALayer
-@property(nonatomic, assign) void* owner;
-@end
 
 @interface PltDisplayLinkTarget: NSObject {
 @public
     plt::cocoa_detail::DisplayLinkGate gate;
 }
+@end
+
+@implementation PltWindow
+
+- (BOOL)canBecomeKeyWindow {
+    return YES;
+}
+
 @end
 
 @implementation PltWindowDelegate
@@ -166,9 +203,22 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 @implementation PltView
 
 - (CALayer*)makeBackingLayer {
-    PltRootLayer* layer = [PltRootLayer layer];
-    layer.owner = self.owner;
+    // A CAMetalLayer the Metal renderer configures (device, pixel format,
+    // presentsWithTransaction) once created. needsDisplayOnBoundsChange makes
+    // CoreAnimation call our displayLayer: whenever the bounds change, including
+    // synchronously during a live resize, so we render the resize frame inside
+    // the same transaction as the bounds change.
+    CAMetalLayer* layer = [CAMetalLayer layer];
+    layer.needsDisplayOnBoundsChange = YES;
     return layer;
+}
+
+// CoreAnimation's synchronous display pass. During a live resize AppKit calls
+// this while assembling the resize transaction, so the frame we render here
+// commits together with the new bounds.
+- (void)displayLayer:(CALayer*)layer {
+    (void)layer;
+    cocoaDisplayLayerImpl(self.owner);
 }
 
 - (BOOL)acceptsFirstResponder {
@@ -369,36 +419,13 @@ void cocoaTimerReady(CFRunLoopTimerRef timer, void* owner);
 
 @end
 
-@implementation PltRootLayer
-
-- (void)display {
-    if (self.owner != nullptr) {
-        cocoaFallbackFrameImpl(self.owner);
-    }
-}
-
-@end
-
 @implementation PltDisplayLinkTarget
-
-// CADisplayLink callback; runs on the main run loop, unlike the CVDisplayLink
-// thread callback, so it dispatches directly.
-- (void)displayLinkFired:(id)sender {
-    (void)sender;
-    void* const owner = gate.owner();
-    if (owner != nullptr) {
-        cocoaFrameImpl(owner);
-    }
-}
-
 @end
 
 namespace {
     struct PlatformImpl;
     struct PollerImpl;
     struct WindowImpl;
-    struct ClipboardOperation;
-
     const StringView uriListMime(u8"text/uri-list");
     const StringView utf8Mime(u8"text/plain;charset=utf-8");
 
@@ -415,33 +442,68 @@ namespace {
 
     struct CocoaDrop final: public Drop {
         DropOffer* what() override;
-        void read(StringView mime, ClipboardRead& read) override;
+        Input* read(StringView mime) override;
 
+        WindowImpl* window = nullptr;
         CocoaDropOffer* view = nullptr;
         NSPasteboard* pasteboard = nil;
         bool taken = false;
-        bool success = false;
+        bool drained = false;
     };
 
+    // A synchronously materialized payload as a pulling stream; plain
+    // delete releases it, and drained reports whether the consumer reached
+    // end of payload before deleting.
+    struct CocoaStreamInput final: public Input {
+        CocoaStreamInput(SmallObjAllocator* allocator, Buffer&& content, bool* drained);
+        ~CocoaStreamInput() noexcept override;
+
+        void operator delete(CocoaStreamInput* input, std::destroying_delete_t) noexcept;
+
+        size_t readImpl(void* data, size_t len) override;
+
+        SmallObjAllocator* allocator;
+        Buffer content;
+        size_t offset = 0;
+        bool* drained;
+    };
+
+    // A replacement pasteboard payload accumulating until finish()
+    // publishes it; deleting without finish() abandons the write.
+    struct CocoaStreamOutput final: public Output {
+        CocoaStreamOutput(WindowImpl* window, bool primary);
+
+        void operator delete(CocoaStreamOutput* output, std::destroying_delete_t) noexcept;
+
+        size_t writeImpl(const void* data, size_t size) override;
+        void finishImpl() override;
+
+        WindowImpl* window;
+        Buffer accumulated;
+        bool primary;
+        bool finished = false;
+    };
+
+    // One watched descriptor with every waiter parked on it.
     struct ArmedFD {
-        ArmedFD(PollFD fd, PollCallback* callback, CFFileDescriptorRef descriptor, CFRunLoopSourceRef source);
+        ArmedFD(CFFileDescriptorRef descriptor, CFRunLoopSourceRef source);
         ~ArmedFD();
 
-        PollFD fd;
-        PollCallback* callback = nullptr;
         CFFileDescriptorRef descriptor = nullptr;
         CFRunLoopSourceRef source = nullptr;
+        stl::IntrusiveList waiters;
     };
 
     struct PollerImpl final: public Poller {
         explicit PollerImpl(ObjPool& owner);
         ~PollerImpl();
 
-        void arm(PollFD fd, PollCallback& callback) override;
-        void disarm(int fd) override;
+        void arm(PollWaiter& waiter) override;
+        void cancel(PollWaiter& waiter) override;
         void timeout(u64 microseconds, TimerCallback& callback) override;
         void deadline(u64 monotonicMicroseconds, TimerCallback& callback) override;
         void cancel(TimerCallback& callback) override;
+        void defer(TimerCallback& callback) override;
 
         void descriptorReady(CFFileDescriptorRef descriptor);
         void dispatchTimers();
@@ -449,43 +511,24 @@ namespace {
         u64 nextDeadline() const;
 
         IntMap<ArmedFD> armed;
-        TimerQueue timers;
+        // The portable loop poller serves as the deadline queue; its poll
+        // half is never used - CFFileDescriptor delivers readiness.
+        PollerLoop* timers = nullptr;
         CFRunLoopTimerRef runLoopTimer = nullptr;
     };
 
-    enum class ClipboardOperationKind : u8 {
-        ReadPrimary,
-        ReadClipboard,
-        WritePrimary,
-        WriteClipboard,
-    };
-
-    struct ClipboardOperation final: public TimerCallback {
-        ClipboardOperation(WindowImpl& window, ClipboardOperationKind kind, ClipboardRead* read, StringView content);
-
-        void ready() override;
-        void cancel();
-        void dispose();
-
-        WindowImpl& window;
-        ClipboardOperationKind kind;
-        ClipboardRead* read = nullptr;
-        Buffer content;
-        ClipboardOperation* next = nullptr;
-        bool timerArmed = true;
-        bool dispatching = false;
-        bool cancelled = false;
-    };
-
     struct ClipboardImpl final: public Clipboard {
-        void read(ClipboardRead& sink) override;
-        void write(StringView content) override;
-        void cancel(ClipboardRead& sink) override;
-        bool readAll(Buffer& content) override;
+        Input* read() override;
+        Output* write() override;
 
         WindowImpl* window = nullptr;
         bool primary = false;
     };
+
+    // How long an idle display link keeps ticking before it is stopped,
+    // in its own callbacks: about a second at 60Hz, less on a faster
+    // panel, which is the scale of a pause between two keystrokes.
+    constexpr u32 idleFramesBeforeStop = 60;
 
     struct WindowImpl final: public Window {
         WindowImpl(PlatformImpl& platform, const WindowOptions& options);
@@ -506,6 +549,7 @@ namespace {
         void requestMinimumSize(u32 width, u32 height) override;
         void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
         WindowInfo info() const override;
+        bool inLiveResize() const override;
         Clipboard* primary() override;
         Clipboard* secondary() override;
         void requestPointerIcon(PointerIcon icon) override;
@@ -515,10 +559,11 @@ namespace {
 
         void close();
         void resized();
+        void resizeFrame();
+        void startDisplayLink();
         void screenChanged();
         NSRect textInputScreenRect() const;
         void draw();
-        void fallbackDraw();
         void stopDisplayLink();
         NSSize willResize(NSSize frameSize) const;
         void focused(bool value);
@@ -530,16 +575,12 @@ namespace {
         void button(NSEvent* event, bool pressed);
         void scroll(NSEvent* event);
         void pointerPresence(bool present);
-        u16 modifiers(NSEventModifierFlags flags) const;
-        InputKey inputKey(NSEvent* event) const;
-        u32 firstCodepoint(NSString* string) const;
         void emitText(NSString* string, u16 modifiers);
         NSPoint pointerPosition(NSEvent* event) const;
         void writePasteboard(NSPasteboard* pasteboard, StringView content);
         NSDragOperation dragOver(id<NSDraggingInfo> sender);
         void dragExited();
         BOOL performDrop(id<NSDraggingInfo> sender);
-        void removeClipboardOperation(ClipboardOperation& operation);
         void applySizeConstraints();
 
         PlatformImpl& platform;
@@ -551,7 +592,6 @@ namespace {
         PltView* view = nil;
         PltWindowDelegate* delegate = nil;
         CVDisplayLinkRef displayLink = nullptr;
-        CADisplayLink* caDisplayLink = nil;
         PltDisplayLinkTarget* displayLinkTarget = nil;
         void* displayLinkContext = nullptr;
         i32 textInputX = 0;
@@ -566,24 +606,58 @@ namespace {
         u32 resizeBaseHeight = 0;
         ClipboardImpl primaryPasteboard;
         ClipboardImpl generalPasteboard;
-        ClipboardOperation* clipboardOperations = nullptr;
         bool frameRequested = false;
-        bool layerFrameRequested = false;
+        u32 idleFrames = 0;
         bool preeditShown = false;
+    };
+
+    // The run loop natively sleeps on a mach port set; a port message is
+    // its cheapest cross-thread wake. Send-once rights die with delivery,
+    // and a zero send timeout makes a full queue mean "wake already
+    // pending" instead of blocking the signalling thread.
+    struct MachLoopWake final: public LoopWake {
+        explicit MachLoopWake(TimerCallback& callback_)
+            : callback(callback_)
+        {
+            CFMachPortContext context{};
+            context.info = this;
+            port = CFMachPortCreate(kCFAllocatorDefault, cocoaWakeReady, &context, nullptr);
+            STD_VERIFY(port != nullptr);
+            CFRunLoopSourceRef source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port, 0);
+            STD_VERIFY(source != nullptr);
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+            CFRelease(source);
+        }
+
+        void signal() override {
+            mach_msg_header_t header{};
+            header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MAKE_SEND_ONCE, 0);
+            header.msgh_remote_port = CFMachPortGetPort(port);
+            header.msgh_size = sizeof(header);
+            mach_msg(&header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof(header), 0, MACH_PORT_NULL, 0, MACH_PORT_NULL);
+        }
+
+        TimerCallback& callback;
+        CFMachPortRef port = nullptr;
     };
 
     struct PlatformImpl final: public Platform {
         explicit PlatformImpl(ObjPool& owner);
 
         Window* createWindow(ObjPool& owner, const WindowOptions& options) override;
+        LoopWake* createLoopWake(ObjPool& owner, TimerCallback& callback) override;
         Poller* poller() override;
         Scheduler* scheduler() override;
         void run() override;
         void stop() override;
 
+        void ensureApplication(StringView appName);
+
         PollerImpl* poller_ = nullptr;
         SmallObjAllocator* allocator_ = nullptr;
         Scheduler* scheduler_ = nullptr;
+        bool applicationReady_ = false;
+        bool stopRequested_ = false;
     };
 
     NSString* stringFromView(StringView value) {
@@ -598,9 +672,13 @@ namespace {
     constexpr NSUInteger frameResizeRight = 1 << 3;
 
     NSCursor* frameResizeCursor(NSUInteger position, NSCursor* fallback) {
+#if PLT_SDK_MACOS_15
         if (@available(macOS 15.0, *)) {
             return [NSCursor frameResizeCursorFromPosition:(NSCursorFrameResizePosition)(position) inDirections:NSCursorFrameResizeDirectionsAll];
         }
+#else
+        (void)position;
+#endif
         return fallback;
     }
 
@@ -673,26 +751,34 @@ namespace {
             case PointerIcon::ResizeSouthWest:
                 return frameResizeCursor(frameResizeBottom | frameResizeLeft, [NSCursor resizeLeftRightCursor]);
             case PointerIcon::ResizeColumn:
+#if PLT_SDK_MACOS_15
                 if (@available(macOS 15.0, *)) {
                     return [NSCursor columnResizeCursor];
                 }
+#endif
                 return [NSCursor resizeLeftRightCursor];
             case PointerIcon::ResizeRow:
+#if PLT_SDK_MACOS_15
                 if (@available(macOS 15.0, *)) {
                     return [NSCursor rowResizeCursor];
                 }
+#endif
                 return [NSCursor resizeUpDownCursor];
             case PointerIcon::ZoomIn:
+#if PLT_SDK_MACOS_15
                 if (@available(macOS 15.0, *)) {
                     return [NSCursor zoomInCursor];
                 }
+#endif
                 // No magnifier before macOS 15; the crosshair at least keeps
                 // the aim-at-a-spot meaning.
                 return [NSCursor crosshairCursor];
             case PointerIcon::ZoomOut:
+#if PLT_SDK_MACOS_15
                 if (@available(macOS 15.0, *)) {
                     return [NSCursor zoomOutCursor];
                 }
+#endif
                 return [NSCursor crosshairCursor];
             case PointerIcon::DisappearingItem:
                 return [NSCursor disappearingItemCursor];
@@ -721,15 +807,72 @@ namespace {
 PlatformImpl::PlatformImpl(ObjPool& owner)
     : poller_(owner.make<PollerImpl>(owner))
     , allocator_(SmallObjAllocator::create(&owner))
-    , scheduler_(Scheduler::create(owner, *allocator_, *poller_))
+    , scheduler_(Scheduler::create(owner, *poller_))
 {
+}
+
+NSMenu* plt::cocoaBuildMainMenu(NSString* appName) {
+    NSMenu* const bar = [[NSMenu alloc] initWithTitle:@""];
+    NSMenuItem* const applicationItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+    [bar addItem:applicationItem];
+
+    NSMenu* const application = [[NSMenu alloc] initWithTitle:appName];
+    [application addItemWithTitle:[@"About " stringByAppendingString:appName]
+                           action:@selector(orderFrontStandardAboutPanel:)
+                    keyEquivalent:@""];
+    [application addItem:[NSMenuItem separatorItem]];
+    [application addItemWithTitle:[@"Hide " stringByAppendingString:appName]
+                           action:@selector(hide:)
+                    keyEquivalent:@"h"];
+    NSMenuItem* const hideOthers = [application addItemWithTitle:@"Hide Others"
+                                                          action:@selector(hideOtherApplications:)
+                                                   keyEquivalent:@"h"];
+    hideOthers.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+    [application addItemWithTitle:@"Show All" action:@selector(unhideAllApplications:) keyEquivalent:@""];
+    [application addItem:[NSMenuItem separatorItem]];
+    [application addItemWithTitle:[@"Quit " stringByAppendingString:appName]
+                           action:@selector(terminate:)
+                    keyEquivalent:@"q"];
+    applicationItem.submenu = application;
+    return bar;
+}
+
+void PlatformImpl::ensureApplication(StringView appName) {
+    if (applicationReady_) {
+        return;
+    }
+    // Press and Hold swallows the auto-repeat of every key the system
+    // deems accent-capable - which keys those are shifts with layout
+    // and OS release, so 'q' stops repeating while 'w' still does.  A
+    // terminal wants the repeat; registerDefaults scopes the opt-out
+    // to this process without persisting anything.
+    [[NSUserDefaults standardUserDefaults] registerDefaults:@{
+        @"ApplePressAndHoldEnabled" : @NO
+    }];
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    // The embedder's name, or the process name - which Foundation
+    // always supplies. A platform library has no name of its own to
+    // fall back on.
+    NSString* name = nil;
+    if (appName.length() != 0) {
+        name = [[NSString alloc] initWithBytes:appName.data() length:appName.length() encoding:NSUTF8StringEncoding];
+    }
+    if (name == nil) {
+        name = [[NSProcessInfo processInfo] processName];
+    }
+    [NSApp setMainMenu:cocoaBuildMainMenu(name)];
     [NSApp finishLaunching];
+    applicationReady_ = true;
 }
 
 Window* PlatformImpl::createWindow(ObjPool& owner, const WindowOptions& options) {
+    ensureApplication(options.appName);
     return owner.make<WindowImpl>(*this, options);
+}
+
+LoopWake* PlatformImpl::createLoopWake(ObjPool& owner, TimerCallback& callback) {
+    return owner.make<MachLoopWake>(callback);
 }
 
 Poller* PlatformImpl::poller() {
@@ -742,7 +885,7 @@ Scheduler* PlatformImpl::scheduler() {
 
 PollerImpl::PollerImpl(ObjPool& owner)
     : armed(ObjPool::create(&owner))
-    , timers(owner)
+    , timers(PollerLoop::create(owner))
 {
     CFRunLoopTimerContext context{};
     context.info = this;
@@ -756,10 +899,8 @@ PollerImpl::~PollerImpl() {
     CFRelease(runLoopTimer);
 }
 
-ArmedFD::ArmedFD(PollFD fd_, PollCallback* callback_, CFFileDescriptorRef descriptor_, CFRunLoopSourceRef source_)
-    : fd(fd_)
-    , callback(callback_)
-    , descriptor(descriptor_)
+ArmedFD::ArmedFD(CFFileDescriptorRef descriptor_, CFRunLoopSourceRef source_)
+    : descriptor(descriptor_)
     , source(source_)
 {
 }
@@ -775,54 +916,80 @@ ArmedFD::~ArmedFD() {
     }
 }
 
-void PollerImpl::arm(PollFD fd, PollCallback& callback) {
-    disarm(fd.fd);
-    CFFileDescriptorContext context{};
-    context.info = this;
-    CFFileDescriptorRef descriptor = CFFileDescriptorCreate(kCFAllocatorDefault, fd.fd, false, cocoaFileDescriptorReady, &context);
-    STD_VERIFY(descriptor != nullptr);
-    CFRunLoopSourceRef source = CFFileDescriptorCreateRunLoopSource(kCFAllocatorDefault, descriptor, 0);
-    STD_VERIFY(source != nullptr);
-    armed.insert(fd.fd, fd, &callback, descriptor, source);
-    CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
-    CFOptionFlags types = 0;
-    if (fd.flags & (PollFlag::In | PollFlag::Err | PollFlag::Hup)) {
-        types |= kCFFileDescriptorReadCallBack;
+namespace {
+    u32 entryFlags(const ArmedFD& entry) {
+        u32 flags = 0;
+        for (const stl::IntrusiveNode* node = entry.waiters.front(); node != entry.waiters.end(); node = node->next) {
+            flags |= static_cast<const PollWaiter*>(node)->fd.flags;
+        }
+        return flags;
     }
-    if (fd.flags & PollFlag::Out) {
-        types |= kCFFileDescriptorWriteCallBack;
+
+    void enableEntryCallbacks(const ArmedFD& entry) {
+        const u32 flags = entryFlags(entry);
+        CFOptionFlags types = 0;
+        if (flags & (PollFlag::In | PollFlag::Err | PollFlag::Hup)) {
+            types |= kCFFileDescriptorReadCallBack;
+        }
+        if (flags & PollFlag::Out) {
+            types |= kCFFileDescriptorWriteCallBack;
+        }
+        CFFileDescriptorEnableCallBacks(entry.descriptor, types);
     }
-    CFFileDescriptorEnableCallBacks(descriptor, types);
 }
 
-void PollerImpl::disarm(int fd) {
-    armed.erase(fd);
+void PollerImpl::arm(PollWaiter& waiter) {
+    waiter.unlink();
+    ArmedFD* entry = armed.find(waiter.fd.fd);
+    if (entry == nullptr) {
+        CFFileDescriptorContext context{};
+        context.info = this;
+        CFFileDescriptorRef descriptor = CFFileDescriptorCreate(kCFAllocatorDefault, waiter.fd.fd, false, cocoaFileDescriptorReady, &context);
+        STD_VERIFY(descriptor != nullptr);
+        CFRunLoopSourceRef source = CFFileDescriptorCreateRunLoopSource(kCFAllocatorDefault, descriptor, 0);
+        STD_VERIFY(source != nullptr);
+        armed.insert(waiter.fd.fd, descriptor, source);
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+        entry = armed.find(waiter.fd.fd);
+    }
+    entry->waiters.pushBack(&waiter);
+    enableEntryCallbacks(*entry);
+}
+
+void PollerImpl::cancel(PollWaiter& waiter) {
+    // Works whichever list currently holds the node; an empty entry is
+    // reclaimed on its next readiness callback.
+    waiter.unlink();
 }
 
 void PollerImpl::timeout(u64 microseconds, TimerCallback& callback) {
-    timers.schedule(monotonicNowUs() + microseconds, callback);
+    timers->timeout(microseconds, callback);
     scheduleTimer();
 }
 
 void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
-    if (monotonicMicroseconds == 0) {
-        monotonicMicroseconds = monotonicNowUs();
-    }
-    timers.schedule(monotonicMicroseconds, callback);
+    timers->deadline(monotonicMicroseconds, callback);
     scheduleTimer();
 }
 
 void PollerImpl::cancel(TimerCallback& callback) {
-    timers.cancel(callback);
+    timers->cancel(callback);
     scheduleTimer();
 }
 
+void PollerImpl::defer(TimerCallback& callback) {
+    // CFRunLoop services every ready source once per pass before firing
+    // timers, so a zero timer already gives the descriptor waiters their
+    // round here.
+    timeout(0, callback);
+}
+
 u64 PollerImpl::nextDeadline() const {
-    return timers.nextDeadline();
+    return timers->nextDeadline();
 }
 
 void PollerImpl::dispatchTimers() {
-    timers.dispatch(monotonicNowUs());
+    timers->dispatchTimers();
     scheduleTimer();
 }
 
@@ -839,107 +1006,80 @@ void PollerImpl::scheduleTimer() {
 
 void PollerImpl::descriptorReady(CFFileDescriptorRef descriptor) {
     const int fd = CFFileDescriptorGetNativeDescriptor(descriptor);
-    ArmedFD* registration = armed.find(fd);
-    if (registration == nullptr || registration->descriptor != descriptor) {
+    ArmedFD* const entry = armed.find(fd);
+    if (entry == nullptr || entry->descriptor != descriptor) {
         return;
     }
-    struct pollfd event{fd, registration->fd.toPollEvents(), 0};
+    if (entry->waiters.empty()) {
+        armed.erase(fd);
+        return;
+    }
+    struct pollfd event{fd, (short)0, 0};
+    event.events = PollFD{.fd = fd, .flags = entryFlags(*entry)}.toPollEvents();
     const int pollResult = ::poll(&event, 1, 0);
     if (pollResult <= 0 || event.revents == 0) {
-        CFOptionFlags types = 0;
-        if (registration->fd.flags & (PollFlag::In | PollFlag::Err | PollFlag::Hup)) {
-            types |= kCFFileDescriptorReadCallBack;
-        }
-        if (registration->fd.flags & PollFlag::Out) {
-            types |= kCFFileDescriptorWriteCallBack;
-        }
-        CFFileDescriptorEnableCallBacks(descriptor, types);
+        enableEntryCallbacks(*entry);
         return;
     }
-    PollCallback* const callback = registration->callback;
-    PollFD ready{
-        .fd = fd,
-        .flags = PollFD::fromPollEvents(event.revents),
-    };
-    armed.erase(fd);
-    callback->ready(ready);
+    const u32 readyFlags = PollFD::fromPollEvents(event.revents);
+    // Detach every matching waiter before the first callback runs; a
+    // callback that cancels or re-arms another waiter pulls it out of this
+    // round's list.
+    stl::IntrusiveList ready;
+    for (stl::IntrusiveNode* node = entry->waiters.mutFront(); node != entry->waiters.mutEnd();) {
+        PollWaiter* const waiter = static_cast<PollWaiter*>(node);
+        node = node->next;
+        if ((waiter->fd.flags | PollFlag::Err | PollFlag::Hup) & readyFlags) {
+            waiter->readyFlags = readyFlags;
+            waiter->unlink();
+            ready.pushBack(waiter);
+        }
+    }
+    while (!ready.empty()) {
+        PollWaiter* const waiter = static_cast<PollWaiter*>(ready.popFront());
+        waiter->callback->ready({
+            .fd = fd,
+            .flags = waiter->readyFlags,
+        });
+    }
+    ArmedFD* const remaining = armed.find(fd);
+    if (remaining != nullptr && remaining->descriptor == descriptor) {
+        if (remaining->waiters.empty()) {
+            armed.erase(fd);
+        } else {
+            enableEntryCallbacks(*remaining);
+        }
+    }
     NSEvent* wakeup = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
     [NSApp postEvent:wakeup atStart:NO];
 }
 
 void PlatformImpl::run() {
-    [NSApp run];
+    if (stopRequested_) {
+        stopRequested_ = false;
+        return;
+    }
+    if (applicationReady_) {
+        [NSApp run];
+    } else {
+        // Descriptors and timers live directly on the main CFRunLoop. A
+        // windowless platform therefore needs no NSApplication (and no
+        // WindowServer), which keeps the poller usable by services and tests.
+        CFRunLoopRun();
+    }
+    stopRequested_ = false;
 }
 
 void PlatformImpl::stop() {
-    [NSApp stop:nil];
-    NSEvent* event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
-    [NSApp postEvent:event atStart:NO];
-}
-
-ClipboardOperation::ClipboardOperation(WindowImpl& window_, ClipboardOperationKind kind_, ClipboardRead* read_, StringView content_)
-    : window(window_)
-    , kind(kind_)
-    , read(read_)
-    , content(content_)
-{
-    next = window.clipboardOperations;
-    window.clipboardOperations = this;
-    window.platform.poller_->timeout(0, *this);
-}
-
-void ClipboardOperation::ready() {
-    timerArmed = false;
-    if (cancelled) {
-        dispose();
-        return;
+    stopRequested_ = true;
+    if (applicationReady_) {
+        [NSApp stop:nil];
+        NSEvent* event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
+        [NSApp postEvent:event atStart:NO];
+    } else {
+        CFRunLoopStop(CFRunLoopGetMain());
+        CFRunLoopWakeUp(CFRunLoopGetMain());
     }
-
-    const bool primary = kind == ClipboardOperationKind::ReadPrimary || kind == ClipboardOperationKind::WritePrimary;
-    NSPasteboard* const pasteboard = primary ? [NSPasteboard pasteboardWithName:NSPasteboardNameFind] : [NSPasteboard generalPasteboard];
-    if (kind == ClipboardOperationKind::WritePrimary || kind == ClipboardOperationKind::WriteClipboard) {
-        window.writePasteboard(pasteboard, StringView(content));
-        dispose();
-        return;
-    }
-
-    NSString* value = [pasteboard stringForType:NSPasteboardTypeString];
-    NSData* data = value == nil ? nil : [value dataUsingEncoding:NSUTF8StringEncoding];
-    bool success = data != nil;
-    ClipboardRead* const target = read;
-    if (success && data.length != 0) {
-        dispatching = true;
-        success = target != nullptr && target->data(StringView((const u8*)(data.bytes), data.length));
-        dispatching = false;
-    }
-    if (cancelled) {
-        dispose();
-        return;
-    }
-
-    read = nullptr;
-    dispose();
-    if (target != nullptr) {
-        target->done(success);
-    }
-}
-
-void ClipboardOperation::cancel() {
-    read = nullptr;
-    if (dispatching) {
-        cancelled = true;
-        return;
-    }
-    dispose();
-}
-
-void ClipboardOperation::dispose() {
-    if (timerArmed) {
-        window.platform.poller_->cancel(*this);
-        timerArmed = false;
-    }
-    window.removeClipboardOperation(*this);
-    window.platform.allocator_->release(this);
 }
 
 WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
@@ -952,8 +1092,40 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     primaryPasteboard.window = this;
     primaryPasteboard.primary = true;
     generalPasteboard.window = this;
+    if (options.icon.length() != 0) {
+        // The Dock icon for the whole unbundled binary: without a bundle
+        // there is no Info.plist to name an icns, so the image is applied
+        // at run time.
+        NSData* const bytes = [NSData dataWithBytes:options.icon.data() length:options.icon.length()];
+        NSImage* const image = [[NSImage alloc] initWithData:bytes];
+        if (image != nil) {
+            NSApp.applicationIconImage = image;
+        }
+    }
+    if (options.appName.length() != 0) {
+        // The menu bar of an unbundled binary shows argv[0]: without an
+        // Info.plist there is nothing else for AppKit to read. Launch
+        // Services accepts a display name for the running process; the
+        // interfaces are private, so they resolve dynamically and a macOS
+        // that drops them simply keeps the old label. The Cmd-Tab
+        // switcher is out of reach either way - its label comes from the
+        // application bundle.
+        typedef const void* (*CurrentAsn)(void);
+        typedef OSStatus (*SetItem)(int, const void*, CFStringRef, CFStringRef, CFDictionaryRef*);
+        const auto currentAsn = (CurrentAsn)(dlsym(RTLD_DEFAULT, "_LSGetCurrentApplicationASN"));
+        const auto setItem = (SetItem)(dlsym(RTLD_DEFAULT, "_LSSetApplicationInformationItem"));
+        if (currentAsn != nullptr && setItem != nullptr) {
+            CFStringRef name = CFStringCreateWithBytes(kCFAllocatorDefault, (const UInt8*)(options.appName.data()), (CFIndex)(options.appName.length()), kCFStringEncodingUTF8, false);
+            if (name != nullptr) {
+                // -2 addresses the current login session; the key string
+                // is the value behind _kLSDisplayNameKey.
+                setItem(-2, currentAsn(), CFSTR("LSDisplayName"), name, nullptr);
+                CFRelease(name);
+            }
+        }
+    }
     const NSRect frame = NSMakeRect(0, 0, max(1u, options.width), max(1u, options.height));
-    window = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+    window = [[PltWindow alloc] initWithContentRect:frame styleMask:(NSWindowStyleMask)cocoaWindowStyleMask(options.decorations) backing:NSBackingStoreBuffered defer:NO];
     delegate = [PltWindowDelegate new];
     delegate.owner = this;
     window.delegate = delegate;
@@ -966,22 +1138,13 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     [view registerForDraggedTypes:@[ NSPasteboardTypeString, NSPasteboardTypeFileURL ]];
     requestTitle(options.title);
     requestMinimumSize(options.minimumWidth, options.minimumHeight);
-    // Prefer the view display link: it runs on the main run loop and follows
-    // the view across displays by itself. CVDisplayLink stays as the fallback
-    // for older systems and needs manual rebinding on screen changes.
-    if (@available(macOS 14.0, *)) {
-        displayLinkTarget = [PltDisplayLinkTarget new];
-        displayLinkTarget->gate.attach(this);
-        caDisplayLink = [view displayLinkWithTarget:displayLinkTarget selector:@selector(displayLinkFired:)];
-        if (caDisplayLink != nil) {
-            caDisplayLink.paused = YES;
-            [caDisplayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
-        } else {
-            displayLinkTarget->gate.detach();
-            displayLinkTarget = nil;
-        }
-    }
-    if (caDisplayLink == nil && CVDisplayLinkCreateWithActiveCGDisplays(&displayLink) == kCVReturnSuccess && displayLink != nullptr) {
+    // CVDisplayLink drives frame pacing. NSView.displayLink (CADisplayLink)
+    // was tried here but broke atomic resize: with a view-owned display link
+    // AppKit stops servicing the layer's synchronous display pass inside the
+    // resize commit, so the new-size surface lands a tick after the bounds
+    // change and the old surface flashes at the new size. screenChanged()
+    // retargets this link across displays.
+    if (CVDisplayLinkCreateWithActiveCGDisplays(&displayLink) == kCVReturnSuccess && displayLink != nullptr) {
         displayLinkTarget = [PltDisplayLinkTarget new];
         displayLinkTarget->gate.attach(this);
         displayLinkContext = (__bridge_retained void*)(displayLinkTarget);
@@ -997,17 +1160,10 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
 }
 
 WindowImpl::~WindowImpl() {
-    while (clipboardOperations != nullptr) {
-        clipboardOperations->cancel();
-    }
     if (displayLinkTarget != nil) {
         displayLinkTarget->gate.detach();
     }
     stopDisplayLink();
-    if (caDisplayLink != nil) {
-        [caDisplayLink invalidate];
-        caDisplayLink = nil;
-    }
     if (displayLink != nullptr) {
         CVDisplayLinkRelease(displayLink);
     }
@@ -1016,7 +1172,6 @@ WindowImpl::~WindowImpl() {
     }
     window.delegate = nil;
     view.owner = nullptr;
-    ((PltRootLayer*)(view.layer)).owner = nullptr;
     delegate.owner = nullptr;
     [window orderOut:nil];
 }
@@ -1037,46 +1192,37 @@ void WindowImpl::requestFrame() {
         return;
     }
     frameRequested = true;
-    if (caDisplayLink != nil) {
-        caDisplayLink.paused = NO;
-        return;
+    startDisplayLink();
+}
+
+void WindowImpl::startDisplayLink() {
+    idleFrames = 0;
+    if (displayLink != nullptr && !CVDisplayLinkIsRunning(displayLink)) {
+        CVDisplayLinkStart(displayLink);
     }
-    if (displayLink != nullptr) {
-        if (!CVDisplayLinkIsRunning(displayLink) && CVDisplayLinkStart(displayLink) == kCVReturnSuccess) {
-            return;
-        }
-        if (CVDisplayLinkIsRunning(displayLink)) {
-            return;
-        }
-    }
-    layerFrameRequested = true;
-    [view.layer setNeedsDisplay];
 }
 
 void WindowImpl::draw() {
     if (!frameRequested || frame == nullptr) {
-        stopDisplayLink();
+        // Idle frames coast for a while before the link stops. Starting
+        // one costs a thread wake and a sync to the display, and a
+        // terminal redraws in bursts paced by the user - a full-screen
+        // TUI repaints once per keystroke - so stopping between them
+        // made every repaint pay that price on its way to the glass.
+        // Frames arriving faster than the refresh never noticed, which
+        // is why dragging a scrollbar felt nothing like scrolling an
+        // application.
+        if (++idleFrames >= idleFramesBeforeStop) {
+            stopDisplayLink();
+        }
         return;
     }
+    idleFrames = 0;
     frameRequested = false;
     frame->frame(info());
-    if (!frameRequested) {
-        stopDisplayLink();
-    }
-}
-
-void WindowImpl::fallbackDraw() {
-    if (!layerFrameRequested) {
-        return;
-    }
-    layerFrameRequested = false;
-    draw();
 }
 
 void WindowImpl::stopDisplayLink() {
-    if (caDisplayLink != nil) {
-        caDisplayLink.paused = YES;
-    }
     if (displayLink != nullptr && CVDisplayLinkIsRunning(displayLink)) {
         CVDisplayLinkStop(displayLink);
     }
@@ -1130,8 +1276,25 @@ void WindowImpl::requestFullscreen(bool value) {
 
 void WindowImpl::requestResize(u32 width, u32 height) {
     const CGFloat scale = window.backingScaleFactor;
-    NSSize size = NSMakeSize(max(1u, width) / scale, max(1u, height) / scale);
-    [window setContentSize:size];
+    const NSSize size = NSMakeSize(max(1u, width) / scale, max(1u, height) / scale);
+    NSWindow* const target = window;
+    // Asynchronous, like every request*. -setContentSize: posts windowDidResize
+    // synchronously, so applying it inline would re-enter the frame callback: a
+    // font or content-scale change resizes the window from inside frame(), and a
+    // synchronous resize path would then recurse. Defer it, so the window system
+    // delivers a fresh frame() with the new size instead of recursing.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // A zoom or a fullscreen transition may have taken the window over
+        // while this waited: entering either is synchronous, changing the
+        // frame of a zoomed window un-zooms it, and a resize computed before
+        // the transition would tear the new state right back down (issue
+        // 118). Such a window is not ours to size; drop the stale request
+        // and let the next frame reflow the grid over the pixels it has.
+        if ((target.styleMask & NSWindowStyleMaskFullScreen) != 0 || [target isZoomed]) {
+            return;
+        }
+        [target setContentSize:size];
+    });
 }
 
 void WindowImpl::requestMinimumSize(u32 width, u32 height) {
@@ -1150,6 +1313,10 @@ void WindowImpl::requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 bas
 void WindowImpl::applySizeConstraints() {
     const CGFloat scale = window.backingScaleFactor;
     window.contentMinSize = NSMakeSize(minimumWidth / scale, minimumHeight / scale);
+}
+
+bool WindowImpl::inLiveResize() const {
+    return view != nil && view.inLiveResize;
 }
 
 WindowInfo WindowImpl::info() const {
@@ -1186,46 +1353,30 @@ DropOffer* CocoaDrop::what() {
     return view;
 }
 
-void CocoaDrop::read(StringView mime, ClipboardRead& read) {
-    if (taken) {
-        read.done(false);
-        return;
-    }
+Input* CocoaDrop::read(StringView mime) {
+    Buffer content;
+    bool* flag = nullptr;
+    const bool first = !taken;
     taken = true;
-    if (view->files && mime == uriListMime) {
+    if (first && view->files && mime == uriListMime) {
         NSArray<NSURL*>* const urls = [pasteboard readObjectsForClasses:@[ [NSURL class] ] options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
-        Buffer list;
         for (NSURL* url in urls) {
             NSData* const encoded = [url.absoluteString dataUsingEncoding:NSUTF8StringEncoding];
             if (encoded != nil && encoded.length != 0) {
-                list.append(encoded.bytes, encoded.length);
-                list.append("\r\n", 2);
+                content.append(encoded.bytes, encoded.length);
+                content.append("\r\n", 2);
             }
         }
-        if (list.empty()) {
-            read.done(false);
-            return;
-        }
-        success = read.data(StringView(list));
-        read.done(success);
-        return;
-    }
-    if (view->text && mime == utf8Mime) {
+        flag = content.empty() ? nullptr : &drained;
+    } else if (first && view->text && mime == utf8Mime) {
         NSString* const value = [pasteboard stringForType:NSPasteboardTypeString];
         NSData* const data = value == nil ? nil : [value dataUsingEncoding:NSUTF8StringEncoding];
-        if (data == nil) {
-            read.done(false);
-            return;
+        if (data != nil) {
+            content.append(data.bytes, data.length);
+            flag = &drained;
         }
-        bool accepted = true;
-        if (data.length != 0) {
-            accepted = read.data(StringView((const u8*)(data.bytes), data.length));
-        }
-        success = accepted;
-        read.done(accepted);
-        return;
     }
-    read.done(false);
+    return window->platform.allocator_->make<CocoaStreamInput>(window->platform.allocator_, static_cast<Buffer&&>(content), flag);
 }
 
 NSDragOperation WindowImpl::dragOver(id<NSDraggingInfo> sender) {
@@ -1267,10 +1418,11 @@ BOOL WindowImpl::performDrop(id<NSDraggingInfo> sender) {
     offer.text = [pasteboard availableTypeFromArray:@[ NSPasteboardTypeString ]] != nil;
     offer.files = [pasteboard canReadObjectForClasses:@[ [NSURL class] ] options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
     CocoaDrop drop;
+    drop.window = this;
     drop.view = &offer;
     drop.pasteboard = pasteboard;
     dropTarget->dropped(drop);
-    return drop.success ? YES : NO;
+    return drop.drained ? YES : NO;
 }
 
 void WindowImpl::writePasteboard(NSPasteboard* pasteboard, StringView content) {
@@ -1287,48 +1439,71 @@ Clipboard* WindowImpl::secondary() {
     return &generalPasteboard;
 }
 
-void ClipboardImpl::read(ClipboardRead& sink) {
-    const ClipboardOperationKind kind = primary ? ClipboardOperationKind::ReadPrimary : ClipboardOperationKind::ReadClipboard;
-    window->platform.allocator_->make<ClipboardOperation>(*window, kind, &sink, StringView());
+CocoaStreamInput::CocoaStreamInput(SmallObjAllocator* allocator_, Buffer&& content_, bool* drained_)
+    : allocator(allocator_)
+    , content(static_cast<Buffer&&>(content_))
+    , drained(drained_)
+{
 }
 
-void ClipboardImpl::write(StringView content) {
-    const ClipboardOperationKind kind = primary ? ClipboardOperationKind::WritePrimary : ClipboardOperationKind::WriteClipboard;
-    window->platform.allocator_->make<ClipboardOperation>(*window, kind, nullptr, content);
+CocoaStreamInput::~CocoaStreamInput() noexcept {
+    if (drained != nullptr) {
+        *drained = offset == content.length();
+    }
 }
 
-bool ClipboardImpl::readAll(Buffer& content) {
+void CocoaStreamInput::operator delete(CocoaStreamInput* input, std::destroying_delete_t) noexcept {
+    SmallObjAllocator* const owner = input->allocator;
+    owner->release(input);
+}
+
+size_t CocoaStreamInput::readImpl(void* data, size_t len) {
+    const size_t count = min(len, content.length() - offset);
+    memcpy(data, (const u8*)(content.data()) + offset, count);
+    offset += count;
+    return count;
+}
+
+CocoaStreamOutput::CocoaStreamOutput(WindowImpl* window_, bool primary_)
+    : window(window_)
+    , primary(primary_)
+{
+}
+
+void CocoaStreamOutput::operator delete(CocoaStreamOutput* output, std::destroying_delete_t) noexcept {
+    SmallObjAllocator* const owner = output->window->platform.allocator_;
+    owner->release(output);
+}
+
+size_t CocoaStreamOutput::writeImpl(const void* data, size_t size) {
+    accumulated.append(data, size);
+    return size;
+}
+
+void CocoaStreamOutput::finishImpl() {
+    if (finished) {
+        return;
+    }
+    finished = true;
+    NSPasteboard* const pasteboard = primary ? [NSPasteboard pasteboardWithName:NSPasteboardNameFind] : [NSPasteboard generalPasteboard];
+    window->writePasteboard(pasteboard, StringView(accumulated));
+}
+
+Input* ClipboardImpl::read() {
     // The pasteboard is synchronous: the payload is already materialized by
     // the system, so no fiber blocking is involved.
     NSPasteboard* const pasteboard = primary ? [NSPasteboard pasteboardWithName:NSPasteboardNameFind] : [NSPasteboard generalPasteboard];
     NSString* const value = [pasteboard stringForType:NSPasteboardTypeString];
     NSData* const data = value == nil ? nil : [value dataUsingEncoding:NSUTF8StringEncoding];
-    if (data == nil) {
-        return false;
+    Buffer content;
+    if (data != nil) {
+        content.append(data.bytes, data.length);
     }
-    content.append(data.bytes, data.length);
-    return true;
+    return window->platform.allocator_->make<CocoaStreamInput>(window->platform.allocator_, static_cast<Buffer&&>(content), nullptr);
 }
 
-void ClipboardImpl::cancel(ClipboardRead& sink) {
-    for (ClipboardOperation* operation = window->clipboardOperations; operation != nullptr;) {
-        ClipboardOperation* const next = operation->next;
-        if (operation->read == &sink) {
-            operation->cancel();
-        }
-        operation = next;
-    }
-}
-
-void WindowImpl::removeClipboardOperation(ClipboardOperation& operation) {
-    ClipboardOperation** current = &clipboardOperations;
-    while (*current != nullptr) {
-        if (*current == &operation) {
-            *current = operation.next;
-            return;
-        }
-        current = &(*current)->next;
-    }
+Output* ClipboardImpl::write() {
+    return window->platform.allocator_->make<CocoaStreamOutput>(window, primary);
 }
 
 void WindowImpl::requestPointerIcon(PointerIcon icon) {
@@ -1347,11 +1522,12 @@ void WindowImpl::requestOpenUri(StringView uri) {
 }
 
 RenderContext WindowImpl::renderContext() const {
-    PltRootLayer* const layer = (PltRootLayer*)(view.layer);
     return {
         .backend = RenderBackend::Cocoa,
-        .connection = (__bridge void*)(layer),
-        .window = nullptr,
+        .connection = (__bridge void*)(view.layer),
+        // The native window, for a client that builds its own chrome on
+        // AppKit; the platform stays out of whatever it does there.
+        .window = (__bridge void*)(window),
     };
 }
 
@@ -1363,17 +1539,31 @@ void WindowImpl::close() {
 
 void WindowImpl::resized() {
     applySizeConstraints();
-    PltRootLayer* const layer = (PltRootLayer*)(view.layer);
-    layer.contentsScale = window.backingScaleFactor;
-    requestFrame();
-    layerFrameRequested = true;
+    ((CAMetalLayer*)(view.layer)).contentsScale = window.backingScaleFactor;
+    // Mark the layer for display; CoreAnimation then calls displayLayer:, which
+    // renders the frame (synchronously and in this transaction during a live
+    // resize). needsDisplayOnBoundsChange already does this for a bounds change,
+    // but a backing-property change (scale) reaches resized() too.
     [view.layer setNeedsDisplay];
 }
 
+void WindowImpl::resizeFrame() {
+    // A frame the window system asked for during layout. Render synchronously in
+    // the current (resize) transaction so bounds and contents commit together.
+    // Stop the display link for this frame: a link tick would present in its own
+    // transaction, one step out of sync with the bounds. frame() rebuilds the
+    // vterm to the new size and renders; it never re-enters (request* are async).
+    stopDisplayLink();
+    frameRequested = false;
+    if (frame != nullptr) {
+        frame->frame(info());
+    }
+    startDisplayLink();
+}
+
 void WindowImpl::screenChanged() {
-    // The CADisplayLink from NSView tracks the view's display by itself; the
-    // CVDisplayLink fallback must be retargeted or it keeps pacing frames at
-    // the previous display's refresh rate.
+    // CVDisplayLink must be retargeted to the window's new display, or it
+    // keeps pacing frames at the previous display's refresh rate.
     if (displayLink != nullptr) {
         NSScreen* const screen = window.screen;
         NSNumber* const number = screen == nil ? nil : screen.deviceDescription[@"NSScreenNumber"];
@@ -1399,6 +1589,13 @@ NSRect WindowImpl::textInputScreenRect() const {
 }
 
 NSSize WindowImpl::willResize(NSSize frameSize) const {
+    const bool fullscreen = (window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+    const bool viewAvailable = view != nil;
+    if (cocoaResizeUsesExactProposal(fullscreen, viewAvailable, viewAvailable && view.inLiveResize)) {
+        // Fullscreen and non-interactive proposals from window managers must
+        // land exactly. Cell snapping is only for live user drags.
+        return frameSize;
+    }
     const NSRect content = [window contentRectForFrameRect:NSMakeRect(0, 0, frameSize.width, frameSize.height)];
     const CGFloat scale = window.backingScaleFactor;
     u32 width = (u32)(max(1.0, content.size.width * scale) + 0.5);
@@ -1421,7 +1618,7 @@ void WindowImpl::focused(bool value) {
     }
 }
 
-u16 WindowImpl::modifiers(NSEventModifierFlags flags) const {
+static u16 modifiers(NSEventModifierFlags flags) {
     u16 result = 0;
     if (flags & NSEventModifierFlagShift) {
         result |= InputShift;
@@ -1441,7 +1638,7 @@ u16 WindowImpl::modifiers(NSEventModifierFlags flags) const {
     return result;
 }
 
-u32 WindowImpl::firstCodepoint(NSString* string) const {
+static u32 firstCodepoint(NSString* string) {
     if (string.length == 0) {
         return 0;
     }
@@ -1452,7 +1649,7 @@ u32 WindowImpl::firstCodepoint(NSString* string) const {
     return first;
 }
 
-InputKey WindowImpl::inputKey(NSEvent* event) const {
+static InputKey inputKey(NSEvent* event) {
     switch (event.keyCode) {
         case kVK_ANSI_Keypad0:
             return InputKey::Keypad0;
@@ -1532,25 +1729,37 @@ InputKey WindowImpl::inputKey(NSEvent* event) const {
     }
 }
 
+// charactersIgnoringModifiers strips Shift and Option but not the layout:
+// on a Russian layout the V key reports CYRILLIC EM, and neither the
+// terminal bindings (Cmd+V) nor the kitty alternate-key field can match.
+// Translate the physical key through the user's ASCII-capable layout -
+// QWERTY for a Russian user, AZERTY for a French one - the way kitty and
+// iTerm2 derive their base-layout key.
+static u32 asciiBaseCodepoint(NSEvent* event) {
+    TISInputSourceRef source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
+    if (source == nullptr) {
+        return 0;
+    }
+    u32 result = 0;
+    auto layoutData = (CFDataRef)(TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData));
+    if (layoutData != nullptr) {
+        const auto* layout = (const UCKeyboardLayout*)(CFDataGetBytePtr(layoutData));
+        UInt32 deadKeys = 0;
+        UniChar characters[4];
+        UniCharCount length = 0;
+        if (UCKeyTranslate(layout, event.keyCode, kUCKeyActionDisplay, 0, LMGetKbdType(), kUCKeyTranslateNoDeadKeysBit, &deadKeys, 4, &length, characters) == noErr && length != 0) {
+            result = characters[0];
+        }
+    }
+    CFRelease(source);
+    return result;
+}
+
 void WindowImpl::key(NSEvent* event, bool pressed) {
     if (input == nullptr) {
         return;
     }
-    const InputAction action = !pressed ? InputAction::Release : (event.isARepeat ? InputAction::Repeat : InputAction::Press);
-    u16 mods = modifiers(event.modifierFlags);
-    const InputKey key = inputKey(event);
-    if (key >= InputKey::Keypad0 && key <= InputKey::KeypadDecimal) {
-        mods |= InputNumLock;
-    }
-    const u32 layout = firstCodepoint(event.characters);
-    const u32 base = firstCodepoint(event.charactersIgnoringModifiers);
-    input->key({
-        .key = key,
-        .action = action,
-        .modifiers = mods,
-        .layoutCodepoint = layout,
-        .baseCodepoint = base,
-    });
+    input->key(keyInputFromEvent(event, pressed));
 }
 
 void WindowImpl::flushInput() {
@@ -1678,16 +1887,37 @@ void WindowImpl::button(NSEvent* event, bool pressed) {
     input->flush();
 }
 
+ScrollPhase scrollPhase(NSEventPhase phase) {
+    if (phase & (NSEventPhaseCancelled | NSEventPhaseMayBegin)) {
+        return phase & NSEventPhaseCancelled ? ScrollPhase::Cancel : ScrollPhase::Begin;
+    }
+    if (phase & NSEventPhaseBegan) {
+        return ScrollPhase::Begin;
+    }
+    if (phase & (NSEventPhaseChanged | NSEventPhaseStationary)) {
+        return ScrollPhase::Update;
+    }
+    if (phase & NSEventPhaseEnded) {
+        return ScrollPhase::End;
+    }
+    return ScrollPhase::None;
+}
+
 void WindowImpl::scroll(NSEvent* event) {
     if (input != nullptr) {
         const NSPoint point = pointerPosition(event);
         const double scale = event.hasPreciseScrollingDeltas ? 0.1 : 1.0;
+        const bool momentum = event.momentumPhase != NSEventPhaseNone;
         input->scroll({
             .x = event.scrollingDeltaX * scale,
             .y = event.scrollingDeltaY * scale,
             .pixelX = (int)(point.x),
             .pixelY = (int)(point.y),
             .modifiers = modifiers(event.modifierFlags),
+            .phase = scrollPhase(momentum ? event.momentumPhase : event.phase),
+            .precise = event.hasPreciseScrollingDeltas,
+            .momentum = momentum,
+            .time = event.timestamp,
         });
         input->flush();
     }
@@ -1712,8 +1942,8 @@ void cocoaFrameImpl(void* owner) {
     ((WindowImpl*)(owner))->draw();
 }
 
-void cocoaFallbackFrameImpl(void* owner) {
-    ((WindowImpl*)(owner))->fallbackDraw();
+void cocoaDisplayLayerImpl(void* owner) {
+    ((WindowImpl*)(owner))->resizeFrame();
 }
 
 void cocoaInvalidateImpl(void* owner) {
@@ -1742,7 +1972,7 @@ void cocoaKeyImpl(void* owner, NSEvent* event, bool pressed) {
 
 void cocoaTextImpl(void* owner, NSString* text, NSEventModifierFlags flags) {
     WindowImpl* const window = (WindowImpl*)(owner);
-    window->emitText(text, window->modifiers(flags));
+    window->emitText(text, modifiers(flags));
 }
 
 void cocoaFlushInputImpl(void* owner) {
@@ -1792,8 +2022,76 @@ void cocoaFileDescriptorReady(CFFileDescriptorRef descriptor, CFOptionFlags type
     ((PollerImpl*)(owner))->descriptorReady(descriptor);
 }
 
+void cocoaWakeReady(CFMachPortRef, void*, CFIndex, void* owner) {
+    ((MachLoopWake*)(owner))->callback.ready();
+}
+
 void cocoaTimerReady(CFRunLoopTimerRef, void* owner) {
     ((PollerImpl*)(owner))->dispatchTimers();
+}
+
+KeyInput plt::keyInputFromEvent(NSEvent* event, bool pressed) {
+    const InputAction action = !pressed ? InputAction::Release : (event.isARepeat ? InputAction::Repeat : InputAction::Press);
+    u16 mods = modifiers(event.modifierFlags);
+    const InputKey key = inputKey(event);
+    if (key >= InputKey::Keypad0 && key <= InputKey::KeypadDecimal) {
+        mods |= InputNumLock;
+    }
+    u32 layout = firstCodepoint(event.characters);
+    u32 shifted = 0;
+    const u32 rawBase = firstCodepoint(event.charactersIgnoringModifiers);
+    u32 base = rawBase;
+    // This frontend always exposes Option as the terminal Alt modifier.  Its
+    // composed text (Option+F => ƒ, or an empty dead-key string) is therefore
+    // not the key identity: translate the event without Option, while keeping
+    // Alt in `mods`.  Native Option text, if it is ever made configurable,
+    // must instead arrive through the text-input path with no Alt modifier.
+    if (key == InputKey::Printable && (mods & InputAlt) && rawBase >= 0x20) {
+        layout = rawBase;
+    }
+    if (key == InputKey::Printable && (mods & InputShift)) {
+        // charactersIgnoringModifiers deliberately keeps Shift.  Ask AppKit
+        // for the two active-layout levels explicitly, so Shift+A and
+        // Shift+5 retain both the unshifted key and the produced alternate
+        // on key-up as well as key-down.
+        const u32 unshifted = firstCodepoint(
+            [event charactersByApplyingModifiers:0]
+        );
+        if (unshifted != 0) {
+            layout = unshifted;
+        }
+        shifted = firstCodepoint(
+            [event charactersByApplyingModifiers:NSEventModifierFlagShift]
+        );
+        if (shifted == 0) {
+            shifted = firstCodepoint(event.characters);
+        }
+    }
+    if (key == InputKey::Printable && (base >= 0x80 || (mods & InputShift))) {
+        const u32 ascii = asciiBaseCodepoint(event);
+        if (ascii >= 0x20 && ascii < 0x7f) {
+            base = ascii;
+        }
+    }
+    // Cocoa folds Control into characters: Ctrl+B reports STX, where xkbcommon
+    // reports 'b'. A C0 control is never a layout key, and the kitty key field
+    // needs the layout one - reporting 2 instead of 98 kills every multiplexer
+    // prefix. The recovery restores the unfolded active-layout key - the raw
+    // charactersIgnoringModifiers, before the ASCII correction - so a Russian
+    // Ctrl+B reports the active-layout letter with the Latin key in the base
+    // field, exactly like the Wayland backend's level-zero identity. The named
+    // keys carry their own codes, so only printables recover.
+    if (key == InputKey::Printable && layout < 0x20 && rawBase >= 0x20) {
+        layout = rawBase;
+    }
+    return {
+        .key = key,
+        .action = action,
+        .modifiers = mods,
+        .layoutCodepoint = layout,
+        .baseCodepoint = base,
+        .shiftedCodepoint = shifted,
+    };
 }
 
 Platform* plt::createCocoaPlatform(ObjPool& owner) {

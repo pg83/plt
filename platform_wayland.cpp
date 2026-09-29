@@ -6,7 +6,8 @@
 #include "poller.h"
 #include "window.h"
 #include "platform.h"
-#include "timer_queue.h"
+#include "loop_wake.h"
+#include "poller_loop.h"
 #include "pointer_grab.h"
 #include "xdg-shell-client-protocol.h"
 #include "viewporter-client-protocol.h"
@@ -28,7 +29,9 @@
 #include "primary-selection-unstable-v1-client-protocol-code.h"
 
 #include <std/sys/crt.h>
+#include <std/ios/input.h>
 #include <std/sym/i_map.h>
+#include <std/ios/output.h>
 #include <std/sys/throw.h>
 #include <std/alg/minmax.h>
 #include <std/lib/buffer.h>
@@ -38,6 +41,8 @@
 #include <std/mem/obj_pool.h>
 #include <std/mem/small_obj_allocator.h>
 
+#include <new>
+#include <cstring>
 #include <cerrno>
 #include <poll.h>
 #include <climits>
@@ -61,22 +66,67 @@ extern char** environ;
 
 namespace {
     struct PlatformImpl;
-    struct PollerImpl;
     struct WindowImpl;
 
-    // One live selection transfer, linked from the platform and owned by the
-    // stack of the fiber that runs it. Cancellation nulls read; the fiber
-    // checks it around every blocking point and delivery.
-    struct TransferRecord {
-        WindowImpl* window = nullptr;
-        ClipboardRead* read = nullptr;
-        TransferRecord* next = nullptr;
+    // One selection or drop payload as a pulling stream. The reader owns
+    // it: readImpl serves the local snapshot or parks on the transfer pipe,
+    // and deleting the object before end of stream cancels the transfer by
+    // closing the pipe under the source.
+    struct StreamInput final: public Input {
+        StreamInput(PlatformImpl& platform, int fd, Buffer&& local, bool* drained);
+        ~StreamInput() noexcept override;
+
+        void operator delete(StreamInput* input, std::destroying_delete_t) noexcept;
+
+        size_t readImpl(void* data, size_t len) override;
+
+        PlatformImpl& platform;
+        Buffer local;
+        size_t offset = 0;
+        int fd;
+        bool* drained;
+        bool eof = false;
+    };
+
+    // A replacement selection accumulating until finish() publishes it;
+    // deleting the object without finish() abandons the write.
+    struct StreamOutput final: public Output {
+        StreamOutput(PlatformImpl& platform, bool primary);
+
+        void operator delete(StreamOutput* output, std::destroying_delete_t) noexcept;
+
+        size_t writeImpl(const void* data, size_t size) override;
+        void finishImpl() override;
+
+        PlatformImpl& platform;
+        Buffer accumulated;
+        bool primary;
+        bool finished = false;
+    };
+
+    // One spawnable unit: the stack for a platform task fiber, recycled
+    // through the platform free list because tasks come and go with every
+    // transfer. 64K covers the deepest task, the drag session delivering a
+    // drop into the client.
+    struct TaskBlock {
+        TaskBlock* next = nullptr;
+        alignas(16) u8 stack[64 * 1024];
     };
 
     // A fiber body carved out of the platform allocator; releases itself
-    // when the fiber finishes.
+    // and recycles its stack when the fiber finishes.
     template <typename F>
     struct FiberTask;
+
+    // The permanent key-repeat fiber: the initial delay and the cadence are
+    // parkFor() waits, and any state change wakes it to re-evaluate.
+    struct RepeatBody final: public Runable {
+        explicit RepeatBody(PlatformImpl* platform);
+
+        void run() override;
+
+        PlatformImpl* platform;
+    };
 
     constexpr u32 scaleDenominator = 120;
     // Abort a selection transfer when the peer makes no progress for this
@@ -86,40 +136,6 @@ namespace {
     const StringView utf8Mime(u8"text/plain;charset=utf-8");
     const StringView plainMime(u8"text/plain");
     const StringView utf8StringMime(u8"UTF8_STRING");
-
-    struct ArmedFD {
-        PollFD fd;
-        PollCallback* callback = nullptr;
-        u64 generation = 0;
-    };
-
-    struct ReadyFD {
-        PollFD fd;
-        PollCallback* callback = nullptr;
-        u64 generation = 0;
-    };
-
-    struct PollerImpl final: public Poller {
-        explicit PollerImpl(ObjPool& owner);
-
-        void arm(PollFD fd, PollCallback& callback) override;
-        void disarm(int fd) override;
-        void timeout(u64 microseconds, TimerCallback& callback) override;
-        void deadline(u64 monotonicMicroseconds, TimerCallback& callback) override;
-        void cancel(TimerCallback& callback) override;
-
-        void wait(u64 monotonicDeadline);
-        void dispatchTimers();
-        u64 nextDeadline() const;
-
-        IntMap<ArmedFD> armed;
-        Vector<struct pollfd> pollFDs;
-        Vector<ReadyFD> readyFDs;
-        TimerQueue timers;
-        u64 nextGeneration = 1;
-
-        u64 allocateGeneration();
-    };
 
     struct Offer {
         struct wl_data_offer* data = nullptr;
@@ -150,11 +166,13 @@ namespace {
 
     struct DndDrop final: public Drop {
         DropOffer* what() override;
-        void read(StringView mime, ClipboardRead& read) override;
+        Input* read(StringView mime) override;
 
+        PlatformImpl* platform = nullptr;
         DndOfferView* view = nullptr;
-        const char* chosen = nullptr;
-        ClipboardRead* consumer = nullptr;
+        struct wl_data_offer* offer = nullptr;
+        bool started = false;
+        bool drained = false;
     };
 
     // One drag session, owned by the stack of its fiber. The platform points
@@ -173,10 +191,8 @@ namespace {
     };
 
     struct ClipboardImpl final: public Clipboard {
-        void read(ClipboardRead& read) override;
-        void write(StringView content) override;
-        void cancel(ClipboardRead& read) override;
-        bool readAll(Buffer& content) override;
+        Input* read() override;
+        Output* write() override;
 
         WindowImpl* window = nullptr;
         bool primary = false;
@@ -202,6 +218,7 @@ namespace {
         void requestMinimumSize(u32 width, u32 height) override;
         void requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 baseHeight) override;
         WindowInfo info() const override;
+        bool inLiveResize() const override;
         Clipboard* primary() override;
         Clipboard* secondary() override;
         void requestPointerIcon(PointerIcon icon) override;
@@ -215,8 +232,10 @@ namespace {
         void pointerLeft();
         void pointerMoved(wl_fixed_t x, wl_fixed_t y);
         void pointerButton(u32 time, u32 button, u32 state);
-        void pointerAxis(u32 axis, wl_fixed_t value);
+        void pointerAxis(u32 time, u32 axis, wl_fixed_t value);
         void pointerAxisSteps(u32 axis, i32 value120);
+        void pointerAxisSource(u32 source);
+        void pointerAxisStop(u32 time);
         void pointerFrame();
         void frameReady(struct wl_callback* callback);
         void cancelFrame();
@@ -227,7 +246,6 @@ namespace {
         i32 logicalCoordinate(i32 pixels) const;
         u32 snappedLogical(u32 suggested, u32 unit, u32 base) const;
         void setLogicalSize(u32 width, u32 height);
-        void receive(Offer& offer, bool primary, ClipboardRead& read);
 
         PlatformImpl& platform;
         InputSink* input = nullptr;
@@ -262,6 +280,10 @@ namespace {
         double scrollY = 0;
         i32 scrollStepsX = 0;
         i32 scrollStepsY = 0;
+        double scrollTime = 0;
+        ScrollPhase scrollPhase = ScrollPhase::None;
+        bool scrollPrecise = false;
+        bool scrollGestureActive = false;
         i32 textInputX = 0;
         i32 textInputY = 0;
         u32 textInputWidth = 0;
@@ -288,6 +310,7 @@ namespace {
         ~PlatformImpl();
 
         Window* createWindow(ObjPool& owner, const WindowOptions& options) override;
+        LoopWake* createLoopWake(ObjPool& owner, TimerCallback& callback) override;
         Poller* poller() override;
         Scheduler* scheduler() override;
         void run() override;
@@ -301,8 +324,6 @@ namespace {
         void armDisplay(bool write);
         bool flushDisplay();
         void dispatch();
-        void dispatchTimeouts();
-        u64 nextDeadline() const;
         void serial(u32 value);
         void keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool repeated = false);
         bool consumeEnterPressedKey(u32 key, u32 state);
@@ -310,6 +331,8 @@ namespace {
         void stopRepeat();
         u16 modifiers() const;
         InputKey inputKey(xkb_keysym_t symbol) const;
+        u32 keymapCodepoint(xkb_keycode_t key, xkb_layout_index_t layout) const;
+        u32 layoutCodepoint(xkb_keycode_t key) const;
         u32 baseCodepoint(xkb_keycode_t key) const;
         bool composing() const;
         size_t composeFeed(xkb_keysym_t symbol, u32 codepoint, u32* codepoints, size_t capacity);
@@ -326,15 +349,14 @@ namespace {
         void setCursor(WindowImpl& window);
         void activate(WindowImpl& window);
         void writeSelection(int fd, StringView content);
-        void readSelection(int fd, WindowImpl& window, ClipboardRead& read);
-        void completeSelection(WindowImpl& window, ClipboardRead& read, StringView content, bool success);
-        void cancelSelection(WindowImpl& window, ClipboardRead* read);
-        void removeRecord(TransferRecord& record);
 
         template <typename F>
         void spawnTask(F body) {
-            scheduler_->spawn(*allocator_->make<FiberTask<F>>(*this, body));
+            TaskBlock* const block = takeTaskBlock();
+            scheduler_->spawn(*allocator_->make<FiberTask<F>>(*this, block, body), block->stack, sizeof(block->stack));
         }
+        TaskBlock* takeTaskBlock();
+        void recycleTaskBlock(TaskBlock* block);
         void enableTextInput(WindowImpl& window);
         void disableTextInput();
         void textInputEntered(struct wl_surface* surface);
@@ -342,9 +364,12 @@ namespace {
         void textInputDone();
         void textInputRectChanged(WindowImpl& window, bool commit);
 
-        PollerImpl* poller_ = nullptr;
+        PollerLoop* poller_ = nullptr;
+        PollWaiter displayWaiter_;
+        ObjPool* owner_ = nullptr;
         SmallObjAllocator* allocator_ = nullptr;
         Scheduler* scheduler_ = nullptr;
+        TaskBlock* taskBlocks_ = nullptr;
         struct wl_display* display = nullptr;
         struct wl_registry* registry = nullptr;
         struct wl_compositor* compositor = nullptr;
@@ -390,7 +415,9 @@ namespace {
         u32 repeatTime = 0;
         u32 repeatRate = 0;
         u32 repeatDelay = 0;
-        u64 repeatDeadline = 0;
+        RepeatBody repeatBody_{this};
+        Fiber* repeatFiber_ = nullptr;
+        alignas(16) u8 repeatStack_[lightFiberStack];
         u32 latestSerial = 0;
         u32 pointerEnterSerial = 0;
         u32 seatName = 0;
@@ -405,28 +432,49 @@ namespace {
         DndSession* dndSession = nullptr;
         Buffer clipboardContent;
         Buffer primaryContent;
-        TransferRecord* transferRecords = nullptr;
         bool clipboardPending = false;
         bool primaryPending = false;
-        bool running = false;
+        bool stopped = false;
     };
 
     template <typename F>
     struct FiberTask final: public Runable {
-        FiberTask(PlatformImpl& platform_, F body_)
+        FiberTask(PlatformImpl& platform_, TaskBlock* block_, F body_)
             : platform(platform_)
+            , block(block_)
             , body(body_)
         {
         }
 
         void run() override {
             body();
-            platform.allocator_->release(this);
+            PlatformImpl& owner = platform;
+            TaskBlock* const spent = block;
+            owner.allocator_->release(this);
+            // Still running on spent's stack: safe, nothing can reuse it
+            // before the final cooperative switch out.
+            owner.recycleTaskBlock(spent);
         }
 
         PlatformImpl& platform;
+        TaskBlock* block;
         F body;
     };
+
+    TaskBlock* PlatformImpl::takeTaskBlock() {
+        TaskBlock* block = taskBlocks_;
+        if (block != nullptr) {
+            taskBlocks_ = block->next;
+            block->next = nullptr;
+            return block;
+        }
+        return owner_->make<TaskBlock>();
+    }
+
+    void PlatformImpl::recycleTaskBlock(TaskBlock* block) {
+        block->next = taskBlocks_;
+        taskBlocks_ = block;
+    }
 
     bool textMime(const char* mime) {
         const StringView value(mime);
@@ -878,11 +926,28 @@ namespace {
         pointerFrameFallback(platform);
     }
 
-    void pointerAxis(void* data, struct wl_pointer*, u32, u32 axis, wl_fixed_t value) {
+    void pointerAxis(void* data, struct wl_pointer*, u32 time, u32 axis, wl_fixed_t value) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
         WindowImpl* const window = (WindowImpl*)(platform.pointerGrab.eventTarget());
         if (window != nullptr) {
-            window->pointerAxis(axis, value);
+            window->pointerAxis(time, axis, value);
+        }
+        pointerFrameFallback(platform);
+    }
+
+    void pointerAxisSource(void* data, struct wl_pointer*, u32 source) {
+        PlatformImpl& platform = *(PlatformImpl*)(data);
+        WindowImpl* const window = (WindowImpl*)(platform.pointerGrab.eventTarget());
+        if (window != nullptr) {
+            window->pointerAxisSource(source);
+        }
+    }
+
+    void pointerAxisStop(void* data, struct wl_pointer*, u32 time, u32) {
+        PlatformImpl& platform = *(PlatformImpl*)(data);
+        WindowImpl* const window = (WindowImpl*)(platform.pointerGrab.eventTarget());
+        if (window != nullptr) {
+            window->pointerAxisStop(time);
         }
         pointerFrameFallback(platform);
     }
@@ -902,17 +967,21 @@ namespace {
         .button = pointerButton,
         .axis = pointerAxis,
         .frame = pointerFrame,
-        .axis_source = [](void*, struct wl_pointer*, u32) {},
-        .axis_stop = [](void*, struct wl_pointer*, u32, u32) {},
+        .axis_source = pointerAxisSource,
+        .axis_stop = pointerAxisStop,
         .axis_discrete =
             [](void* data, struct wl_pointer* pointer, u32 axis, i32 discrete) {
         pointerAxisSteps(data, pointer, axis, discrete * 120);
     },
         .axis_value120 = pointerAxisSteps,
         .axis_relative_direction = [](void*, struct wl_pointer*, u32, u32) {},
+// Older Wayland headers (<= 1.25) have no warp event; the seat is
+// bound at version 8, so the handler is unreachable there anyway.
+#ifdef WL_POINTER_WARP_SINCE_VERSION
         .warp = [](void* data, struct wl_pointer*, wl_fixed_t x, wl_fixed_t y) {
         pointerMotion(data, nullptr, 0, x, y);
     },
+#endif
     };
 
     void seatCapabilities(void* data, struct wl_seat*, u32 capabilities) {
@@ -1258,22 +1327,36 @@ DropOffer* DndDrop::what() {
     return view;
 }
 
-void DndDrop::read(StringView mime, ClipboardRead& read) {
-    if (consumer != nullptr) {
-        // The contract allows one read per drop; a second consumer is a
-        // caller bug and is refused in place.
-        read.done(false);
-        return;
+Input* DndDrop::read(StringView mime) {
+    const char* const chosen = started ? nullptr : view->offer->offered(mime);
+    started = true;
+    int fd = -1;
+    bool* flag = nullptr;
+    if (chosen != nullptr) {
+        int pipes[2];
+        if (pipe2(pipes, O_CLOEXEC) == 0) {
+            wl_data_offer_receive(offer, chosen, pipes[1]);
+            close(pipes[1]);
+            if (platform->flushDisplay()) {
+                fd = pipes[0];
+                flag = &drained;
+            } else {
+                close(pipes[0]);
+            }
+        }
     }
-    consumer = &read;
-    chosen = view->offer->offered(mime);
+    // A refused or unstartable read is an immediately empty stream that
+    // never marks the transfer drained.
+    return platform->allocator_->make<StreamInput>(*platform, fd, Buffer(), flag);
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
-    : poller_(owner.make<PollerImpl>(owner))
+    : poller_(PollerLoop::create(owner))
 {
+    owner_ = &owner;
     allocator_ = SmallObjAllocator::create(&owner);
-    scheduler_ = Scheduler::create(owner, *allocator_, *poller_);
+    scheduler_ = Scheduler::create(owner, *poller_);
+    scheduler_->spawn(repeatBody_, repeatStack_, sizeof(repeatStack_));
     display = wl_display_connect(nullptr);
     if (display == nullptr) {
         fail(u8"wl_display_connect failed");
@@ -1311,10 +1394,7 @@ PlatformImpl::PlatformImpl(ObjPool& owner)
 }
 
 PlatformImpl::~PlatformImpl() {
-    poller_->disarm(wl_display_get_fd(display));
-    for (TransferRecord* record = transferRecords; record != nullptr; record = record->next) {
-        record->read = nullptr;
-    }
+    poller_->cancel(displayWaiter_);
     stopRepeat();
     pendingClipboardOffer.reset();
     clipboardOffer.reset();
@@ -1413,6 +1493,10 @@ Window* PlatformImpl::createWindow(ObjPool& windowOwner, const WindowOptions& op
     return windowOwner.make<WindowImpl>(*this, options);
 }
 
+LoopWake* PlatformImpl::createLoopWake(ObjPool& owner, TimerCallback& callback) {
+    return LoopWake::create(owner, *poller_, callback);
+}
+
 Poller* PlatformImpl::poller() {
     return poller_;
 }
@@ -1422,13 +1506,12 @@ Scheduler* PlatformImpl::scheduler() {
 }
 
 void PlatformImpl::armDisplay(bool write) {
-    poller_->arm(
-        {
-            .fd = wl_display_get_fd(display),
-            .flags = PollFlag::In | (write ? PollFlag::Out : 0),
-        },
-        *this
-    );
+    displayWaiter_.fd = {
+        .fd = wl_display_get_fd(display),
+        .flags = PollFlag::In | (write ? PollFlag::Out : 0),
+    };
+    displayWaiter_.callback = this;
+    poller_->arm(displayWaiter_);
 }
 
 bool PlatformImpl::flushDisplay() {
@@ -1444,7 +1527,7 @@ bool PlatformImpl::flushDisplay() {
         armDisplay(true);
         return true;
     }
-    poller_->disarm(wl_display_get_fd(display));
+    poller_->cancel(displayWaiter_);
     stop();
     return false;
 }
@@ -1455,7 +1538,23 @@ void PlatformImpl::ready(PollFD event) {
         return;
     }
     if (event.flags & PollFlag::In) {
-        if (wl_display_dispatch(display) < 0) {
+        // Never block here: a readable burst may consist entirely of
+        // events for a foreign queue (a Vulkan WSI queue, say), and
+        // wl_display_dispatch() would then sleep waiting for a default
+        // queue event, stalling the loop and every fiber behind it.
+        // Read and demultiplex, dispatch what is ours, and return; the
+        // run loop dispatches pending events before every sleep.
+        while (wl_display_prepare_read(display) != 0) {
+            if (wl_display_dispatch_pending(display) < 0) {
+                stop();
+                return;
+            }
+        }
+        if (wl_display_read_events(display) < 0) {
+            stop();
+            return;
+        }
+        if (wl_display_dispatch_pending(display) < 0) {
             stop();
             return;
         }
@@ -1581,143 +1680,33 @@ void PlatformImpl::createSelectionDevices() {
     }
 }
 
-PollerImpl::PollerImpl(ObjPool& owner)
-    : armed(ObjPool::create(&owner))
-    , timers(owner)
-{
-}
-
-u64 PollerImpl::allocateGeneration() {
-    const u64 result = nextGeneration++;
-    if (nextGeneration == 0) {
-        nextGeneration = 1;
-    }
-    return result;
-}
-
-void PollerImpl::arm(PollFD fd, PollCallback& callback) {
-    armed[fd.fd] = {
-        .fd = fd,
-        .callback = &callback,
-        .generation = allocateGeneration(),
-    };
-}
-
-void PollerImpl::disarm(int fd) {
-    armed.erase(fd);
-}
-
-void PollerImpl::timeout(u64 microseconds, TimerCallback& callback) {
-    timers.schedule(monotonicNowUs() + microseconds, callback);
-}
-
-void PollerImpl::deadline(u64 monotonicMicroseconds, TimerCallback& callback) {
-    if (monotonicMicroseconds == 0) {
-        monotonicMicroseconds = monotonicNowUs();
-    }
-    timers.schedule(monotonicMicroseconds, callback);
-}
-
-void PollerImpl::cancel(TimerCallback& callback) {
-    timers.cancel(callback);
-}
-
-u64 PollerImpl::nextDeadline() const {
-    return timers.nextDeadline();
-}
-
-void PollerImpl::dispatchTimers() {
-    timers.dispatch(monotonicNowUs());
-}
-
-void PollerImpl::wait(u64 monotonicDeadline) {
-    pollFDs.clear();
-    armed.visit([this](const ArmedFD& source) {
-        pollFDs.pushBack({
-            .fd = source.fd.fd,
-            .events = source.fd.toPollEvents(),
-            .revents = 0,
-        });
-    });
-
-    int timeoutMilliseconds = -1;
-    if (monotonicDeadline != UINT64_MAX) {
-        const u64 now = monotonicNowUs();
-        const u64 timeoutUs = monotonicDeadline > now ? monotonicDeadline - now : 0;
-        timeoutMilliseconds = (int)(min<u64>((timeoutUs + 999) / 1000, INT_MAX));
-    }
-    int result;
-    do {
-        result = ::poll(pollFDs.mutData(), pollFDs.length(), timeoutMilliseconds);
-    } while (result < 0 && errno == EINTR);
-    if (result < 0) {
-        fail(u8"poll failed");
-    }
-
-    readyFDs.clear();
-    for (size_t index = 0; index != pollFDs.length(); ++index) {
-        const struct pollfd& source = pollFDs[index];
-        ArmedFD* registration = armed.find(source.fd);
-        if (source.revents == 0 || registration == nullptr) {
-            continue;
-        }
-        readyFDs.pushBack({
-            .fd =
-                {
-                    .fd = source.fd,
-                    .flags = PollFD::fromPollEvents(source.revents),
-                },
-            .callback = registration->callback,
-            .generation = registration->generation,
-        });
-    }
-    for (const ReadyFD& ready : readyFDs) {
-        ArmedFD* const registration = armed.find(ready.fd.fd);
-        if (registration == nullptr || registration->callback != ready.callback || registration->generation != ready.generation) {
-            continue;
-        }
-        armed.erase(ready.fd.fd);
-        ready.callback->ready(ready.fd);
-    }
-    readyFDs.clear();
-}
-
-void PlatformImpl::dispatchTimeouts() {
-    const u64 now = monotonicNowUs();
-    if (repeatDeadline != 0 && now >= repeatDeadline) {
-        repeat();
-    }
-    poller_->dispatchTimers();
-}
-
-u64 PlatformImpl::nextDeadline() const {
-    return repeatDeadline == 0 ? poller_->nextDeadline() : min(repeatDeadline, poller_->nextDeadline());
-}
-
 void PlatformImpl::dispatch() {
     if (wl_display_dispatch_pending(display) < 0) {
         stop();
         return;
     }
-    dispatchTimeouts();
+    poller_->dispatchTimers();
 }
 
 void PlatformImpl::run() {
-    running = true;
-    while (running) {
+    // stopped is consumed on exit, not reset on entry: a fiber spawned
+    // before run() executes its prefix inline and may call stop() before
+    // the loop starts, and that stop must not be erased.
+    while (!stopped) {
         dispatch();
-        if (!running) {
+        if (stopped) {
             break;
         }
         if (!flushDisplay()) {
             break;
         }
-        poller_->wait(nextDeadline());
+        poller_->wait(poller_->nextDeadline());
     }
+    stopped = false;
 }
 
 void PlatformImpl::stop() {
-    running = false;
+    stopped = true;
 }
 
 u16 PlatformImpl::modifiers() const {
@@ -1914,15 +1903,24 @@ InputKey PlatformImpl::inputKey(xkb_keysym_t symbol) const {
     }
 }
 
-u32 PlatformImpl::baseCodepoint(xkb_keycode_t key) const {
+u32 PlatformImpl::keymapCodepoint(xkb_keycode_t key, xkb_layout_index_t layout) const {
     if (keymap == nullptr) {
         return 0;
     }
     const xkb_keysym_t* symbols = nullptr;
-    if (xkb_keymap_key_get_syms_by_level(keymap, key, 0, 0, &symbols) <= 0) {
+    if (xkb_keymap_key_get_syms_by_level(keymap, key, layout, 0, &symbols) <= 0) {
         return 0;
     }
     return xkb_keysym_to_utf32(symbols[0]);
+}
+
+u32 PlatformImpl::layoutCodepoint(xkb_keycode_t key) const {
+    const xkb_layout_index_t layout = xkb_state_key_get_layout(xkbState, key);
+    return layout == XKB_LAYOUT_INVALID ? 0 : keymapCodepoint(key, layout);
+}
+
+u32 PlatformImpl::baseCodepoint(xkb_keycode_t key) const {
+    return keymapCodepoint(key, 0);
 }
 
 void PlatformImpl::serial(u32 value) {
@@ -1992,7 +1990,7 @@ void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool re
     const xkb_keycode_t keycode = key + 8;
     const xkb_keysym_t symbol = xkb_state_key_get_one_sym(xkbState, keycode);
     const InputAction action = repeated ? InputAction::Repeat : (state == WL_KEYBOARD_KEY_STATE_PRESSED ? InputAction::Press : InputAction::Release);
-    const u32 codepoint = xkb_state_key_get_utf32(xkbState, keycode);
+    const u32 codepoint = xkb_keysym_to_utf32(symbol);
     u32 composed[8];
     size_t composedCount = 0;
     if (action == InputAction::Press) {
@@ -2006,8 +2004,9 @@ void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool re
         .key = inputKey(symbol),
         .action = action,
         .modifiers = activeModifiers,
-        .layoutCodepoint = composedCount != 0 ? composed[0] : codepoint,
+        .layoutCodepoint = layoutCodepoint(keycode),
         .baseCodepoint = baseCodepoint(keycode),
+        .shiftedCodepoint = activeModifiers & InputShift ? codepoint : 0,
     });
     if (action != InputAction::Release && !(activeModifiers & (InputControl | InputSuper))) {
         for (size_t index = 0; index != composedCount; ++index) {
@@ -2026,7 +2025,7 @@ void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool re
         repeatKeycode = key;
         repeatSerial = serial;
         repeatTime = time;
-        repeatDeadline = monotonicNowUs() + (u64)(repeatDelay) * 1000;
+        repeatFiber_->wake();
     } else if (!repeated && state == WL_KEYBOARD_KEY_STATE_RELEASED && repeatWindow == keyboardFocus && repeatKeycode == key) {
         stopRepeat();
     }
@@ -2038,23 +2037,44 @@ void PlatformImpl::repeat() {
         return;
     }
     keyboardKey(repeatSerial, repeatTime, repeatKeycode, WL_KEYBOARD_KEY_STATE_PRESSED, true);
-    if (repeatDeadline == 0) {
-        return;
-    }
-    // Advance from the previous deadline so the repeat rate does not drift,
-    // but never schedule into the past after a stall.
-    const u64 interval = 1'000'000 / repeatRate;
-    repeatDeadline += interval;
-    const u64 now = monotonicNowUs();
-    if (repeatDeadline <= now) {
-        repeatDeadline = now + interval;
-    }
 }
 
 void PlatformImpl::stopRepeat() {
     repeatWindow = nullptr;
     repeatKeycode = 0;
-    repeatDeadline = 0;
+    if (repeatFiber_ != nullptr) {
+        repeatFiber_->wake();
+    }
+}
+
+RepeatBody::RepeatBody(PlatformImpl* platform_)
+    : platform(platform_)
+{
+}
+
+void RepeatBody::run() {
+    PlatformImpl& impl = *platform;
+    Fiber* const self = impl.scheduler_->current();
+    impl.repeatFiber_ = self;
+    for (;;) {
+        while (impl.repeatKeycode == 0) {
+            self->park();
+        }
+        // The initial delay; a wake means the state changed and the outer
+        // loop re-evaluates from scratch.
+        if (self->parkFor((u64)(impl.repeatDelay) * 1000)) {
+            continue;
+        }
+        while (impl.repeatKeycode != 0 && impl.repeatRate != 0) {
+            impl.repeat();
+            if (impl.repeatKeycode == 0 || impl.repeatRate == 0) {
+                break;
+            }
+            if (self->parkFor(1'000'000 / impl.repeatRate)) {
+                break;
+            }
+        }
+    }
 }
 
 void PlatformImpl::writeSelection(int fd, StringView content) {
@@ -2081,90 +2101,105 @@ void PlatformImpl::writeSelection(int fd, StringView content) {
     });
 }
 
-void PlatformImpl::readSelection(int fd, WindowImpl& window, ClipboardRead& read) {
-    spawnTask([this, fd, window = &window, target = &read] {
-        TransferRecord record;
-        record.window = window;
-        record.read = target;
-        record.next = transferRecords;
-        transferRecords = &record;
+StreamInput::StreamInput(PlatformImpl& platform_, int fd_, Buffer&& local_, bool* drained_)
+    : platform(platform_)
+    , local(static_cast<Buffer&&>(local_))
+    , fd(fd_)
+    , drained(drained_) {
+    if (fd >= 0) {
         const int flags = fcntl(fd, F_GETFL, 0);
-        const bool broken = flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0;
-        bool success = false;
-        if (broken) {
-            // The consumer saw readSelection return; completion must stay
-            // asynchronous even when the descriptor is unusable.
-            scheduler_->yield();
-        } else {
-            while (record.read != nullptr) {
-                // The watchdog: a peer that stops making progress for this
-                // long aborts the transfer instead of pinning the pipe.
-                if (!scheduler_->awaitReadable(fd, selectionTransferTimeoutUs)) {
-                    break;
-                }
-                if (record.read == nullptr) {
-                    break;
-                }
-                u8 bytes[64 * 1024];
-                const ssize_t count = ::read(fd, bytes, sizeof(bytes));
-                if (count > 0) {
-                    if (!record.read->data(StringView(bytes, (size_t)(count)))) {
-                        break;
-                    }
-                } else if (count == 0) {
-                    success = true;
-                    break;
-                } else if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    break;
-                }
-            }
+        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+            close(fd);
+            fd = -1;
         }
+    } else {
+        eof = local.empty();
+    }
+}
+
+StreamInput::~StreamInput() noexcept {
+    if (fd >= 0) {
         close(fd);
-        removeRecord(record);
-        if (record.read != nullptr) {
-            ClipboardRead* const consumer = record.read;
-            record.read = nullptr;
-            consumer->done(success);
-        }
-    });
+        fd = -1;
+    }
+    if (drained != nullptr) {
+        *drained = eof;
+    }
 }
 
-void PlatformImpl::completeSelection(WindowImpl& window, ClipboardRead& read, StringView content, bool success) {
-    spawnTask([this, window = &window, target = &read, owned = Buffer(content), success] {
-        TransferRecord record;
-        record.window = window;
-        record.read = target;
-        record.next = transferRecords;
-        transferRecords = &record;
-        scheduler_->yield();
-        bool accepted = success;
-        if (record.read != nullptr && accepted && !owned.empty()) {
-            accepted = record.read->data(StringView(owned));
-        }
-        removeRecord(record);
-        if (record.read != nullptr) {
-            ClipboardRead* const consumer = record.read;
-            record.read = nullptr;
-            consumer->done(accepted);
-        }
-    });
+void StreamInput::operator delete(StreamInput* input, std::destroying_delete_t) noexcept {
+    SmallObjAllocator* const allocator = input->platform.allocator_;
+    allocator->release(input);
 }
 
-void PlatformImpl::cancelSelection(WindowImpl& window, ClipboardRead* read) {
-    for (TransferRecord* record = transferRecords; record != nullptr; record = record->next) {
-        if (record->window == &window && (read == nullptr || record->read == read)) {
-            record->read = nullptr;
+size_t StreamInput::readImpl(void* data, size_t len) {
+    if (offset != local.length()) {
+        const size_t count = min(len, local.length() - offset);
+        memcpy(data, (const u8*)(local.data()) + offset, count);
+        offset += count;
+        if (offset == local.length()) {
+            eof = true;
+        }
+        return count;
+    }
+    if (fd < 0) {
+        eof = eof || local.empty();
+        return 0;
+    }
+    for (;;) {
+        const ssize_t count = ::read(fd, data, len);
+        if (count > 0) {
+            return (size_t)(count);
+        }
+        if (count == 0) {
+            eof = true;
+            close(fd);
+            fd = -1;
+            return 0;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            close(fd);
+            fd = -1;
+            return 0;
+        }
+        // The watchdog: a peer that stops making progress for this long
+        // aborts the transfer instead of pinning the pipe.
+        if (platform.scheduler_->current() == nullptr || !platform.scheduler_->awaitReadable(fd, selectionTransferTimeoutUs)) {
+            close(fd);
+            fd = -1;
+            return 0;
         }
     }
 }
 
-void PlatformImpl::removeRecord(TransferRecord& record) {
-    TransferRecord** current = &transferRecords;
-    while (*current != nullptr && *current != &record) {
-        current = &(*current)->next;
+StreamOutput::StreamOutput(PlatformImpl& platform_, bool primary_)
+    : platform(platform_)
+    , primary(primary_)
+{
+}
+
+void StreamOutput::operator delete(StreamOutput* output, std::destroying_delete_t) noexcept {
+    SmallObjAllocator* const allocator = output->platform.allocator_;
+    allocator->release(output);
+}
+
+size_t StreamOutput::writeImpl(const void* data, size_t size) {
+    accumulated.append(data, size);
+    return size;
+}
+
+void StreamOutput::finishImpl() {
+    if (finished) {
+        return;
     }
-    if (*current == &record) {
-        *current = record.next;
+    finished = true;
+    if (primary) {
+        platform.setPrimary(StringView(accumulated));
+    } else {
+        platform.setClipboard(StringView(accumulated));
     }
 }
 
@@ -2269,74 +2304,20 @@ void PlatformImpl::runDropTransfer(DndSession& session) {
     }
     DndOfferView view;
     view.offer = &session.offer;
-    DndDrop drop;
-    drop.view = &view;
-    window->dropTarget->dropped(drop);
-    if (drop.consumer == nullptr) {
-        return;
-    }
-    TransferRecord record;
-    record.window = window;
-    record.read = drop.consumer;
-    record.next = transferRecords;
-    transferRecords = &record;
     struct wl_data_offer* const taken = session.offer.data;
     session.offer.data = nullptr;
-    bool success = false;
-    int fd = -1;
-    if (drop.chosen != nullptr) {
-        int pipes[2];
-        if (pipe2(pipes, O_CLOEXEC) == 0) {
-            wl_data_offer_receive(taken, drop.chosen, pipes[1]);
-            close(pipes[1]);
-            if (flushDisplay()) {
-                fd = pipes[0];
-            } else {
-                close(pipes[0]);
-            }
-        }
-    }
-    if (fd < 0) {
-        // The consumer saw read() return; completion stays asynchronous
-        // even when the transfer could not start.
-        scheduler_->yield();
-    } else {
-        const int flags = fcntl(fd, F_GETFL, 0);
-        if (flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0) {
-            while (record.read != nullptr) {
-                if (!scheduler_->awaitReadable(fd, selectionTransferTimeoutUs)) {
-                    break;
-                }
-                if (record.read == nullptr) {
-                    break;
-                }
-                u8 bytes[64 * 1024];
-                const ssize_t count = ::read(fd, bytes, sizeof(bytes));
-                if (count > 0) {
-                    if (!record.read->data(StringView(bytes, (size_t)(count)))) {
-                        break;
-                    }
-                } else if (count == 0) {
-                    success = true;
-                    break;
-                } else if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    break;
-                }
-            }
-        }
-        close(fd);
-    }
-    if (success && wl_data_offer_get_version(taken) >= WL_DATA_OFFER_FINISH_SINCE_VERSION) {
+    DndDrop drop;
+    drop.platform = this;
+    drop.view = &view;
+    drop.offer = taken;
+    // The target pulls the payload inline on this fiber; drained flips only
+    // when its stream reached end of payload before being deleted.
+    window->dropTarget->dropped(drop);
+    if (drop.drained && wl_data_offer_get_version(taken) >= WL_DATA_OFFER_FINISH_SINCE_VERSION) {
         wl_data_offer_finish(taken);
     }
     wl_data_offer_destroy(taken);
     flushDisplay();
-    removeRecord(record);
-    if (record.read != nullptr) {
-        ClipboardRead* const consumer = record.read;
-        record.read = nullptr;
-        consumer->done(success);
-    }
 }
 
 void PlatformImpl::dragMoved(wl_fixed_t x, wl_fixed_t y) {
@@ -2580,7 +2561,12 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
 
     if (platform.decorationManager != nullptr) {
         decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(platform.decorationManager, toplevel);
-        zxdg_toplevel_decoration_v1_set_mode(decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+        zxdg_toplevel_decoration_v1_set_mode(
+            decoration,
+            options.decorations
+                ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+                : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
+        );
     }
     if (platform.viewporter != nullptr) {
         viewport = wp_viewporter_get_viewport(platform.viewporter, surface);
@@ -2603,7 +2589,6 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
 
 WindowImpl::~WindowImpl() {
     platform.poller_->cancel(*this);
-    platform.cancelSelection(*this, nullptr);
     if (platform.dndSession != nullptr && platform.dndSession->window == this) {
         platform.dndSession->window = nullptr;
         platform.dndSession->fiber->wake();
@@ -2858,6 +2843,10 @@ void WindowImpl::requestResizeUnit(u32 width, u32 height, u32 baseWidth, u32 bas
     resizeBaseHeight = baseHeight;
 }
 
+bool WindowImpl::inLiveResize() const {
+    return false;
+}
+
 WindowInfo WindowImpl::info() const {
     return {
         .width = pixelWidth(),
@@ -2872,31 +2861,6 @@ WindowInfo WindowImpl::info() const {
     };
 }
 
-void WindowImpl::receive(Offer& offer, bool primary, ClipboardRead& read) {
-    const char* const mime = offer.mime();
-    if (mime == nullptr) {
-        platform.completeSelection(*this, read, {}, false);
-        return;
-    }
-    int pipes[2];
-    if (pipe2(pipes, O_CLOEXEC) != 0) {
-        platform.completeSelection(*this, read, {}, false);
-        return;
-    }
-    if (primary) {
-        zwp_primary_selection_offer_v1_receive(offer.primary, mime, pipes[1]);
-    } else {
-        wl_data_offer_receive(offer.data, mime, pipes[1]);
-    }
-    close(pipes[1]);
-    if (!platform.flushDisplay()) {
-        close(pipes[0]);
-        platform.completeSelection(*this, read, {}, false);
-        return;
-    }
-    platform.readSelection(pipes[0], *this, read);
-}
-
 Clipboard* WindowImpl::primary() {
     return &primarySelection;
 }
@@ -2905,89 +2869,42 @@ Clipboard* WindowImpl::secondary() {
     return &clipboardSelection;
 }
 
-void ClipboardImpl::read(ClipboardRead& read) {
+Input* ClipboardImpl::read() {
     PlatformImpl& platform = window->platform;
-    if (primary) {
-        if (platform.primarySource != nullptr) {
-            platform.completeSelection(*window, read, StringView(platform.primaryContent), true);
-        } else {
-            window->receive(platform.primaryOffer, true, read);
-        }
-    } else {
-        if (platform.clipboardSource != nullptr) {
-            platform.completeSelection(*window, read, StringView(platform.clipboardContent), true);
-        } else {
-            window->receive(platform.clipboardOffer, false, read);
-        }
-    }
-}
-
-void ClipboardImpl::write(StringView content) {
-    if (primary) {
-        window->platform.setPrimary(content);
-    } else {
-        window->platform.setClipboard(content);
-    }
-}
-
-void ClipboardImpl::cancel(ClipboardRead& read) {
-    window->platform.cancelSelection(*window, &read);
-}
-
-bool ClipboardImpl::readAll(Buffer& content) {
-    PlatformImpl& platform = window->platform;
-    if (!platform.scheduler_->inFiber()) {
-        return false;
-    }
+    Buffer local;
+    int fd = -1;
     if (primary && platform.primarySource != nullptr) {
-        const StringView local(platform.primaryContent);
-        content.append(local.data(), local.length());
-        return true;
-    }
-    if (!primary && platform.clipboardSource != nullptr) {
-        const StringView local(platform.clipboardContent);
-        content.append(local.data(), local.length());
-        return true;
-    }
-    Offer& offer = primary ? platform.primaryOffer : platform.clipboardOffer;
-    const char* const mime = offer.mime();
-    if (mime == nullptr) {
-        return false;
-    }
-    int pipes[2];
-    if (pipe2(pipes, O_CLOEXEC) != 0) {
-        return false;
-    }
-    if (primary) {
-        zwp_primary_selection_offer_v1_receive(offer.primary, mime, pipes[1]);
+        // We own the selection: serve a snapshot, so a replacement made
+        // while the consumer reads does not tear the payload.
+        local.append(platform.primaryContent.data(), platform.primaryContent.length());
+    } else if (!primary && platform.clipboardSource != nullptr) {
+        local.append(platform.clipboardContent.data(), platform.clipboardContent.length());
     } else {
-        wl_data_offer_receive(offer.data, mime, pipes[1]);
-    }
-    close(pipes[1]);
-    if (!platform.flushDisplay()) {
-        close(pipes[0]);
-        return false;
-    }
-    // The consuming fiber reads the pipe itself: while it is busy elsewhere
-    // the pipe fills up and the source blocks, so backpressure reaches the
-    // other client without any buffering on this side.
-    while (true) {
-        if (!platform.scheduler_->awaitReadable(pipes[0], selectionTransferTimeoutUs)) {
-            close(pipes[0]);
-            return false;
-        }
-        u8 bytes[64 * 1024];
-        const ssize_t count = ::read(pipes[0], bytes, sizeof(bytes));
-        if (count > 0) {
-            content.append(bytes, (size_t)(count));
-        } else if (count == 0) {
-            close(pipes[0]);
-            return true;
-        } else if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
-            close(pipes[0]);
-            return false;
+        Offer& offer = primary ? platform.primaryOffer : platform.clipboardOffer;
+        const char* const mime = offer.mime();
+        if (mime != nullptr) {
+            int pipes[2];
+            if (pipe2(pipes, O_CLOEXEC) == 0) {
+                if (primary) {
+                    zwp_primary_selection_offer_v1_receive(offer.primary, mime, pipes[1]);
+                } else {
+                    wl_data_offer_receive(offer.data, mime, pipes[1]);
+                }
+                close(pipes[1]);
+                if (platform.flushDisplay()) {
+                    fd = pipes[0];
+                } else {
+                    close(pipes[0]);
+                }
+            }
         }
     }
+    return platform.allocator_->make<StreamInput>(platform, fd, static_cast<Buffer&&>(local), nullptr);
+}
+
+Output* ClipboardImpl::write() {
+    PlatformImpl& platform = window->platform;
+    return platform.allocator_->make<StreamOutput>(platform, primary);
 }
 
 void WindowImpl::requestPointerIcon(PointerIcon icon) {
@@ -3090,12 +3007,35 @@ void WindowImpl::pointerButton(u32 time, u32 button, u32 state) {
     }
 }
 
-void WindowImpl::pointerAxis(u32 axis, wl_fixed_t value) {
+void WindowImpl::pointerAxis(u32 time, u32 axis, wl_fixed_t value) {
+    scrollTime = time / 1000.0;
+    if (scrollPrecise && scrollPhase == ScrollPhase::None) {
+        scrollPhase = ScrollPhase::Update;
+    }
     const double converted = wl_fixed_to_double(value);
     if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
         scrollX += converted;
     } else if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
         scrollY += converted;
+    }
+}
+
+void WindowImpl::pointerAxisSource(u32 source) {
+    scrollPrecise = source == WL_POINTER_AXIS_SOURCE_FINGER;
+    if (scrollPrecise) {
+        scrollPhase = scrollGestureActive ? ScrollPhase::Update : ScrollPhase::Begin;
+        scrollGestureActive = true;
+    } else {
+        scrollPhase = ScrollPhase::None;
+        scrollGestureActive = false;
+    }
+}
+
+void WindowImpl::pointerAxisStop(u32 time) {
+    if (scrollPrecise) {
+        scrollTime = time / 1000.0;
+        scrollPhase = ScrollPhase::End;
+        scrollGestureActive = false;
     }
 }
 
@@ -3118,13 +3058,16 @@ void WindowImpl::pointerFrame() {
             lineX = -scrollStepsX / 120.0;
             lineY = -scrollStepsY / 120.0;
         }
-        if (lineX != 0 || lineY != 0) {
+        if (lineX != 0 || lineY != 0 || scrollPhase == ScrollPhase::End || scrollPhase == ScrollPhase::Cancel) {
             input->scroll({
                 .x = lineX,
                 .y = lineY,
                 .pixelX = pointerX,
                 .pixelY = pointerY,
                 .modifiers = platform.modifiers(),
+                .phase = scrollPhase,
+                .precise = scrollPrecise,
+                .time = scrollTime,
             });
         }
         input->flush();
@@ -3133,6 +3076,7 @@ void WindowImpl::pointerFrame() {
     scrollY = 0;
     scrollStepsX = 0;
     scrollStepsY = 0;
+    scrollPhase = ScrollPhase::None;
 }
 
 RenderContext WindowImpl::renderContext() const {

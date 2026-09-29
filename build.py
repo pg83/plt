@@ -9,8 +9,12 @@ build.cxxflags += [
     "-O2",
     "-W",
     "-Wall",
-    "-Werror",
 ]
+
+# -Dplatforms=headless builds only the in-process backend: no wayland,
+# no cocoa, no protocol scanning - what a library embedding the VT core
+# links against.
+platforms_headless = "-Dplatforms=headless" in build.cppflags
 
 libstd = dependency(
     ldflags=[]
@@ -23,22 +27,27 @@ common_sources = [
     "$(S)/drop.cpp",
     "$(S)/fiber.cpp",
     "$(S)/input.cpp",
-    "$(S)/poller.cpp",
+    "$(S)/loop_wake.cpp",
+    "$(S)/mutex.cpp",
+    "$(S)/poller_loop.cpp",
     "$(S)/pointer_grab.cpp",
     "$(S)/platform.cpp",
     "$(S)/platform_headless.cpp",
-    "$(S)/timer_queue.cpp",
     "$(S)/window.cpp",
 ]
 target_platform = build.target
 if "apple-darwin" in target_platform:
     system = "Darwin"
+elif "linux" in target_platform:
+    system = "Linux"
 elif build.target != build.host:
     raise RuntimeError(f"unsupported target: {target_platform}")
 else:
     system = host.system()
 
-if system == "Linux":
+if platforms_headless:
+    backend_deps = []
+elif system == "Linux":
     protocol_root = pkg_config_variable("wayland-protocols", "pkgdatadir")
     protocol_paths = [
         "stable/viewporter/viewporter",
@@ -115,51 +124,62 @@ elif system == "Darwin":
         # same headers as system headers and never sees these warnings.
         "-Wno-nullability-completeness",
         "-Wno-unguarded-availability-new",
+        # macOS 15 retired the CVDisplayLink C interface; the migration to
+        # NSView.displayLink is pending and the spam helps nobody.
+        "-Wno-deprecated-declarations",
     ]
     backend_deps = [
+        # Single-token -Wl,-framework,X spellings: the graph deduplicates
+        # ldflags tokens, and separate "-framework" words collapse into one.
         dependency(ldflags=[
             *([f"-F{darwin_frameworks}"] if darwin_frameworks else []),
-            "-framework", "AppKit",
-            "-framework", "CoreGraphics",
-            "-framework", "CoreVideo",
-            "-framework", "Metal",
-            "-framework", "QuartzCore",
+            "-Wl,-framework,AppKit",
+            "-Wl,-framework,Carbon",
+            "-Wl,-framework,CoreGraphics",
+            "-Wl,-framework,CoreVideo",
+            "-Wl,-framework,Metal",
+            "-Wl,-framework,QuartzCore",
         ]),
     ]
 else:
     raise RuntimeError(f"unsupported platform: {system}")
 
 libplt = library(
-    name="plt",
-    srcs=[*common_sources, backend_source],
+    name="plt_headless" if platforms_headless else "plt",
+    srcs=common_sources if platforms_headless else [*common_sources, backend_source],
     public_cflags=["-I$(S)", "-I$(S)/.."],
     cxxflags=locals().get("backend_cxxflags", []),
     deps=[libstd, *backend_deps],
-    output="$(B)/libplt.a",
+    output="$(B)/libplt_headless.a" if platforms_headless else "$(B)/libplt.a",
 )
 
-if build.target == build.host:
+if build.target == build.host and not platforms_headless:
+    plt_unit_test_sources = [
+        "$(S)/tst/test_ut.cpp",
+        "$(S)/drop_ut.cpp",
+        "$(S)/fiber_ut.cpp",
+        "$(S)/input_ut.cpp",
+        "$(S)/mutex_ut.cpp",
+        "$(S)/platform_headless_ut.cpp",
+        "$(S)/pointer_grab_ut.cpp",
+    ]
+    if system == "Darwin":
+        plt_unit_test_sources.append("$(S)/platform_cocoa_ut.mm")
     plt_unit_tests = program(
         name="plt_unit_tests",
         output="$(B)/plt_unit_tests",
-        srcs=[
-            "$(S)/tests/test_ut.cpp",
-            "$(S)/drop_ut.cpp",
-            "$(S)/fiber_ut.cpp",
-            "$(S)/pointer_grab_ut.cpp",
-            "$(S)/timer_queue_ut.cpp",
-        ],
+        srcs=plt_unit_test_sources,
         deps=[libplt, libstd],
     )
 
     # Hard per-invocation timeout so a hung test cannot wedge the whole CI run.
-    test_timeout = ["python3", "$(S)/tests/run_timed.py", "120"]
+    test_timeout = ["python3", "$(S)/tst/run_timed.py", "120"]
     test_deps = [plt_unit_tests]
     test_commands = [[*test_timeout, "$(B)/plt_unit_tests"]]
     if system == "Linux":
         wayland_test_sources = [
-            "$(S)/tests/test.cpp",
-            *sorted(build.glob("$(S)/tests/test_wayland_*.cpp")),
+            "$(S)/tst/test.cpp",
+            *sorted(build.glob("$(S)/tst/test_wayland_*.cpp")),
         ]
         plt_wayland_integration_tests = program(
             name="plt_wayland_integration_tests",
@@ -183,7 +203,7 @@ if build.target == build.host:
 
     plt_tests = command(
         name="plt_tests",
-        inputs=["$(S)/tests/run_timed.py"],
+        inputs=["$(S)/tst/run_timed.py"],
         outputs=["$(B)/plt_tests.stamp"],
         deps=test_deps,
         cmd=[

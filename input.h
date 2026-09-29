@@ -3,6 +3,10 @@
 #include <std/str/view.h>
 #include <std/sys/types.h>
 
+namespace stl {
+    class ObjPool;
+}
+
 namespace plt {
     enum class InputKey : u8 {
         Unknown,
@@ -143,8 +147,11 @@ namespace plt {
         InputKey key = InputKey::Unknown;
         InputAction action = InputAction::Press;
         u16 modifiers = 0;
+        // Unicode identities for the unshifted active and base layouts,
+        // followed by the key produced with Shift in the active layout.
         u32 layoutCodepoint = 0;
         u32 baseCodepoint = 0;
+        u32 shiftedCodepoint = 0;
     };
 
     struct TextInput {
@@ -178,12 +185,24 @@ namespace plt {
         double time = 0;
     };
 
+    enum class ScrollPhase : u8 {
+        None,
+        Begin,
+        Update,
+        End,
+        Cancel
+    };
+
     struct ScrollInput {
         double x = 0;
         double y = 0;
         int pixelX = 0;
         int pixelY = 0;
         u16 modifiers = 0;
+        ScrollPhase phase = ScrollPhase::None;
+        bool precise = false;
+        bool momentum = false;
+        double time = 0;
     };
 
     struct InputSink {
@@ -194,16 +213,6 @@ namespace plt {
         // into text, or -1 when the input method hides the preedit cursor.
         // An empty text clears the preview.
         virtual void preedit(stl::StringView text, i32 cursorBegin, i32 cursorEnd) = 0;
-        // Text dropped onto the window by a drag-and-drop session. text is
-        // UTF-8 and valid only for the duration of the call. The consumer
-        // applies its own paste semantics, e.g. bracketed paste.
-        virtual void drop(stl::StringView text) = 0;
-        // One entry of a dropped file list, valid only for the duration of
-        // the call. Local files arrive as percent-decoded filesystem paths,
-        // other schemes as the verbatim URI. A drop of several entries
-        // delivers one call per entry; quoting and joining stay with the
-        // consumer.
-        virtual void dropPath(stl::StringView path) = 0;
         virtual void pointerMotion(const PointerMotionInput& input) = 0;
         virtual void pointerButton(const PointerButtonInput& input) = 0;
         virtual void scroll(const ScrollInput& input) = 0;
@@ -211,4 +220,12 @@ namespace plt {
         virtual void pointerPresence(bool present) = 0;
         virtual void flush() = 0;
     };
+
+    struct Scheduler;
+
+    // Rehosts every delivery of target onto one long-lived fiber, in
+    // arrival order. Producers enqueue from the event loop and return
+    // immediately; a delivery that blocks holds back later input, not the
+    // loop. Transient payloads are copied at the boundary.
+    InputSink* createFiberInputSink(stl::ObjPool& owner, Scheduler& scheduler, InputSink& target);
 }

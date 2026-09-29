@@ -1,18 +1,14 @@
 #pragma once
 
-#include "clipboard.h"
-
 #include <std/str/view.h>
 #include <std/sys/types.h>
 
 namespace stl {
     class Buffer;
-    class ObjPool;
+    class Input;
 }
 
 namespace plt {
-    struct InputSink;
-
     enum class DropAction : u8 {
         None,
         Copy,
@@ -34,12 +30,13 @@ namespace plt {
     };
 
     // A settled drop. At most one read(); the mime must be one of the
-    // offered formats and the payload streams through the ClipboardRead
-    // contract. The platform completes the session once the read reaches
-    // done(). Starting no read before dropped() returns rejects the drop.
+    // offered formats. The returned stream is owned by the caller — plain
+    // delete releases it — and pulls the payload on the calling fiber.
+    // Deleting it before end of stream abandons the transfer; starting no
+    // read before dropped() returns rejects the drop.
     struct Drop {
         virtual DropOffer* what() = 0;
-        virtual void read(stl::StringView mime, ClipboardRead& read) = 0;
+        virtual stl::Input* read(stl::StringView mime) = 0;
     };
 
     struct DropTarget {
@@ -48,11 +45,6 @@ namespace plt {
         virtual DropReply dragOver(const DropOffer& offer, i32 x, i32 y) = 0;
         virtual void dragLeft() = 0;
         virtual void dropped(Drop& drop) = 0;
-
-        // The canonical target: accepts text and uri-list drops with the
-        // copy action, buffers one payload whole and delivers it through
-        // InputSink::drop or InputSink::dropPath followed by flush().
-        static DropTarget* create(stl::ObjPool& owner, InputSink& sink);
     };
 
     // Iterates one text/uri-list payload: entry receives the next
