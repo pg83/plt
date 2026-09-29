@@ -99,7 +99,42 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                     cf.CFRelease(event)
                     time.sleep(.02)
 
+            def drag(kind, expected, mode, color="40a060"):
+                command(f"dropmode {mode}")
+                start = len(text())
+                command("drag-" + kind)
+                sx, sy = map(int, re.findall(r"SOURCE (\d+) (\d+)", text())[-1])
+                _, x, y, width, height = geometry()
+                tx, ty = x + width / 2, y + height / 2
+                def mouse(kind, x, y):
+                    event = cg.CGEventCreateMouseEvent(None, kind, Point(x, y), 0)
+                    cg.CGEventPost(0, event)
+                    cf.CFRelease(event)
+                    time.sleep(.05)
+                mouse(5, sx, sy)
+                mouse(1, sx, sy)
+                for step in range(1, 16):
+                    mouse(6, sx + (tx - sx) * step / 15, sy + (ty - sy) * step / 15)
+                if os.environ.get("PLT_NO_DROP"):
+                    mouse(6, sx, sy)
+                    mouse(6, tx, ty)
+                mouse(2, tx, ty)
+                wait(lambda: "DROP RESULT " in text()[start:], "native drag completion")
+                if expected is not None:
+                    wait(lambda: "DROPPED " + expected in text()[start:], "native drag " + kind)
+                elif mode == 6:
+                    assert "DROP IGNORED" in text()[start:]
+                else:
+                    assert "DROPPED " not in text()[start:]
+                command("close-source")
+                screenshot(f"dropped-{kind}-{mode}", color)
+
             screenshot("initial", "204060")
+            if os.environ.get("PLT_NO_DROP"):
+                drag("text", None, 2, "204060")
+                commands.write("system-close\n")
+                assert app.wait(timeout=15) == 0
+                raise SystemExit(0)
             command("auxiliary")
             time.sleep(.1)
             command("close-auxiliary")
@@ -236,37 +271,8 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             drops = [("text", "dropped document", 0), ("file", drop_file.as_uri(), 0),
                      ("both", "dropped document", 1), ("lost", "", 0), ("lostfile", "", 0), ("text", None, 2), ("text", None, 3),
                      ("text", None, 4), ("text", "", 5), ("text", None, 6)]
-            if os.environ.get("PLT_NO_DROP"):
-                drops = [("text", None, 2)]
             for kind, expected, mode in drops:
-                command(f"dropmode {mode}")
-                start = len(text())
-                command("drag-" + kind)
-                sx, sy = map(int, re.findall(r"SOURCE (\d+) (\d+)", text())[-1])
-                _, x, y, width, height = geometry()
-                tx, ty = x + width / 2, y + height / 2
-                def mouse(kind, x, y):
-                    event = cg.CGEventCreateMouseEvent(None, kind, Point(x, y), 0)
-                    cg.CGEventPost(0, event)
-                    cf.CFRelease(event)
-                    time.sleep(.05)
-                mouse(5, sx, sy)
-                mouse(1, sx, sy)
-                for step in range(1, 16):
-                    mouse(6, sx + (tx - sx) * step / 15, sy + (ty - sy) * step / 15)
-                if os.environ.get("PLT_NO_DROP"):
-                    mouse(6, sx, sy)
-                    mouse(6, tx, ty)
-                mouse(2, tx, ty)
-                wait(lambda: "DROP RESULT " in text()[start:], "native drag completion")
-                if expected is not None:
-                    wait(lambda: "DROPPED " + expected in text()[start:], "native drag " + kind)
-                elif mode == 6:
-                    assert "DROP IGNORED" in text()[start:]
-                else:
-                    assert "DROPPED " not in text()[start:]
-                command("close-source")
-                screenshot(f"dropped-{kind}-{mode}", "40a060")
+                drag(kind, expected, mode)
             command("open-document")
             command("restore")
             command("minimize")

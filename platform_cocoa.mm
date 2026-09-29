@@ -626,7 +626,7 @@ namespace {
             if (source == nullptr) {
                 CFMachPortInvalidate(port);
                 CFRelease(port);
-                Errno(ENOMEM).raise(u8"Cannot create Mach wake source");
+                Errno(ENOMEM).raise(StringView(u8"Cannot create Mach wake source"));
             }
             CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
             CFRelease(source);
@@ -943,7 +943,7 @@ void PollerImpl::arm(PollWaiter& waiter) {
         if (source == nullptr) {
             CFFileDescriptorInvalidate(descriptor);
             CFRelease(descriptor);
-            Errno(ENOMEM).raise(u8"Cannot create descriptor source");
+            Errno(ENOMEM).raise(StringView(u8"Cannot create descriptor source"));
         }
         armed.insert(waiter.fd.fd, descriptor, source);
         CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);

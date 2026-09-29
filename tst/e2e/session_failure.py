@@ -12,8 +12,7 @@ for rule in ("loop-flush@0", "flush-error@0", "flush-error@3", "display-read@0",
         failed = s.start([str(s.binary)], "failed", PLT_CHAOS=rule)
         deadline = time.monotonic() + 10
         while failed.poll() is None and time.monotonic() < deadline:
-            for window in s.windows():
-                s.ipc(f'[con_id={window["id"]}] focus')
+            if s.windows():
                 s.key("a")
             time.sleep(.05)
         assert failed.wait(timeout=3) == 0
