@@ -75,6 +75,7 @@ namespace {
         "cocoa-wake-source",
         "cocoa-descriptor-source",
         "pending-dispatch",
+        "signal-wait-again",
     };
     static_assert(sizeof(names) / sizeof(*names) == (unsigned)Fault::Count);
 
@@ -132,7 +133,7 @@ __attribute__((no_profile_instrument_function)) bool plt::chaos(Fault fault) {
     pthread_mutex_unlock(&script.mutex);
     if (fail) {
         fprintf(stderr, "CHAOS %s\n", names[(unsigned)fault]);
-        errno = fault == Fault::ReadInterrupted || fault == Fault::WriteInterrupted || fault == Fault::PollInterrupted || fault == Fault::FlushInterrupted || fault == Fault::SignalWaitInterrupted ? EINTR : fault == Fault::ReadAgain || fault == Fault::WriteAgain || fault == Fault::FlushAgain ? EAGAIN : EIO;
+        errno = fault == Fault::ReadInterrupted || fault == Fault::WriteInterrupted || fault == Fault::PollInterrupted || fault == Fault::FlushInterrupted || fault == Fault::SignalWaitInterrupted ? EINTR : fault == Fault::ReadAgain || fault == Fault::WriteAgain || fault == Fault::FlushAgain || fault == Fault::SignalWaitAgain ? EAGAIN : EIO;
     }
     return fail;
 }

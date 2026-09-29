@@ -52,10 +52,11 @@ int main() {
     Platform* const platform = Platform::create(*owner);
     Editor editor(platform), survivor(platform);
     editor.closeOnText = strcmp(setting("PLT_CLOSE_ON_TEXT", "0"), "1") == 0;
-    if (editor.closeOnText) {
+    survivor.passive = strcmp(setting("PLT_EXTRA_PASSIVE", "0"), "1") == 0;
+    if (editor.closeOnText || survivor.passive) {
         survivor.open("plt-compose-survivor");
     }
     editor.open("plt-compose-editor");
-    editor.window->requestTextInputRect(24, 50, 12, 20);
+    editor.window->requestTextInputRect(24, 50, 12, strcmp(setting("PLT_ZERO_CARET", "0"), "1") == 0 ? 0 : 20);
     editor.run();
 }

@@ -65,7 +65,7 @@ def encode(object_id, opcode, arguments, values):
             payload.extend(value)
             payload.extend(b"\0" * (padded(len(value)) - len(value)))
         else:
-            payload.extend(struct.pack("=I", value))
+            payload.extend(struct.pack("=I", value & 0xffffffff))
     return struct.pack("=II", object_id, ((len(payload) + 8) << 16) | opcode) + payload
 
 
@@ -251,6 +251,18 @@ class Proxy:
                     socket.close(descriptor)
             for connection in connections:
                 connection.close()
+
+    def surface(self, app_id):
+        return next(object_id for object_id, name in self.surface_apps.items() if name == app_id)
+
+    def event(self, interface, name, **values):
+        events = self.interfaces[interface]["event"]
+        event = next(event for event in events if event.attrib["name"] == name)
+        frame = encode(self.first_objects[interface], events.index(event), event.findall("arg"), values)
+        with self.send_lock:
+            self.primary.sendall(frame)
+        with self.session.artifacts.joinpath("event-faults.log").open("a") as log:
+            log.write(f"{interface}.{name} {values!r}\n")
 
     def global_available(self, interface, available):
         registry, values = self.globals[interface]

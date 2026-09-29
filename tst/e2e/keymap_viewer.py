@@ -43,7 +43,7 @@ with Session("keymap-viewer") as s:
 os.environ["PLT_E2E_ARTIFACTS"] = str(root / "custom-compose")
 with Session("custom-compose") as s:
     compose = Path(s.runtime.name) / "Compose"
-    compose.write_text('<Multi_key> <a> : "ABCDEFGHIJK"\n<Multi_key> <b> : F1\n')
+    compose.write_text('<Multi_key> <a> : "ABCDEFGHIJK"\n<Multi_key> <b> : F1\n<Multi_key> <c> : "A世🌍"\n')
     s.launch(XCOMPOSEFILE=str(compose), LC_ALL="C.UTF-8")
     s.focus()
     s.command("wtype", "-k", "Multi_key", "-k", "a")
@@ -57,5 +57,8 @@ with Session("custom-compose") as s:
     s.logged("TEXT 122")
     log = (s.artifacts / "client.log").read_text()[start:]
     assert "TEXT 98\n" not in log, log
+    s.command("wtype", "-k", "Multi_key", "-k", "c")
+    s.logged("TEXT 19990")
+    s.logged("TEXT 127757")
     s.screenshot("composed", [(.1, .5, .9, .8, "40a060")])
     s.close()

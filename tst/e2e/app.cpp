@@ -192,9 +192,9 @@ void App::open(const char* title, u32 width, u32 height, DropTarget* drop) {
             .minimumWidth = 160,
             .minimumHeight = 120,
             .decorations = false,
-            .input = strcmp(setting("PLT_PASSIVE", "0"), "1") == 0        ? nullptr
-                     : strcmp(setting("PLT_DIRECT_INPUT", "0"), "1") == 0 ? this
-                                                                          : createFiberInputSink(*owner, *platform->scheduler(), *this),
+            .input = passive || strcmp(setting("PLT_PASSIVE", "0"), "1") == 0 ? nullptr
+                     : strcmp(setting("PLT_DIRECT_INPUT", "0"), "1") == 0     ? this
+                                                                              : createFiberInputSink(*owner, *platform->scheduler(), *this),
             .events = this,
             .frame = this,
             .drop = drop,
@@ -259,4 +259,12 @@ void App::flush() {
 const char* plt::e2e::setting(const char* name, const char* fallback) {
     const char* const value = getenv(name);
     return value == nullptr ? fallback : value;
+}
+
+Surface* plt::e2e::createSurface(ObjPool& owner, const RenderContext& context) {
+    return owner.make<Surface>(owner, context);
+}
+
+bool plt::e2e::paintSurface(Surface& surface, App& app, const WindowInfo& info) {
+    return surface.paint(app, info);
 }

@@ -10,7 +10,7 @@ with Session("compose-protocol") as s, Proxy(s, [
     {"interface": "zwp_text_input_v3", "event": "done", "insert": {
         "event": "delete_surrounding_text", "values": {"before_length": 1, "after_length": 1}}},
 ]) as proxy:
-    s.launch(WAYLAND_DISPLAY=proxy.path)
+    s.launch(WAYLAND_DISPLAY=proxy.path, PLT_ZERO_CARET="1")
     s.focus()
     s.input("ime-preedit 61")
     s.input("ime-commit 61")

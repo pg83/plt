@@ -502,7 +502,7 @@ namespace {
         const int writeError = errno;
         if (result < 0 && writeError == EPIPE && !wasPending) {
             const struct timespec timeout{};
-            while ((chaos(Fault::SignalWaitInterrupted) ? -1 : sigtimedwait(&blocked, nullptr, &timeout)) < 0 && errno == EINTR) {
+            while ((chaos(Fault::SignalWaitInterrupted) || chaos(Fault::SignalWaitAgain) ? -1 : sigtimedwait(&blocked, nullptr, &timeout)) < 0 && errno == EINTR) {
             }
         }
         pthread_sigmask(SIG_SETMASK, &previous, nullptr);
@@ -554,16 +554,14 @@ namespace {
         return continuations + 1;
     }
 
-    size_t decodeUtf8(const u8* bytes, size_t length, u32* codepoints, size_t capacity) {
+    size_t decodeCompose(const u8* bytes, size_t length, u32* codepoints, size_t capacity) {
         size_t count = 0;
         for (size_t index = 0; index != length && count != capacity;) {
+            // xkbcommon validates compose literals. The first eight scalars
+            // fit in at most 32 bytes, before any truncated tail of its
+            // 64-byte output buffer.
             u32 value;
-            const size_t consumed = decodeUtf8One(bytes + index, length - index, &value);
-            if (consumed == 0) {
-                ++index;
-                continue;
-            }
-            index += consumed;
+            index += decodeUtf8One(bytes + index, length - index, &value);
             codepoints[count++] = value;
         }
         return count;
@@ -1965,7 +1963,7 @@ size_t PlatformImpl::composeFeed(xkb_keysym_t symbol, u32 codepoint, u32* codepo
                 if (length <= 0) {
                     return 0;
                 }
-                return decodeUtf8((const u8*)(buffer), min((size_t)(length), sizeof(buffer) - 1), codepoints, capacity);
+                return decodeCompose((const u8*)(buffer), min((size_t)(length), sizeof(buffer) - 1), codepoints, capacity);
             }
             case XKB_COMPOSE_CANCELLED:
                 xkb_compose_state_reset(composeState);

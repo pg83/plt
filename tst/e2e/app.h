@@ -49,7 +49,11 @@ namespace plt::e2e {
         Surface* surface = nullptr;
         const char* id = nullptr;
         u64 frames = 0;
+        bool passive = false;
     };
+
+    Surface* createSurface(stl::ObjPool& owner, const RenderContext& context);
+    bool paintSurface(Surface& surface, App& app, const WindowInfo& info);
 
     const char* setting(const char* name, const char* fallback);
 }

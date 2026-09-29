@@ -65,6 +65,7 @@ namespace plt {
         CocoaWakeSource,
         CocoaDescriptorSource,
         PendingDispatch,
+        SignalWaitAgain,
         Count,
     };
 
