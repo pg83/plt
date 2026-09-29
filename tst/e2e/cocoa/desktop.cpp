@@ -48,6 +48,7 @@ namespace {
         MetalCanvas* canvas = nullptr;
         u32 color = 0x204060;
         int pipe = -1;
+        unsigned dropMode = 0;
     };
 }
 
@@ -154,6 +155,8 @@ void Desktop::command(const char* line) {
         window->requestFullscreen(false);
     } else if (strncmp(line, "cursor ", 7) == 0) {
         window->requestPointerIcon(static_cast<PointerIcon>(atoi(line + 7)));
+    } else if (strncmp(line, "dropmode ", 9) == 0) {
+        dropMode = atoi(line + 9);
     } else if (strcmp(line, "caret") == 0) {
         window->requestTextInputRect(20, 40, 8, 18);
     } else if (strcmp(line, "copy") == 0 || strcmp(line, "primary") == 0) {
@@ -249,7 +252,13 @@ int main() {
 
 DropReply Desktop::dragOver(const DropOffer& offer, i32 x, i32 y) {
     printf("DRAG %zu %d %d\n", offer.formats(), x, y);
-    return {offer.formats() ? offer.format(0) : StringView(), DropAction::Copy};
+    if (dropMode == 2) {
+        return {};
+    }
+    if (dropMode == 3) {
+        return {StringView(u8"application/unknown"), DropAction::Copy};
+    }
+    return {offer.formats() ? offer.format(offer.formats() - 1) : StringView(), dropMode == 4 ? DropAction::None : dropMode == 1 ? DropAction::Move : DropAction::Copy};
 }
 
 void Desktop::dragLeft() {
@@ -259,10 +268,20 @@ void Desktop::dragLeft() {
 void Desktop::dropped(Drop& drop) {
     DropOffer* offer = drop.what();
     STD_INSIST(offer->formats() > 0);
-    const StringView mime = offer->format(0);
+    if (dropMode == 6) {
+        puts("DROP IGNORED");
+        return;
+    }
+    const StringView mime = offer->format(offer->formats() - 1);
     Input* input = drop.read(mime);
     Buffer content;
-    input->readAll(content);
+    if (dropMode == 5) {
+        char byte;
+        STD_INSIST(input->read(&byte, 1) == 1);
+        puts("DROP PARTIAL");
+    } else {
+        input->readAll(content);
+    }
     delete input;
     printf("DROPPED %s\n", content.cStr());
     color = 0x40a060;

@@ -95,6 +95,12 @@ MetalCanvas* MetalCanvas::create(ObjPool& owner, const RenderContext& context) {
     [self beginDraggingSessionWithItems:@[ item ] event:event source:self];
 }
 
+- (void)draggingSession:(NSDraggingSession*)session endedAtPoint:(NSPoint)point operation:(NSDragOperation)operation {
+    (void)session;
+    (void)point;
+    printf("DROP RESULT %lu\n", (unsigned long)operation);
+}
+
 - (NSDragOperation)draggingSession:(NSDraggingSession*)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
     (void)session;
     (void)context;
@@ -163,6 +169,13 @@ bool Canvas::command(const char* value) {
         source = [[NSWindow alloc] initWithContentRect:NSMakeRect(10, 80, 100, 100) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
         DocumentSource* view = [[DocumentSource alloc] initWithFrame:NSMakeRect(0, 0, 100, 100)];
         view.payload = strcmp(value, "drag-file") == 0 ? (id<NSPasteboardWriting>)[NSURL fileURLWithPath:[NSString stringWithUTF8String:getenv("PLT_DROP_FILE")]] : @"dropped document";
+        if (strcmp(value, "drag-both") == 0) {
+            NSPasteboardItem* item = [NSPasteboardItem new];
+            NSURL* file = [NSURL fileURLWithPath:[NSString stringWithUTF8String:getenv("PLT_DROP_FILE")]];
+            [item setString:file.absoluteString forType:NSPasteboardTypeFileURL];
+            [item setString:@"dropped document" forType:NSPasteboardTypeString];
+            view.payload = item;
+        }
         source.contentView = view;
         [source makeKeyAndOrderFront:nil];
         NSPoint point = [source convertPointToScreen:NSMakePoint(30, 50)];

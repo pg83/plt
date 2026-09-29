@@ -199,7 +199,12 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             command("paste")
             wait(lambda: "PASTED external document" in text(), "external paste")
             screenshot("pasted", "40a060")
-            for kind, expected in (("text", "dropped document"), ("file", drop_file.as_uri())):
+            drops = [("text", "dropped document", 0), ("file", drop_file.as_uri(), 0),
+                     ("both", "dropped document", 1), ("text", None, 2), ("text", None, 3),
+                     ("text", None, 4), ("text", "", 5), ("text", None, 6)]
+            for kind, expected, mode in drops:
+                command(f"dropmode {mode}")
+                start = len(text())
                 command("drag-" + kind)
                 sx, sy = map(int, re.findall(r"SOURCE (\d+) (\d+)", text())[-1])
                 _, x, y, width, height = geometry()
@@ -214,9 +219,15 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                 for step in range(1, 16):
                     mouse(6, sx + (tx - sx) * step / 15, sy + (ty - sy) * step / 15)
                 mouse(2, tx, ty)
-                wait(lambda: "DROPPED " + expected in text(), "native drag " + kind)
+                wait(lambda: "DROP RESULT " in text()[start:], "native drag completion")
+                if expected is not None:
+                    wait(lambda: "DROPPED " + expected in text()[start:], "native drag " + kind)
+                elif mode == 6:
+                    assert "DROP IGNORED" in text()[start:]
+                else:
+                    assert "DROPPED " not in text()[start:]
                 command("close-source")
-                screenshot("dropped-" + kind, "40a060")
+                screenshot(f"dropped-{kind}-{mode}", "40a060")
             command("minimize")
             command("restore")
             screenshot("restored", "40a060")
