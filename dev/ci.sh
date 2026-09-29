@@ -46,7 +46,7 @@ export LDFLAGS="${LDFLAGS:-} -L$build_dir/std"
 if [[ "$mode" == build ]]; then
     python3 ./build -B "$build_dir/plt" -j "$jobs" plt plt_wayland_integration_tests e2e-binaries
 elif [[ "$mode" != e2e ]]; then
-    test_targets=(test)
+    test_targets=(test plt)
     if [[ "$(uname -s)" == Linux ]]; then
         test_targets+=(plt_wayland_integration_tests)
     else

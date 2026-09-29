@@ -27,6 +27,9 @@ def main():
     binaries.extend(sorted((args.build_dir / "e2e").glob("*")))
     if not binaries:
         parser.error("no test executables found for coverage export")
+    # Include every compiled production object, even if no executable links
+    # it yet. Unused backends and helpers must count as uncovered code.
+    binaries.append(args.build_dir / "libplt.a")
     objects = [str(binaries[0])]
     for binary in binaries[1:]:
         objects.extend(["-object", str(binary)])
