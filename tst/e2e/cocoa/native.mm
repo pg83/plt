@@ -82,7 +82,13 @@ MetalCanvas* MetalCanvas::create(ObjPool& owner, const RenderContext& context) {
 
 @implementation DocumentSource
 
+- (BOOL)acceptsFirstMouse:(NSEvent*)event {
+    (void)event;
+    return YES;
+}
+
 - (void)mouseDown:(NSEvent*)event {
+    puts("SOURCE DRAG BEGIN");
     NSDraggingItem* item = [[NSDraggingItem alloc] initWithPasteboardWriter:self.payload];
     NSImage* image = [[NSImage alloc] initWithSize:NSMakeSize(40, 40)];
     [item setDraggingFrame:NSMakeRect(10, 10, 40, 40) contents:image];
@@ -129,7 +135,7 @@ bool Canvas::command(const char* value) {
         DocumentSource* view = [[DocumentSource alloc] initWithFrame:NSMakeRect(0, 0, 100, 100)];
         view.payload = strcmp(value, "drag-file") == 0 ? (id<NSPasteboardWriting>)[NSURL fileURLWithPath:[NSString stringWithUTF8String:getenv("PLT_DROP_FILE")]] : @"dropped document";
         source.contentView = view;
-        [source orderFront:nil];
+        [source makeKeyAndOrderFront:nil];
         NSPoint point = [source convertPointToScreen:NSMakePoint(30, 50)];
         printf("SOURCE %.0f %.0f\n", point.x, CGDisplayBounds(CGMainDisplayID()).size.height - point.y);
     } else if (strcmp(value, "close-source") == 0) {

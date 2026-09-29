@@ -25,7 +25,11 @@ for fault in ("selection-pipe", "selection-flags", "selection-read", "read-inter
             with payload.open("rb") as data:
                 copy = subprocess.Popen(["wl-copy", "--foreground", "--type", "text/plain;charset=utf-8"], stdin=data, env=s.env)
             s.processes.append(copy)
-            s.wait(lambda: s.command("wl-paste", "--no-newline") == b"recovered", "clipboard owner")
+            def clipboard_ready():
+                result = subprocess.run(["wl-paste", "--no-newline"], env=s.env,
+                                        capture_output=True, timeout=5)
+                return result.returncode == 0 and result.stdout == b"recovered"
+            s.wait(clipboard_ready, "clipboard owner")
             s.key("v")
             s.logged(f"CHAOS {fault}")
             failed = fault in ("selection-pipe", "selection-flags", "selection-read")
