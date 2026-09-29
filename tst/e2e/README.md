@@ -45,6 +45,6 @@ Run as a regular user with writable temporary storage and shared memory.
 
 Every Linux test job (GCC/glibc, Clang/musl, Clang/ASan, Clang/UBSan and
 coverage) runs both renderers, using the same compiler and instrumentation as
-the unit tests. All jobs are gated by `build`. Linux coverage includes their production code coverage
+the Wayland integration tests. All jobs are gated by `build`. Linux coverage includes their production code coverage
 in the report merged with Darwin. Screenshots and logs are uploaded on success
 and failure.

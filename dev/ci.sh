@@ -44,11 +44,13 @@ esac
 export CPPFLAGS="${CPPFLAGS:-} -I$std_source"
 export LDFLAGS="${LDFLAGS:-} -L$build_dir/std"
 if [[ "$mode" == build ]]; then
-    python3 ./build -B "$build_dir/plt" -j "$jobs" plt plt_unit_tests plt_wayland_integration_tests e2e-binaries
+    python3 ./build -B "$build_dir/plt" -j "$jobs" plt plt_wayland_integration_tests e2e-binaries
 elif [[ "$mode" != e2e ]]; then
-    test_targets=(test plt_unit_tests)
+    test_targets=(test)
     if [[ "$(uname -s)" == Linux ]]; then
         test_targets+=(plt_wayland_integration_tests)
+    else
+        test_targets+=(plt_cocoa_tests)
     fi
     # Export the executable paths as well as the test stamp for llvm-cov.
     python3 ./build -B "$build_dir/plt" -j "$jobs" "${test_targets[@]}"

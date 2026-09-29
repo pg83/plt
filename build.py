@@ -154,28 +154,19 @@ libplt = library(
 )
 
 if build.target == build.host and not platforms_headless:
-    plt_unit_test_sources = [
-        "$(S)/tst/test_ut.cpp",
-        "$(S)/drop_ut.cpp",
-        "$(S)/fiber_ut.cpp",
-        "$(S)/input_ut.cpp",
-        "$(S)/mutex_ut.cpp",
-        "$(S)/platform_headless_ut.cpp",
-        "$(S)/pointer_grab_ut.cpp",
-    ]
-    if system == "Darwin":
-        plt_unit_test_sources.append("$(S)/platform_cocoa_ut.mm")
-    plt_unit_tests = program(
-        name="plt_unit_tests",
-        output="$(B)/plt_unit_tests",
-        srcs=plt_unit_test_sources,
-        deps=[libplt, libstd],
-    )
-
     # Hard per-invocation timeout so a hung test cannot wedge the whole CI run.
     test_timeout = ["python3", "$(S)/tst/run_timed.py", "120"]
-    test_deps = [plt_unit_tests]
-    test_commands = [[*test_timeout, "$(B)/plt_unit_tests"]]
+    test_deps = []
+    test_commands = []
+    if system == "Darwin":
+        plt_cocoa_tests = program(
+            name="plt_cocoa_tests",
+            output="$(B)/plt_cocoa_tests",
+            srcs=["$(S)/tst/cocoa_main.mm", "$(S)/platform_cocoa_ut.mm"],
+            deps=[libplt, libstd],
+        )
+        test_deps.append(plt_cocoa_tests)
+        test_commands.append([*test_timeout, "$(B)/plt_cocoa_tests"])
     if system == "Linux":
         wayland_test_sources = [
             "$(S)/tst/test.cpp",

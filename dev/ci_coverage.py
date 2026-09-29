@@ -21,11 +21,12 @@ def main():
     subprocess.run([
         "llvm-profdata", "merge", "-sparse", *map(str, profiles), "-o", str(profile),
     ], check=True)
-    binaries = [args.build_dir / "plt_unit_tests"]
-    wayland = args.build_dir / "plt_wayland_integration_tests"
-    if wayland.exists():
-        binaries.append(wayland)
+    binaries = [args.build_dir / name for name in (
+        "plt_wayland_integration_tests", "plt_cocoa_tests",
+    ) if (args.build_dir / name).exists()]
     binaries.extend(sorted((args.build_dir / "e2e").glob("*")))
+    if not binaries:
+        parser.error("no test executables found for coverage export")
     objects = [str(binaries[0])]
     for binary in binaries[1:]:
         objects.extend(["-object", str(binary)])
