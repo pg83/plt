@@ -6,6 +6,7 @@ coreutils, and macOS has no timeout(1) at all.
 """
 import os
 import signal
+import shutil
 import subprocess
 import sys
 
@@ -15,7 +16,14 @@ def main():
     argv = sys.argv[2:]
     process = subprocess.Popen(argv, start_new_session=True)
     try:
-        sys.exit(process.wait(limit))
+        status = process.wait(limit)
+        if status < 0 and sys.platform == "darwin" and shutil.which("lldb"):
+            print(f"test terminated by signal {-status}; collecting LLDB backtrace", flush=True)
+            subprocess.run(
+                ["lldb", "--batch", "-o", "run", "-o", "thread backtrace all", "--", *argv],
+                timeout=30, check=False,
+            )
+        sys.exit(status)
     except subprocess.TimeoutExpired:
         os.killpg(process.pid, signal.SIGKILL)
         process.wait()
