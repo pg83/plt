@@ -63,6 +63,7 @@ namespace {
         int pipe = -1;
         unsigned dropMode = 0;
         ObjPool::Ref auxiliary = ObjPool::fromMemory();
+        Window* auxiliaryWindow = nullptr;
     };
 }
 
@@ -143,6 +144,8 @@ Desktop::Desktop()
         }
     );
     canvas = MetalCanvas::create(*owner, window->renderContext());
+    canvas->command("compose");
+    color = 0x204060;
     pipe = ::open(getenv("PLT_COMMAND_PIPE"), O_RDWR | O_NONBLOCK | O_CLOEXEC);
     STD_INSIST(pipe >= 0);
     platform->scheduler()->create(*owner, *this, 128 * 1024);
@@ -259,6 +262,7 @@ void Desktop::command(const char* line) {
     } else if (strcmp(line, "auxiliary") == 0 || strcmp(line, "retire-queued") == 0) {
         auxiliary = ObjPool::fromMemory();
         Window* pending = platform->createWindow(*auxiliary, {.appName = StringView(u8"\xff", 1)});
+        auxiliaryWindow = pending;
         canvas->holdInput(pending->renderContext());
         pending->info();
         pending->requestFrame();
@@ -270,6 +274,13 @@ void Desktop::command(const char* line) {
             auxiliary = ObjPool::fromMemory();
             puts("QUEUED PREVIEW RETIRED");
         }
+    } else if (strcmp(line, "auxiliary-frame") == 0) {
+        auxiliaryWindow->requestFrame();
+        usleep(100000);
+    } else if (strcmp(line, "auxiliary-offscreen") == 0) {
+        auxiliaryWindow->requestMove(100000, 100000);
+        const WindowInfo info = auxiliaryWindow->info();
+        STD_INSIST(info.screenPixelWidth > 0 && info.screenPixelHeight > 0);
     } else if (strcmp(line, "close-auxiliary") == 0) {
         auxiliary = ObjPool::fromMemory();
         canvas->command("detached-input");

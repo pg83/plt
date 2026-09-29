@@ -134,6 +134,37 @@ bool Canvas::command(const char* value) {
     id<NSTextInputClient> client = (id<NSTextInputClient>)window.contentView;
     if (strcmp(value, "native-state") == 0) {
         printf("MINIMIZED %d\n", window.miniaturized);
+    } else if (strcmp(value, "native-key-edges") == 0) {
+        struct KeyCase {
+            NSString* characters;
+            NSString* base;
+            NSEventModifierFlags flags;
+            unsigned short key;
+            bool repeated;
+        };
+
+        // Event reposting is a public AppKit path used by native input
+        // adapters. Keep unusual text/physical-key combinations intact.
+        const KeyCase cases[] = {
+            {@"a", @"a", 0, 0, true},
+            {@"A", @"a", NSEventModifierFlagShift, 0xff, false},
+            {@"a", @"é", NSEventModifierFlagShift, 0x40, false},
+            {@"\1", @"\1", NSEventModifierFlagOption, 0, false},
+        };
+        for (const KeyCase& item : cases) {
+            const NSEventType types[] = {NSEventTypeKeyDown, NSEventTypeKeyUp};
+            for (NSEventType type : types) {
+                NSEvent* event = [NSEvent keyEventWithType:type location:NSMakePoint(30, 30) modifierFlags:item.flags timestamp:0 windowNumber:window.windowNumber context:nil characters:item.characters charactersIgnoringModifiers:item.base isARepeat:item.repeated keyCode:item.key];
+                [NSApp postEvent:event atStart:NO];
+            }
+        }
+        NSEvent* flags = [NSEvent keyEventWithType:NSEventTypeFlagsChanged location:NSZeroPoint modifierFlags:NSEventModifierFlagShift timestamp:0 windowNumber:window.windowNumber context:nil characters:@"" charactersIgnoringModifiers:@"" isARepeat:NO keyCode:56];
+        [NSApp postEvent:flags atStart:NO];
+        CGEventRef wheel = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitLine, 1, 1);
+        CGEventSetIntegerValueField(wheel, kCGScrollWheelEventIsContinuous, 0);
+        NSEvent* scroll = [NSEvent eventWithCGEvent:wheel];
+        [window.contentView scrollWheel:scroll];
+        CFRelease(wheel);
     } else if (strcmp(value, "system-close") == 0) {
         [window performClose:nil];
     } else if (strcmp(value, "detached-input") == 0) {

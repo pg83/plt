@@ -1608,8 +1608,7 @@ NSRect WindowImpl::textInputScreenRect() const {
 
 NSSize WindowImpl::willResize(NSSize frameSize) const {
     const bool fullscreen = (window.styleMask & NSWindowStyleMaskFullScreen) != 0;
-    const bool viewAvailable = view != nil;
-    if (cocoaResizeUsesExactProposal(fullscreen, viewAvailable, viewAvailable && view.inLiveResize)) {
+    if (cocoaResizeUsesExactProposal(fullscreen, true, view.inLiveResize)) {
         // Fullscreen and non-interactive proposals from window managers must
         // land exactly. Cell snapping is only for live user drags.
         return frameSize;
@@ -1791,7 +1790,7 @@ void WindowImpl::preeditChanged(NSString* text) {
     if (input == nullptr) {
         return;
     }
-    if (text == nil || text.length == 0) {
+    if (text == nil) {
         if (preeditShown) {
             input->preedit({}, -1, -1);
             input->flush();

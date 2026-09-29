@@ -137,6 +137,9 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                 raise SystemExit(0)
             command("auxiliary")
             time.sleep(.1)
+            command("auxiliary-frame")
+            time.sleep(.1)
+            command("auxiliary-offscreen")
             command("close-auxiliary")
             command("retire-queued")
             command("title")
@@ -194,6 +197,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             cg.CGEventSetIntegerValueField(repeat, 8, 1)  # kCGKeyboardEventAutorepeat
             cg.CGEventPostToPid(app.pid, repeat)
             cf.CFRelease(repeat)
+            command("native-key-edges")
             wait(lambda: "KEY 1 1 " in text(), "native key repeat")
             key(0, 1 << 17)  # Shift
             key(11, 1 << 18)  # Control+B
