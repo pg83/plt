@@ -19,7 +19,13 @@ for fault in ("", "no-text-input", "no-clipboard", "no-primary", "no-cursor-shap
             commands.write("c\nw\n")
             s.logged("COMMAND w")
             s.screenshot("seat-removed", [(.1, .5, .9, .8, "40a060")])
+            focus = "FOCUS plt-desktop-options 1"
+            count = (s.artifacts / "client.log").read_text().count(focus)
             proxy.global_available("wl_seat", True)
+            s.ipc("workspace 2")
+            s.ipc("workspace 1")
+            s.focus()
+            s.wait(lambda: (s.artifacts / "client.log").read_text().count(focus) > count, "restored keyboard focus")
             s.key("b")
             s.logged("KEY 98 ")
             s.screenshot("seat-restored", [(.1, .5, .9, .8, "40a060")])

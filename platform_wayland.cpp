@@ -609,11 +609,6 @@ namespace {
         }
     }
 
-    [[noreturn]]
-    void fail(StringView message) {
-        Errno(errno == 0 ? EINVAL : errno).raise(message);
-    }
-
     void offerMime(Offer& offer, const char* mime) {
         offer.addMime(mime);
         if (!textMime(mime)) {
@@ -1336,11 +1331,11 @@ PlatformImpl::PlatformImpl(ObjPool& owner)
 void PlatformImpl::initialize() {
     display = chaos(Fault::DisplayConnect) ? nullptr : wl_display_connect(nullptr);
     if (display == nullptr) {
-        fail(u8"wl_display_connect failed");
+        Errno(errno).raise(StringView(u8"wl_display_connect failed"));
     }
     xkbContext = chaos(Fault::XkbContext) ? nullptr : xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     if (xkbContext == nullptr) {
-        fail(u8"xkb_context_new failed");
+        Errno(ENOMEM).raise(StringView(u8"xkb_context_new failed"));
     }
     const char* locale = getenv("LC_ALL");
     if (locale == nullptr || *locale == 0) {
@@ -1361,10 +1356,10 @@ void PlatformImpl::initialize() {
     registry = wl_display_get_registry(display);
     wl_registry_add_listener(registry, &registryListener, this);
     if ((chaos(Fault::RegistryRoundtrip) ? -1 : wl_display_roundtrip(display)) < 0 || (chaos(Fault::RegistryRoundtrip) ? -1 : wl_display_roundtrip(display)) < 0) {
-        fail(u8"Wayland registry roundtrip failed");
+        Errno(errno).raise(StringView(u8"Wayland registry roundtrip failed"));
     }
     if (compositor == nullptr || wmBase == nullptr || seat == nullptr) {
-        fail(u8"Wayland compositor lacks required globals");
+        Errno(EPROTONOSUPPORT).raise(StringView(u8"Wayland compositor lacks required globals"));
     }
     createSelectionDevices();
     flushDisplay();
@@ -2554,7 +2549,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     clipboardSelection.window = this;
     surface = chaos(Fault::WindowSurface) ? nullptr : wl_compositor_create_surface(platform.compositor);
     if (surface == nullptr) {
-        fail(u8"wl_compositor_create_surface failed");
+        Errno(ENOMEM).raise(StringView(u8"wl_compositor_create_surface failed"));
     }
     wl_proxy_set_user_data((struct wl_proxy*)(surface), this);
     wl_surface_add_listener(surface, &surfaceListener, this);

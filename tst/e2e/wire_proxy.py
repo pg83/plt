@@ -93,6 +93,7 @@ class Proxy:
         self.send_lock = threading.Lock()
         self.globals = {}
         self.retired = {}
+        self.restored = {}
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(self.path)
         self.listener.listen(1)
@@ -126,6 +127,8 @@ class Proxy:
         if direction != "event":
             if message.attrib["name"] in ("release", "destroy") and interface in self.retired:
                 self.retired[interface].set()
+            if interface == "wl_seat" and message.attrib["name"] == "get_keyboard" and interface in self.restored:
+                self.restored[interface].set()
             return frame
         if interface == "wl_registry" and message.attrib["name"] == "global":
             name = values["interface"].rstrip(b"\0").decode()
@@ -229,6 +232,8 @@ class Proxy:
         registry, values = self.globals[interface]
         retired = self.retired.setdefault(interface, threading.Event())
         retired.clear()
+        restored = self.restored.setdefault(interface, threading.Event())
+        restored.clear()
         name = "global" if available else "global_remove"
         events = self.interfaces["wl_registry"]["event"]
         event = next(event for event in events if event.attrib["name"] == name)
@@ -237,6 +242,8 @@ class Proxy:
             self.primary.sendall(frame)
         if not available:
             assert retired.wait(timeout=5), f"client did not release {interface}"
+        else:
+            assert restored.wait(timeout=5), f"client did not bind {interface}"
         with self.session.artifacts.joinpath("global-faults.log").open("a") as log:
             log.write(f"{interface} {int(available)}\n")
 

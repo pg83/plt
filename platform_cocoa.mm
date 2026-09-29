@@ -666,6 +666,7 @@ namespace {
         Scheduler* scheduler_ = nullptr;
         bool applicationReady_ = false;
         bool stopRequested_ = false;
+        u32 runDepth_ = 0;
     };
 
     NSString* stringFromView(StringView value) {
@@ -1055,21 +1056,35 @@ void PlatformImpl::run() {
         stopRequested_ = false;
         return;
     }
+    ++runDepth_;
     if (applicationReady_) {
-        [NSApp run];
+        if (runDepth_ == 1) {
+            [NSApp run];
+        } else {
+            // NSApplication's stop flag is global to all recursive run calls.
+            // A nested application wait owns its own pump, so stopping it
+            // leaves the outer desktop session alive.
+            while (!stopRequested_) {
+                NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:[NSDate distantFuture] inMode:NSDefaultRunLoopMode dequeue:YES];
+                [NSApp sendEvent:event];
+            }
+        }
     } else {
         // Descriptors and timers live directly on the main CFRunLoop. A
         // windowless platform therefore needs no NSApplication (and no
         // WindowServer), which keeps the poller usable by services and tests.
         CFRunLoopRun();
     }
+    --runDepth_;
     stopRequested_ = false;
 }
 
 void PlatformImpl::stop() {
     stopRequested_ = true;
     if (applicationReady_) {
-        [NSApp stop:nil];
+        if (runDepth_ <= 1) {
+            [NSApp stop:nil];
+        }
         NSEvent* event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
         [NSApp postEvent:event atStart:NO];
     } else {
