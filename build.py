@@ -286,19 +286,20 @@ if system == "Linux" and not platforms_headless:
     group("e2e", e2e_run)
 
 if system == "Darwin" and not platforms_headless:
+    native_color = dependency(ldflags=["-Wl,-framework,ColorSync"])
     cocoa_e2e = program(
         name="e2e_cocoa_desktop",
         output="$(B)/e2e/desktop",
         srcs=["$(S)/tst/e2e/cocoa/desktop.cpp", "$(S)/tst/e2e/cocoa/native.mm"],
         cxxflags=backend_cxxflags,
-        deps=[libplt_test, libstd],
+        deps=[libplt_test, libstd, native_color],
     )
     cocoa_recovery = program(
         name="e2e_cocoa_recovery",
         output="$(B)/e2e/recovery",
         srcs=["$(S)/tst/e2e/cocoa/recovery.cpp", "$(S)/tst/e2e/cocoa/native.mm"],
         cxxflags=backend_cxxflags,
-        deps=[libplt_test, libstd],
+        deps=[libplt_test, libstd, native_color],
     )
     cocoa_importer = program(
         name="e2e_cocoa_importer",
@@ -311,20 +312,20 @@ if system == "Darwin" and not platforms_headless:
         output="$(B)/e2e/passive",
         srcs=["$(S)/tst/e2e/cocoa/passive.cpp", "$(S)/tst/e2e/cocoa/native.mm"],
         cxxflags=backend_cxxflags,
-        deps=[libplt_test, libstd],
+        deps=[libplt_test, libstd, native_color],
     )
     cocoa_no_drop = program(
         name="e2e_cocoa_no_drop",
         output="$(B)/e2e/no_drop",
         srcs=["$(S)/tst/e2e/cocoa/no_drop.cpp", "$(S)/tst/e2e/cocoa/native.mm"],
         cxxflags=backend_cxxflags,
-        deps=[libplt_test, libstd],
+        deps=[libplt_test, libstd, native_color],
     )
     cocoa_startup = program(
         name="e2e_cocoa_startup",
         output="$(B)/e2e/startup",
         srcs=["$(S)/tst/e2e/cocoa/startup.cpp", "$(S)/tst/e2e/cocoa/native.mm"],
         cxxflags=backend_cxxflags,
-        deps=[libplt_test, libstd],
+        deps=[libplt_test, libstd, native_color],
     )
     group("e2e-binaries", cocoa_e2e, cocoa_recovery, cocoa_importer, cocoa_passive, cocoa_no_drop, cocoa_startup)

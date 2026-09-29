@@ -8,6 +8,7 @@
 
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
+#import <ColorSync/ColorSync.h>
 #import <QuartzCore/CAMetalLayer.h>
 
 using namespace plt;
@@ -18,6 +19,7 @@ namespace {
     struct Canvas final: public MetalCanvas {
         explicit Canvas(const RenderContext& context);
         ~Canvas();
+        void restoreProfile();
         bool paint(const WindowInfo& info, u32 color) override;
         void describe() override;
         bool command(const char* value) override;
@@ -25,7 +27,9 @@ namespace {
         id<NSTextInputClient> savedInput = nil;
         id dataProvider = nil;
         id backingObserver = nil;
-        NSColorSpace* originalColorSpace = nil;
+        CFUUIDRef proofDisplay = nullptr;
+        NSDictionary* originalProfiles = nil;
+        NSURL* proofProfile = nil;
         NSWindow* source = nil;
         CGDisplayModeRef originalMode = nullptr;
 
@@ -55,7 +59,22 @@ Canvas::Canvas(const RenderContext& context)
 }
 
 Canvas::~Canvas() {
+    restoreProfile();
     [[NSNotificationCenter defaultCenter] removeObserver:backingObserver];
+}
+
+void Canvas::restoreProfile() {
+    if (proofDisplay == nullptr) {
+        return;
+    }
+    NSDictionary* reset = @{(__bridge NSString*)kColorSyncDeviceDefaultProfileID : [NSNull null]};
+    STD_INSIST(ColorSyncDeviceSetCustomProfiles(kColorSyncDisplayDeviceClass, proofDisplay, (__bridge CFDictionaryRef)reset));
+    if (originalProfiles.count != 0) {
+        STD_INSIST(ColorSyncDeviceSetCustomProfiles(kColorSyncDisplayDeviceClass, proofDisplay, (__bridge CFDictionaryRef)originalProfiles));
+    }
+    CFRelease(proofDisplay);
+    proofDisplay = nullptr;
+    [[NSFileManager defaultManager] removeItemAtURL:proofProfile error:nil];
 }
 
 bool Canvas::paint(const WindowInfo& info, u32 color) {
@@ -167,13 +186,20 @@ bool Canvas::command(const char* value) {
         NSEvent* event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagControl timestamp:0 windowNumber:window.windowNumber context:nil characters:@"π" charactersIgnoringModifiers:@"π" isARepeat:NO keyCode:0xff];
         [NSApp postEvent:event atStart:NO];
     } else if (strcmp(value, "color-proof") == 0) {
-        // Document soft proofing changes real window backing properties even
-        // when WindowServer exposes only monitors with a 1x pixel scale.
-        originalColorSpace = window.colorSpace;
-        window.colorSpace = [NSColorSpace displayP3ColorSpace];
+        // Monitor calibration changes the display profile through ColorSync;
+        // WindowServer then publishes the backing-property notification.
+        proofDisplay = CGDisplayCreateUUIDFromDisplayID(CGMainDisplayID());
+        STD_INSIST(proofDisplay != nullptr);
+        NSDictionary* info = (__bridge_transfer NSDictionary*)ColorSyncDeviceCopyDeviceInfo(kColorSyncDisplayDeviceClass, proofDisplay);
+        STD_INSIST(info != nil);
+        originalProfiles = info[(__bridge NSString*)kColorSyncCustomProfiles];
+        NSString* path = [NSTemporaryDirectory() stringByAppendingPathComponent:[[NSUUID UUID].UUIDString stringByAppendingString:@".icc"]];
+        proofProfile = [NSURL fileURLWithPath:path];
+        STD_INSIST([[NSColorSpace displayP3ColorSpace].ICCProfileData writeToURL:proofProfile atomically:YES]);
+        NSDictionary* profile = @{(__bridge NSString*)kColorSyncDeviceDefaultProfileID : proofProfile};
+        STD_INSIST(ColorSyncDeviceSetCustomProfiles(kColorSyncDisplayDeviceClass, proofDisplay, (__bridge CFDictionaryRef)profile));
     } else if (strcmp(value, "restore-color-proof") == 0) {
-        window.colorSpace = originalColorSpace;
-        originalColorSpace = nil;
+        restoreProfile();
     } else if (strcmp(value, "backing-mode") == 0) {
         const CGDirectDisplayID display = CGMainDisplayID();
         originalMode = CGDisplayCopyDisplayMode(display);
