@@ -1169,9 +1169,15 @@ namespace {
     },
         // Version 2 events; never delivered because the manager is bound at
         // version 1.
+#ifdef ZWP_TEXT_INPUT_V3_ACTION_SINCE_VERSION
         .action = [](void*, struct zwp_text_input_v3*, u32, u32) {},
+#endif
+#ifdef ZWP_TEXT_INPUT_V3_LANGUAGE_SINCE_VERSION
         .language = [](void*, struct zwp_text_input_v3*, const char*) {},
+#endif
+#ifdef ZWP_TEXT_INPUT_V3_PREEDIT_HINT_SINCE_VERSION
         .preedit_hint = [](void*, struct zwp_text_input_v3*, u32, u32, u32) {},
+#endif
     };
 
     u32 cursorShape(PointerIcon icon, u32 version) {
