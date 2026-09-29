@@ -46,6 +46,12 @@ namespace {
         "flush-error",
         "display-read",
         "display-dispatch",
+        "display-connect",
+        "xkb-context",
+        "registry-roundtrip",
+        "no-compositor",
+        "no-shell",
+        "no-seat",
     };
     static_assert(sizeof(names) / sizeof(*names) == (unsigned)Fault::Count);
 

@@ -309,6 +309,7 @@ namespace {
     struct PlatformImpl final: public Platform, public PollCallback {
         explicit PlatformImpl(ObjPool& owner);
         ~PlatformImpl();
+        void initialize();
 
         Window* createWindow(ObjPool& owner, const WindowOptions& options) override;
         LoopWake* createLoopWake(ObjPool& owner, TimerCallback& callback) override;
@@ -1365,11 +1366,14 @@ PlatformImpl::PlatformImpl(ObjPool& owner)
     allocator_ = SmallObjAllocator::create(&owner);
     scheduler_ = Scheduler::create(owner, *poller_);
     scheduler_->spawn(repeatBody_, repeatStack_, sizeof(repeatStack_));
-    display = wl_display_connect(nullptr);
+}
+
+void PlatformImpl::initialize() {
+    display = chaos(Fault::DisplayConnect) ? nullptr : wl_display_connect(nullptr);
     if (display == nullptr) {
         fail(u8"wl_display_connect failed");
     }
-    xkbContext = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    xkbContext = chaos(Fault::XkbContext) ? nullptr : xkb_context_new(XKB_CONTEXT_NO_FLAGS);
     if (xkbContext == nullptr) {
         fail(u8"xkb_context_new failed");
     }
@@ -1391,7 +1395,7 @@ PlatformImpl::PlatformImpl(ObjPool& owner)
     }
     registry = wl_display_get_registry(display);
     wl_registry_add_listener(registry, &registryListener, this);
-    if (wl_display_roundtrip(display) < 0 || wl_display_roundtrip(display) < 0) {
+    if ((chaos(Fault::RegistryRoundtrip) ? -1 : wl_display_roundtrip(display)) < 0 || (chaos(Fault::RegistryRoundtrip) ? -1 : wl_display_roundtrip(display)) < 0) {
         fail(u8"Wayland registry roundtrip failed");
     }
     if (compositor == nullptr || wmBase == nullptr || seat == nullptr) {
@@ -1573,11 +1577,20 @@ void PlatformImpl::ready(PollFD event) {
 
 void PlatformImpl::bindRegistry(u32 name, const char* interface, u32 version) {
     if (StringView(interface) == StringView(wl_compositor_interface.name)) {
+        if (chaos(Fault::NoCompositor)) {
+            return;
+        }
         compositor = (struct wl_compositor*)(wl_registry_bind(registry, name, &wl_compositor_interface, min(version, 6u)));
     } else if (StringView(interface) == StringView(xdg_wm_base_interface.name)) {
+        if (chaos(Fault::NoShell)) {
+            return;
+        }
         wmBase = (struct xdg_wm_base*)(wl_registry_bind(registry, name, &xdg_wm_base_interface, min(version, 6u)));
         xdg_wm_base_add_listener(wmBase, &wmBaseListener, this);
     } else if (StringView(interface) == StringView(wl_seat_interface.name) && seat == nullptr) {
+        if (chaos(Fault::NoSeat)) {
+            return;
+        }
         seat = (struct wl_seat*)(wl_registry_bind(registry, name, &wl_seat_interface, chaos(Fault::LegacySeat) ? 1u : min(version, 8u)));
         seatName = name;
         wl_seat_add_listener(seat, &seatListener, this);
@@ -3120,5 +3133,9 @@ RenderContext WindowImpl::renderContext() const {
 }
 
 Platform* plt::createWaylandPlatform(ObjPool& owner) {
-    return owner.make<PlatformImpl>(owner);
+    // Register the object with its owner before fallible native startup:
+    // unwinding the owner then releases every partially acquired resource.
+    PlatformImpl* platform = owner.make<PlatformImpl>(owner);
+    platform->initialize();
+    return platform;
 }

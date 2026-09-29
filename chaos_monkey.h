@@ -36,6 +36,12 @@ namespace plt {
         FlushError,
         DisplayRead,
         DisplayDispatch,
+        DisplayConnect,
+        XkbContext,
+        RegistryRoundtrip,
+        NoCompositor,
+        NoShell,
+        NoSeat,
         Count,
     };
 
