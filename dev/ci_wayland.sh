@@ -10,7 +10,7 @@ archive="$work/wayland-1.26.0.tar.bz2"
 curl --fail --location --retry 3 \
     https://gitlab.freedesktop.org/wayland/wayland/-/archive/1.26.0/wayland-1.26.0.tar.bz2 \
     --output "$archive"
-echo "ebf5fff1c8b11c24ceec74ff3047aefdb07efee8ce09bf3b856975aba3540d15  $archive" | sha256sum --check
+echo "ebf5fff1c8b11c24ceec74ff3047aefdb07efee8ce09bf3b856975aba3540d15  $archive" | sha256sum -c
 tar -xjf "$archive" -C "$work"
 patch -d "$work/wayland-1.26.0" -p1 < "$root/dev/wayland-queued-proxy.patch"
 meson setup "$work/build" "$work/wayland-1.26.0" \

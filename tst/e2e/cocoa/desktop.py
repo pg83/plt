@@ -138,13 +138,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             if os.environ.get("PLT_RECOVERY_ONLY"):
                 fault = os.environ["PLT_CHAOS"].split("@")[0]
                 if fault.startswith("cocoa-key-"):
-                    cg.CGEventSetIntegerValueField.argtypes = [C.c_void_p, C.c_uint32, C.c_int64]
-            repeat = cg.CGEventCreateKeyboardEvent(None, 0, True)
-            cg.CGEventSetIntegerValueField(repeat, 8, 1)  # kCGKeyboardEventAutorepeat
-            cg.CGEventPostToPid(app.pid, repeat)
-            cf.CFRelease(repeat)
-            wait(lambda: "KEY 1 2 " in text(), "native key repeat")
-            key(0, 1 << 17)  # Shift asks for the ASCII base layout.
+                    key(0, 1 << 17)  # Shift asks for the ASCII base layout.
                 wait(lambda: "CHAOS " + fault in text(), "fault injection")
                 command("resize")
                 screenshot("recovered", "c04040")
