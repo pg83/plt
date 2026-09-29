@@ -24,6 +24,7 @@ namespace {
         id<NSTextInputClient> savedInput = nil;
         id dataProvider = nil;
         NSWindow* source = nil;
+        CGDisplayModeRef originalMode = nullptr;
 
         CAMetalLayer* layer;
         NSWindow* window;
@@ -134,6 +135,47 @@ bool Canvas::command(const char* value) {
     id<NSTextInputClient> client = (id<NSTextInputClient>)window.contentView;
     if (strcmp(value, "native-state") == 0) {
         printf("MINIMIZED %d\n", window.miniaturized);
+    } else if (strcmp(value, "modified-ime") == 0) {
+        // An embedded input method commits while processing a shortcut.
+        // AppKit's currentEvent must still carry the shortcut modifiers.
+        __block id monitor = nil;
+        monitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                                        handler:^NSEvent*(NSEvent* event) {
+                                                          if (event.keyCode == 0xff && (event.modifierFlags & NSEventModifierFlagControl)) {
+                                                              [client insertText:@"Z" replacementRange:NSMakeRange(NSNotFound, 0)];
+                                                              puts("MODIFIED IME COMMITTED");
+                                                              [NSEvent removeMonitor:monitor];
+                                                              monitor = nil;
+                                                          }
+                                                          return event;
+                                                        }];
+        NSEvent* event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagControl timestamp:0 windowNumber:window.windowNumber context:nil characters:@"π" charactersIgnoringModifiers:@"π" isARepeat:NO keyCode:0xff];
+        [NSApp postEvent:event atStart:NO];
+    } else if (strcmp(value, "backing-mode") == 0) {
+        const CGDirectDisplayID display = CGMainDisplayID();
+        originalMode = CGDisplayCopyDisplayMode(display);
+        CFArrayRef modes = CGDisplayCopyAllDisplayModes(display, (__bridge CFDictionaryRef) @{(__bridge NSString*)kCGDisplayShowDuplicateLowResolutionModes : @YES});
+        STD_INSIST(originalMode != nullptr && modes != nullptr);
+        const double scale = window.backingScaleFactor;
+        bool changed = false;
+        for (CFIndex index = 0; index < CFArrayGetCount(modes); ++index) {
+            auto mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, index);
+            const size_t width = CGDisplayModeGetWidth(mode);
+            const size_t pixels = CGDisplayModeGetPixelWidth(mode);
+            printf("DISPLAY MODE %zu %zu\n", width, pixels);
+            if (!changed && width != 0 && (double)pixels / width != scale) {
+                STD_INSIST(CGDisplaySetDisplayMode(display, mode, nullptr) == kCGErrorSuccess);
+                changed = true;
+            }
+        }
+        CFRelease(modes);
+        [window center];
+        puts(changed ? "BACKING MODE CHANGED" : "BACKING MODE UNAVAILABLE");
+    } else if (strcmp(value, "restore-backing-mode") == 0) {
+        STD_INSIST(CGDisplaySetDisplayMode(CGMainDisplayID(), originalMode, nullptr) == kCGErrorSuccess);
+        CGDisplayModeRelease(originalMode);
+        originalMode = nullptr;
+        [window center];
     } else if (strcmp(value, "native-key-edges") == 0) {
         struct KeyCase {
             NSString* characters;

@@ -311,6 +311,15 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             command("unfullscreen")
             time.sleep(1)
             screenshot("windowed", "40a060")
+            before = len(text())
+            command("modified-ime")
+            wait(lambda: "MODIFIED IME COMMITTED" in text()[before:], "modified IME commit")
+            assert "TEXT 90\n" not in text()[before:]
+            screenshot("modified-ime", "40a060")
+            command("backing-mode")
+            screenshot("backing-mode", "40a060")
+            command("restore-backing-mode")
+            screenshot("restored-backing-mode", "40a060")
             command("open-document")
             commands.write("system-close\n")
             assert app.wait(timeout=15) == 0
