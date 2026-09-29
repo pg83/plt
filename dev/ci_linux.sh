@@ -5,14 +5,14 @@ mode=${1:-test}
 toolchain=${2:-clang}
 if [ -f /etc/alpine-release ]; then
     apk add --no-cache bash binutils clang21 g++ linux-headers lld python3 pkgconf \
-        wayland-dev wayland-protocols libxkbcommon-dev cairo-dev vulkan-headers vulkan-loader-dev
+        wayland-dev wayland-protocols libxkbcommon-dev cairo-dev fontconfig-dev vulkan-headers vulkan-loader-dev
     export CC=clang-21 CXX=clang++-21
     export LDFLAGS="${LDFLAGS:-} -fuse-ld=lld"
 else
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install --yes --no-install-recommends python3 pkg-config \
-        libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libcairo2-dev libvulkan-dev
+        libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libcairo2-dev libfontconfig-dev libvulkan-dev
     if [ "$toolchain" = gcc ]; then
         export CC=gcc CXX=g++
     else

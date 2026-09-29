@@ -225,7 +225,7 @@ if system == "Linux" and not platforms_headless:
     e2e_support = library(
         name="plt_e2e_support",
         srcs=["$(S)/tst/e2e/app.cpp", "$(S)/tst/e2e/vulkan.cpp"],
-        deps=[libplt, pkg_config("cairo"), pkg_config("vulkan")],
+        deps=[libplt, pkg_config("cairo"), pkg_config("fontconfig"), pkg_config("vulkan")],
     )
     pointer_xml = "$(S)/tst/e2e/support/wlr-virtual-pointer-unstable-v1.xml"
     pointer_header = "$(B)/e2e-protocol/virtual-pointer-client.h"

@@ -8,6 +8,7 @@
 #include <std/lib/buffer.h>
 
 #include <cairo.h>
+#include <fontconfig/fontconfig.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +19,17 @@
 using namespace plt;
 using namespace plt::e2e;
 using namespace stl;
+
+namespace {
+    struct FontCleanup {
+        ~FontCleanup();
+    };
+}
+
+FontCleanup::~FontCleanup() {
+    cairo_debug_reset_static_data();
+    FcFini();
+}
 
 namespace plt::e2e {
     class Surface {
@@ -161,6 +173,8 @@ App::App(Platform* shared)
     : owner(ObjPool::fromMemory())
     , platform(shared == nullptr ? Platform::create(*owner) : shared)
 {
+    // Runs at process exit, after every application and rendering context.
+    static FontCleanup fonts;
     setvbuf(stdout, nullptr, _IOLBF, 0);
 }
 
