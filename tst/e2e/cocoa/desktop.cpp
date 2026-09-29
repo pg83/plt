@@ -1,15 +1,14 @@
-#include "native.h"
-
 #include "fiber.h"
 #include "input.h"
+#include "native.h"
 #include "platform.h"
 
-#include <std/dbg/insist.h>
 #include <std/ios/input.h>
+#include <std/dbg/insist.h>
 #include <std/ios/output.h>
 #include <std/lib/buffer.h>
-#include <std/mem/obj_pool.h>
 #include <std/thr/runable.h>
+#include <std/mem/obj_pool.h>
 
 #include <fcntl.h>
 #include <stdio.h>

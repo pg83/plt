@@ -1,9 +1,10 @@
 # Real compositor scenarios
 
 Every scenario is a C++ application using plt's public API and a paired Python
-script. The driver configures the application through environment variables,
-starts an isolated headless Sway compositor, injects real keyboard and pointer
-input, and checks pixels captured by grim. Missing tools and timeouts fail the
+script. The driver configures the application through environment variables.
+Linux scenarios start an isolated headless Sway compositor, inject real keyboard
+and pointer input, and check pixels captured by grim. Cocoa scenarios use the
+runner's WindowServer, Metal, CoreGraphics input, and screencapture. Missing tools and timeouts fail the
 run. Each scenario preserves client/compositor logs, PNG screenshots and Sway
 window geometry; the runner writes `results.json` and continues after failures.
 
@@ -42,9 +43,37 @@ Run as a regular user with writable temporary storage and shared memory.
 | pipe_dashboard | Fiber waiting for external FIFO data |
 | worker | Background thread progress and event loop wakeups |
 | render_retry | Retrying deferred rendering |
+| file_transfer | Two concurrent document senders, mutex contention, socket backpressure, timeout and exact output bytes |
+| layout_preview | Headless rendering, resize/fullscreen layouts, failed presentation retry, exported pixels and desktop preview |
+| cocoa/desktop | Native Metal window, external keyboard/mouse, cursor shapes, clipboard, resizing and window state |
 
 Every Linux test job (GCC/glibc, Clang/musl, Clang/ASan, Clang/UBSan and
 coverage) runs both renderers, using the same compiler and instrumentation as
 the Wayland integration tests. All jobs are gated by `build`. Linux coverage includes their production code coverage
 in the report merged with Darwin. Screenshots and logs are uploaded on success
 and failure.
+
+## macOS
+
+The Darwin test and coverage jobs also build and run the Cocoa desktop program.
+The Python driver posts keyboard input to the application, mouse input through
+WindowServer, exchanges Unicode text using pbcopy/pbpaste, and checks captured
+window pixels through minimize/restore, maximize and fullscreen transitions.
+The renderer uses real Metal drawables. Missing graphical capabilities fail the
+scenario; there is no silent skip.
+
+```sh
+./build e2e-binaries
+python3 tst/e2e/run.py --binary-dir .build/e2e \
+    --source-dir tst/e2e/cocoa --renderer metal --artifacts .build/e2e-metal
+```
+
+## Coverage
+
+The merged Linux/Darwin report includes all compiled production objects in
+`libplt.a`, including code no test executable links. The CI coverage job requires
+at least **80% line coverage**. This is coverage from the complete test suite
+(Wayland integration, Cocoa checks and e2e); branch coverage is reported
+separately. Dependencies, drivers and sample programs do not count as production
+code. The new e2e scenarios brought the full suite to 83.47% (3935/4714 lines)
+in run [36612648647](https://github.com/pg83/plt/actions/runs/36612648647).

@@ -119,9 +119,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, help="merged lcov tracefile to write")
     parser.add_argument("--summary", help="optional per-file text summary to write")
+    parser.add_argument("--minimum-line-coverage", type=float, default=0, help="required percentage of covered production lines")
     parser.add_argument("inputs", nargs="+", help="shard lcov tracefiles")
     arguments = parser.parse_args()
 
+    if not 0 <= arguments.minimum_line_coverage <= 100:
+        parser.error("minimum line coverage must be between 0 and 100")
     files = {}
     for path in arguments.inputs:
         merge_tracefile(path, files)
@@ -136,6 +139,10 @@ def main():
         f"lines {totals['line_hits']}/{totals['lines']}, "
         f"branches {totals['branch_hits']}/{totals['branches']}"
     )
+    coverage = 100 * totals["line_hits"] / totals["lines"] if totals["lines"] else 0
+    if coverage < arguments.minimum_line_coverage:
+        print(f"line coverage {coverage:.2f}% is below {arguments.minimum_line_coverage:.2f}%", file=sys.stderr)
+        return 1
     return 0
 
 

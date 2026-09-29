@@ -2,8 +2,8 @@
 #include "poller.h"
 #include "platform_headless.h"
 
-#include <std/dbg/insist.h>
 #include <std/ios/input.h>
+#include <std/dbg/insist.h>
 #include <std/ios/output.h>
 #include <std/lib/vector.h>
 
