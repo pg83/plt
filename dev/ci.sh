@@ -65,6 +65,7 @@ assert b"PLT_CHAOS" not in production, "test fault controls in production archiv
 assert b"PLT_CHAOS" in testing, "test archive lacks fault controls"
 PY_CHECK
 fi
+e2e_status=0
 if [[ "$(uname -s)" == Linux && "$mode" != build ]]; then
     python3 ./build -B "$build_dir/plt" -j "$jobs" e2e-binaries
     renderers="shm lavapipe"
@@ -80,13 +81,14 @@ if [[ "$(uname -s)" == Linux && "$mode" != build ]]; then
         "${runner[@]}" python3 tst/e2e/run.py --binary-dir "$build_dir/plt/e2e" \
             --artifacts "$build_dir/e2e-$renderer" --renderer "$renderer" || e2e_status=1
     done
-    if [[ "$e2e_status" != 0 ]]; then exit "$e2e_status"; fi
 fi
 if [[ "$(uname -s)" == Darwin && "$mode" != build ]]; then
     python3 ./build -B "$build_dir/plt" -j "$jobs" e2e-binaries
     python3 tst/e2e/run.py --binary-dir "$build_dir/plt/e2e" \
-        --artifacts "$build_dir/e2e-metal" --renderer metal --source-dir tst/e2e/cocoa
+        --artifacts "$build_dir/e2e-metal" --renderer metal --source-dir tst/e2e/cocoa || e2e_status=1
 fi
 if [[ "$mode" == coverage ]]; then
     python3 dev/ci_coverage.py "$build_dir/plt" "$build_dir/profiles" "$root/.build/coverage"
 fi
+
+exit "$e2e_status"
