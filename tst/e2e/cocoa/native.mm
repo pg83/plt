@@ -204,10 +204,10 @@ bool Canvas::command(const char* value) {
             [item setString:@"dropped document" forType:NSPasteboardTypeString];
             view.payload = item;
         }
-        if (strcmp(value, "drag-lost") == 0) {
+        if (strcmp(value, "drag-lost") == 0 || strcmp(value, "drag-lostfile") == 0) {
             NSPasteboardItem* item = [NSPasteboardItem new];
             dataProvider = [LostDocumentProvider new];
-            [item setDataProvider:dataProvider forTypes:@[ NSPasteboardTypeString ]];
+            [item setDataProvider:dataProvider forTypes:@[ strcmp(value, "drag-lostfile") == 0 ? NSPasteboardTypeFileURL : NSPasteboardTypeString ]];
             view.payload = item;
         }
         source.contentView = view;

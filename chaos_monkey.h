@@ -43,6 +43,10 @@ namespace plt {
         NoShell,
         NoSeat,
         LegacyDataDevice,
+        PollError,
+        WakePipe,
+        SignalMask,
+        SignalPending,
         Count,
     };
 

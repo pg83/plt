@@ -136,6 +136,18 @@ void Desktop::command(const char* line) {
         window->requestMinimumSize(200, 160);
         window->requestResizeUnit(8, 16, 4, 6);
         window->requestResize(640, 360);
+    } else if (strcmp(line, "resize-free") == 0) {
+        window->requestResizeUnit(1, 1, 0, 0);
+    } else if (strcmp(line, "resize-base") == 0) {
+        window->requestResizeUnit(8, 16, 2000, 2000);
+    } else if (strcmp(line, "open-document") == 0) {
+        window->requestOpenUri(StringView("\xff", 1));
+        window->requestOpenUri(StringView(u8"http://["));
+        Buffer uri;
+        uri.append("file://", 7);
+        const char* path = getenv("PLT_DROP_FILE");
+        uri.append(path, strlen(path));
+        window->requestOpenUri(StringView(uri));
     } else if (strcmp(line, "title") == 0) {
         window->requestTitle(StringView(u8"Edited document"));
         window->requestAttention();
@@ -184,7 +196,7 @@ void Desktop::command(const char* line) {
         color = 0x40a060;
     } else if (strcmp(line, "auxiliary") == 0) {
         auxiliary = ObjPool::fromMemory();
-        Window* pending = platform->createWindow(*auxiliary, {});
+        Window* pending = platform->createWindow(*auxiliary, {.appName = StringView("\xff", 1)});
         canvas->holdInput(pending->renderContext());
         pending->info();
         pending->requestFrame();

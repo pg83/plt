@@ -53,6 +53,10 @@ namespace {
         "no-shell",
         "no-seat",
         "legacy-data-device",
+        "poll-error",
+        "wake-pipe",
+        "signal-mask",
+        "signal-pending",
     };
     static_assert(sizeof(names) / sizeof(*names) == (unsigned)Fault::Count);
 

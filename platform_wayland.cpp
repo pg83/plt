@@ -490,13 +490,13 @@ namespace {
         sigset_t pending;
         sigemptyset(&blocked);
         sigaddset(&blocked, SIGPIPE);
-        const int maskError = pthread_sigmask(SIG_BLOCK, &blocked, &previous);
+        const int maskError = chaos(Fault::SignalMask) ? EINVAL : pthread_sigmask(SIG_BLOCK, &blocked, &previous);
         if (maskError != 0) {
             errno = maskError;
             return -1;
         }
         bool wasPending = false;
-        if (sigpending(&pending) == 0) {
+        if ((chaos(Fault::SignalPending) ? -1 : sigpending(&pending)) == 0) {
             wasPending = sigismember(&pending, SIGPIPE) == 1;
         }
         const ssize_t result = chaos(Fault::WriteInterrupted) || chaos(Fault::WriteAgain) || chaos(Fault::SelectionWrite) ? -1 : chaos(Fault::WriteZero) ? 0 : write(fd, data, size);

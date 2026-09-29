@@ -7,17 +7,17 @@ from session import Session
 root = Path(os.environ["PLT_E2E_ARTIFACTS"])
 for fault in ("selection-pipe", "selection-flags", "selection-set-flags", "selection-read", "read-interrupted", "read-again",
               "selection-write", "write-interrupted", "write-again", "write-zero", "compose-table",
-              "keymap-map", "keymap-compile", "keymap-state", "send-flags", "send-set-flags", "utf8-string"):
+              "keymap-map", "keymap-compile", "keymap-state", "send-flags", "send-set-flags", "utf8-string", "signal-mask", "signal-pending", "frame-read"):
     os.environ["PLT_E2E_ARTIFACTS"] = str(root / fault)
     with Session(fault) as s:
-        injected = {"send-flags": "selection-flags", "send-set-flags": "selection-set-flags"}.get(fault, fault)
+        injected = {"send-flags": "selection-flags", "send-set-flags": "selection-set-flags", "frame-read": "read-again"}.get(fault, fault)
         s.launch(PLT_CHAOS="" if fault == "utf8-string" else f"{injected}@0")
         s.focus()
-        if fault in ("selection-write", "write-interrupted", "write-again", "write-zero", "send-flags", "send-set-flags"):
+        if fault in ("selection-write", "write-interrupted", "write-again", "write-zero", "send-flags", "send-set-flags", "signal-mask", "signal-pending"):
             s.key("c")
             s.logged("COPY")
             value = s.command("wl-paste", "--no-newline")
-            assert value == (b"" if fault in ("selection-write", "send-flags", "send-set-flags") else b"recovered"), value
+            assert value == (b"" if fault in ("selection-write", "send-flags", "send-set-flags", "signal-mask") else b"recovered"), value
             s.logged(f"CHAOS {injected}")
             assert s.command("wl-paste", "--no-newline") == b"recovered"
         else:
@@ -31,6 +31,9 @@ for fault in ("selection-pipe", "selection-flags", "selection-set-flags", "selec
                                         capture_output=True, timeout=5)
                 return result.returncode == 0 and result.stdout == b"recovered"
             s.wait(clipboard_ready, "clipboard owner")
+            if fault == "frame-read":
+                s.key("g")
+                s.logged("PREVIEW UNAVAILABLE")
             s.key("v")
             if fault != "utf8-string":
                 s.logged(f"CHAOS {injected}")

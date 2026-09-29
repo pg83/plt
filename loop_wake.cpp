@@ -1,11 +1,12 @@
 #include "loop_wake.h"
 
 #include "poller.h"
+#include "chaos_monkey.h"
 
-#include <std/lib/buffer.h>
-#include <std/mem/obj_pool.h>
 #include <std/str/view.h>
 #include <std/sys/throw.h>
+#include <std/lib/buffer.h>
+#include <std/mem/obj_pool.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -16,12 +17,14 @@ using namespace stl;
 
 namespace {
     struct PipeLoopWake final: public LoopWake, public PollCallback {
+        ~PipeLoopWake() noexcept;
+
         PipeLoopWake(Poller& poller_, TimerCallback& callback_)
             : poller(poller_)
             , callback(callback_)
         {
             int fds[2];
-            if (::pipe(fds) != 0) {
+            if ((chaos(Fault::WakePipe) ? -1 : ::pipe(fds)) != 0) {
                 Errno(errno).raise(StringView(u8"loop wake pipe failed"));
             }
             for (const int fd : fds) {
@@ -60,6 +63,12 @@ namespace {
         int readFd = -1;
         int writeFd = -1;
     };
+}
+
+PipeLoopWake::~PipeLoopWake() noexcept {
+    poller.cancel(waiter);
+    ::close(readFd);
+    ::close(writeFd);
 }
 
 LoopWake* LoopWake::create(ObjPool& owner, Poller& poller, TimerCallback& callback) {

@@ -1136,11 +1136,13 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     // resize commit, so the new-size surface lands a tick after the bounds
     // change and the old surface flashes at the new size. screenChanged()
     // retargets this link across displays.
-    if (!chaos(Fault::DisplayLink) && CVDisplayLinkCreateWithActiveCGDisplays(&displayLink) == kCVReturnSuccess && displayLink != nullptr) {
+    const CVReturn linkStatus = chaos(Fault::DisplayLink) ? kCVReturnError : CVDisplayLinkCreateWithActiveCGDisplays(&displayLink);
+    if (linkStatus == kCVReturnSuccess && displayLink != nullptr) {
         displayLinkTarget = [PltDisplayLinkTarget new];
         displayLinkTarget->gate.attach(this);
         displayLinkContext = (__bridge_retained void*)(displayLinkTarget);
-        if (chaos(Fault::DisplayCallback) || CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback, displayLinkContext) != kCVReturnSuccess) {
+        const CVReturn callbackStatus = chaos(Fault::DisplayCallback) ? kCVReturnError : CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback, displayLinkContext);
+        if (callbackStatus != kCVReturnSuccess) {
             displayLinkTarget->gate.detach();
             CFBridgingRelease(displayLinkContext);
             displayLinkContext = nullptr;

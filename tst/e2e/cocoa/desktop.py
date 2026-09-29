@@ -191,15 +191,17 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             wait(lambda: "FRAME 640 360 " in text(), "resize in pixels")
             command("move")
             screenshot("resized", "8040a0")
-            # Resize through WindowServer's interactive border tracking.
-            _, x, y, width, height = geometry()
-            for kind, dx, dy in ((5, 0, 0), (1, 0, 0), (6, 20, 20), (6, 57, 41), (2, 57, 41)):
-                event = cg.CGEventCreateMouseEvent(None, kind, Point(x + width - 2 + dx, y + height - 2 + dy), 0)
-                cg.CGEventPost(0, event)
-                cf.CFRelease(event)
-                time.sleep(.1)
-            wait(lambda: geometry()[3:] != (width, height), "interactive window resize")
-            screenshot("live-resized", "8040a0")
+            # Resize grid changes apply while WindowServer tracks the border.
+            for mode in ("resize", "resize-free", "resize-base"):
+                command(mode)
+                _, x, y, width, height = geometry()
+                for kind, dx, dy in ((5, 0, 0), (1, 0, 0), (6, 20, 20), (6, 57, 41), (2, 57, 41)):
+                    event = cg.CGEventCreateMouseEvent(None, kind, Point(x + width - 2 + dx, y + height - 2 + dy), 0)
+                    cg.CGEventPost(0, event)
+                    cf.CFRelease(event)
+                    time.sleep(.1)
+                wait(lambda: geometry()[3:] != (width, height), "interactive window resize")
+                screenshot("live-" + mode, "8040a0")
             for icon in range(37):
                 command(f"cursor {icon}")
             command("clear-clipboard")
@@ -216,7 +218,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             wait(lambda: "PASTED external document" in text(), "external paste")
             screenshot("pasted", "40a060")
             drops = [("text", "dropped document", 0), ("file", drop_file.as_uri(), 0),
-                     ("both", "dropped document", 1), ("lost", "", 0), ("text", None, 2), ("text", None, 3),
+                     ("both", "dropped document", 1), ("lost", "", 0), ("lostfile", "", 0), ("text", None, 2), ("text", None, 3),
                      ("text", None, 4), ("text", "", 5), ("text", None, 6)]
             for kind, expected, mode in drops:
                 command(f"dropmode {mode}")
@@ -244,6 +246,8 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                     assert "DROPPED " not in text()[start:]
                 command("close-source")
                 screenshot(f"dropped-{kind}-{mode}", "40a060")
+            command("open-document")
+            command("restore")
             command("minimize")
             command("restore")
             screenshot("restored", "40a060")

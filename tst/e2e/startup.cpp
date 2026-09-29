@@ -1,4 +1,6 @@
 #include "app.h"
+#include "poller.h"
+#include "loop_wake.h"
 
 #include <std/sys/throw.h>
 
@@ -9,8 +11,9 @@ using namespace plt::e2e;
 using namespace stl;
 
 namespace {
-    struct Viewer final: public App {
+    struct Viewer final: public App, public TimerCallback {
         void paint(Canvas& canvas) override;
+        void ready() override;
     };
 }
 
@@ -19,10 +22,15 @@ void Viewer::paint(Canvas& canvas) {
     canvas.text(20, 40, StringView(u8"Desktop connection recovered"));
 }
 
+void Viewer::ready() {
+    puts("READY TO IMPORT");
+}
+
 int main() {
     try {
         Viewer viewer;
         viewer.open("plt-startup");
+        viewer.platform->createLoopWake(*viewer.owner, viewer)->signal();
         viewer.run();
     } catch (Exception& error) {
         const StringView description = error.description();

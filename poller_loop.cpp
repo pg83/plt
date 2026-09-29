@@ -247,7 +247,7 @@ void PollerLoopImpl::wait(u64 monotonicDeadline) {
     }
     int result;
     do {
-        result = chaos(Fault::PollInterrupted) ? -1 : ::poll(pollFDs.mutData(), pollFDs.length(), timeoutMilliseconds);
+        result = chaos(Fault::PollInterrupted) || chaos(Fault::PollError) ? -1 : ::poll(pollFDs.mutData(), pollFDs.length(), timeoutMilliseconds);
     } while (result < 0 && errno == EINTR);
     if (result < 0) {
         Errno(errno == 0 ? EINVAL : errno).raise(StringView(u8"poll failed"));
