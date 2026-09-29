@@ -20,6 +20,9 @@ namespace {
         bool paint(const WindowInfo& info, u32 color) override;
         void describe() override;
         bool command(const char* value) override;
+        void holdInput(const RenderContext& context) override;
+        id<NSTextInputClient> savedInput = nil;
+        id dataProvider = nil;
         NSWindow* source = nil;
 
         CAMetalLayer* layer;
@@ -64,6 +67,10 @@ bool Canvas::paint(const WindowInfo& info, u32 color) {
     }
 }
 
+void Canvas::holdInput(const RenderContext& context) {
+    savedInput = (id<NSTextInputClient>)((__bridge NSWindow*)context.window).contentView;
+}
+
 void Canvas::describe() {
     const NSRect frame = window.frame;
     const CGRect screen = CGDisplayBounds(CGMainDisplayID());
@@ -76,6 +83,20 @@ MetalCanvas* MetalCanvas::create(ObjPool& owner, const RenderContext& context) {
 
 // A native drag source alongside the plt client. WindowServer negotiates
 // the session with the destination; the driver supplies real mouse events.
+@interface LostDocumentProvider: NSObject <NSPasteboardItemDataProvider>
+@end
+
+@implementation LostDocumentProvider
+
+- (void)pasteboard:(NSPasteboard*)pasteboard item:(NSPasteboardItem*)item provideDataForType:(NSPasteboardType)type {
+    // The source advertised a lazy document which became unavailable.
+    (void)pasteboard;
+    (void)item;
+    (void)type;
+}
+
+@end
+
 @interface DocumentSource: NSView <NSDraggingSource>
 @property(nonatomic, strong) id<NSPasteboardWriting> payload;
 @end
@@ -111,13 +132,20 @@ MetalCanvas* MetalCanvas::create(ObjPool& owner, const RenderContext& context) {
 
 bool Canvas::command(const char* value) {
     id<NSTextInputClient> client = (id<NSTextInputClient>)window.contentView;
-    if (strcmp(value, "mark") == 0) {
+    if (strcmp(value, "detached-input") == 0) {
+        STD_INSIST(savedInput != nil);
+        NSRange actual;
+        [savedInput firstRectForCharacterRange:NSMakeRange(0, 0) actualRange:&actual];
+        [savedInput unmarkText];
+        savedInput = nil;
+    } else if (strcmp(value, "mark") == 0) {
         [client setMarkedText:@"にほん" selectedRange:NSMakeRange(1, 1) replacementRange:NSMakeRange(NSNotFound, 0)];
     } else if (strcmp(value, "clear-clipboard") == 0) {
         [[NSPasteboard generalPasteboard] clearContents];
     } else if (strcmp(value, "invalid-text") == 0) {
         const unichar bytes[] = {0xd800, 'A', 0xdc00, 0xdfff, '\n', 0x7f, 0xf700, 0xd800};
         NSString* malformed = [NSString stringWithCharacters:bytes length:sizeof(bytes) / sizeof(*bytes)];
+        [client setMarkedText:malformed selectedRange:NSMakeRange(0, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
         [client insertText:malformed replacementRange:NSMakeRange(NSNotFound, 0)];
     } else if (strcmp(value, "gestures") == 0) {
         // Inject real CoreGraphics trackpad events; AppKit constructs NSEvents.
@@ -174,6 +202,12 @@ bool Canvas::command(const char* value) {
             NSURL* file = [NSURL fileURLWithPath:[NSString stringWithUTF8String:getenv("PLT_DROP_FILE")]];
             [item setString:file.absoluteString forType:NSPasteboardTypeFileURL];
             [item setString:@"dropped document" forType:NSPasteboardTypeString];
+            view.payload = item;
+        }
+        if (strcmp(value, "drag-lost") == 0) {
+            NSPasteboardItem* item = [NSPasteboardItem new];
+            dataProvider = [LostDocumentProvider new];
+            [item setDataProvider:dataProvider forTypes:@[ NSPasteboardTypeString ]];
             view.payload = item;
         }
         source.contentView = view;

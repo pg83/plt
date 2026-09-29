@@ -49,6 +49,7 @@ namespace {
         u32 color = 0x204060;
         int pipe = -1;
         unsigned dropMode = 0;
+        ObjPool::Ref auxiliary;
     };
 }
 
@@ -181,6 +182,16 @@ void Desktop::command(const char* line) {
         delete input;
         printf("PASTED %s\n", content.cStr());
         color = 0x40a060;
+    } else if (strcmp(line, "auxiliary") == 0) {
+        auxiliary = ObjPool::fromMemory();
+        Window* pending = platform->createWindow(*auxiliary, {});
+        canvas->holdInput(pending->renderContext());
+        pending->info();
+        pending->requestFrame();
+        pending->requestClose();
+    } else if (strcmp(line, "close-auxiliary") == 0) {
+        auxiliary = ObjPool::Ref();
+        canvas->command("detached-input");
     } else if (strcmp(line, "copy-invalid") == 0) {
         Output* output = window->secondary()->write();
         output->write("\xff", 1);

@@ -100,6 +100,9 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                     time.sleep(.02)
 
             screenshot("initial", "204060")
+            command("auxiliary")
+            time.sleep(.1)
+            command("close-auxiliary")
             command("title")
             command("caret")
             if os.environ.get("PLT_PASSIVE"):
@@ -151,6 +154,15 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             key(0, 1 << 20)  # Command+A
             key(0, 1 << 16)  # Caps Lock modifier
             key(48, 1 << 17)  # Back-tab
+            cg.CGEventKeyboardSetUnicodeString.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(C.c_uint16)]
+            for text_input in ("🌍", "é"):
+                raw = text_input.encode("utf-16-le")
+                units = (C.c_uint16 * (len(raw) // 2)).from_buffer_copy(raw)
+                for pressed in (True, False):
+                    event = cg.CGEventCreateKeyboardEvent(None, 0, pressed)
+                    cg.CGEventKeyboardSetUnicodeString(event, len(units), units)
+                    cg.CGEventPostToPid(app.pid, event)
+                    cf.CFRelease(event)
             window, x, y, width, height = geometry()
             point = Point(x + width / 4, y + height / 2)
             for kind in (5, 1, 6, 2, 3, 7, 4, 25, 27, 26):
@@ -159,6 +171,10 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                 cg.CGEventPost(0, event)
                 cf.CFRelease(event)
                 time.sleep(.05)
+            for kind in (25, 26):
+                event = cg.CGEventCreateMouseEvent(None, kind, point, 3)
+                cg.CGEventPost(0, event)
+                cf.CFRelease(event)
             wait(lambda: "BUTTON 0 1" in text(), "mouse input")
             screenshot("clicked", "8040a0")
             for code in (56, 60, 59, 62, 58, 61, 55, 54, 57):
@@ -200,7 +216,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             wait(lambda: "PASTED external document" in text(), "external paste")
             screenshot("pasted", "40a060")
             drops = [("text", "dropped document", 0), ("file", drop_file.as_uri(), 0),
-                     ("both", "dropped document", 1), ("text", None, 2), ("text", None, 3),
+                     ("both", "dropped document", 1), ("lost", "", 0), ("text", None, 2), ("text", None, 3),
                      ("text", None, 4), ("text", "", 5), ("text", None, 6)]
             for kind, expected, mode in drops:
                 command(f"dropmode {mode}")
