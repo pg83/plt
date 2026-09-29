@@ -72,11 +72,11 @@ python3 tst/e2e/run.py --binary-dir .build/e2e \
 
 The merged Linux/Darwin report includes all compiled production objects in
 `libplt.a`, including code no test executable links. The CI coverage job requires
-at least **80% line coverage**. This is coverage from the complete test suite
-(Wayland integration, Cocoa checks and e2e); branch coverage is reported
-separately. Dependencies, drivers and sample programs do not count as production
-code. The new e2e scenarios brought the full suite to 83.47% (3935/4714 lines)
-in run [36612648647](https://github.com/pg83/plt/actions/runs/36612648647).
+at least **90% line coverage and 90% branch coverage** across the library.
+This is coverage from the complete test suite (Wayland integration, Cocoa checks
+and e2e). Dependencies, drivers and sample programs do not count as production
+code. CI saves the merged tracefile and summary even when a threshold fails;
+a passing coverage job requires both thresholds.
 
 ## Production and test archives
 

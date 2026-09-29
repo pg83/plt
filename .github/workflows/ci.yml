@@ -415,13 +415,14 @@ jobs:
         run: |
           report="$RUNNER_TEMP/coverage-report"
           mkdir -p "$report"
+          coverage_status=0
           python3 dev/merge_lcov.py \
             --minimum-line-coverage 90 \
             --minimum-branch-coverage 90 \
             --output "$report/coverage.info" \
             --summary "$report/summary.txt" \
             "$RUNNER_TEMP/coverage-inputs/coverage-linux/coverage.info" \
-            "$RUNNER_TEMP/coverage-inputs/coverage-darwin/coverage.info"
+            "$RUNNER_TEMP/coverage-inputs/coverage-darwin/coverage.info" || coverage_status=$?
           {
             echo '## Linux + Darwin coverage'
             echo
@@ -429,8 +430,10 @@ jobs:
             cat "$report/summary.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          exit "$coverage_status"
 
       - name: Upload coverage report
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report

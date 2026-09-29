@@ -137,6 +137,8 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             assert not re.search(r"TEXT (55296|56320|57343|10|127|63232)\n", text()[before:])
             if os.environ.get("PLT_RECOVERY_ONLY"):
                 fault = os.environ["PLT_CHAOS"].split("@")[0]
+                if fault.startswith("cocoa-key-"):
+                    key(0, 1 << 17)  # Shift asks for the ASCII base layout.
                 wait(lambda: "CHAOS " + fault in text(), "fault injection")
                 command("resize")
                 screenshot("recovered", "c04040")
