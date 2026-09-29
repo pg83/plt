@@ -8,13 +8,13 @@
 #include <std/lib/buffer.h>
 
 #include <cairo.h>
-#include <fontconfig/fontconfig.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <wayland-client.h>
+#include <fontconfig/fontconfig.h>
 
 using namespace plt;
 using namespace plt::e2e;
@@ -77,8 +77,7 @@ Surface::Surface(ObjPool& owner, const RenderContext& context)
     }
 }
 
-Surface::~Surface()
-{
+Surface::~Surface() {
     for (auto& slot : slots_) {
         destroy(slot);
     }
@@ -178,24 +177,26 @@ App::App(Platform* shared)
     setvbuf(stdout, nullptr, _IOLBF, 0);
 }
 
-App::~App()
-{
+App::~App() {
 }
 
 void App::open(const char* title, u32 width, u32 height) {
     id = title;
-    window = platform->createWindow(*owner, {
-        .appId = StringView(title),
-        .title = StringView(title),
-        .width = width,
-        .height = height,
-        .minimumWidth = 160,
-        .minimumHeight = 120,
-        .decorations = false,
-        .input = createFiberInputSink(*owner, *platform->scheduler(), *this),
-        .events = this,
-        .frame = this,
-    });
+    window = platform->createWindow(
+        *owner,
+        {
+            .appId = StringView(title),
+            .title = StringView(title),
+            .width = width,
+            .height = height,
+            .minimumWidth = 160,
+            .minimumHeight = 120,
+            .decorations = false,
+            .input = strcmp(setting("PLT_PASSIVE", "0"), "1") == 0 ? nullptr : createFiberInputSink(*owner, *platform->scheduler(), *this),
+            .events = this,
+            .frame = this,
+        }
+    );
     surface = owner->make<Surface>(*owner, window->renderContext());
     window->requestShow();
 }

@@ -1577,28 +1577,55 @@ void PlatformImpl::bindRegistry(u32 name, const char* interface, u32 version) {
         wmBase = (struct xdg_wm_base*)(wl_registry_bind(registry, name, &xdg_wm_base_interface, min(version, 6u)));
         xdg_wm_base_add_listener(wmBase, &wmBaseListener, this);
     } else if (StringView(interface) == StringView(wl_seat_interface.name) && seat == nullptr) {
-        seat = (struct wl_seat*)(wl_registry_bind(registry, name, &wl_seat_interface, min(version, 8u)));
+        seat = (struct wl_seat*)(wl_registry_bind(registry, name, &wl_seat_interface, chaos(Fault::LegacySeat) ? 1u : min(version, 8u)));
         seatName = name;
         wl_seat_add_listener(seat, &seatListener, this);
     } else if (StringView(interface) == StringView(wl_data_device_manager_interface.name)) {
+        if (chaos(Fault::NoClipboard)) {
+            return;
+        }
         dataDeviceManager = (struct wl_data_device_manager*)(wl_registry_bind(registry, name, &wl_data_device_manager_interface, min(version, 3u)));
     } else if (StringView(interface) == StringView(zwp_primary_selection_device_manager_v1_interface.name)) {
+        if (chaos(Fault::NoPrimary)) {
+            return;
+        }
         primaryManager = (struct zwp_primary_selection_device_manager_v1*)(wl_registry_bind(registry, name, &zwp_primary_selection_device_manager_v1_interface, 1));
     } else if (StringView(interface) == StringView(wp_viewporter_interface.name)) {
+        if (chaos(Fault::NoViewport)) {
+            return;
+        }
         viewporter = (struct wp_viewporter*)(wl_registry_bind(registry, name, &wp_viewporter_interface, 1));
     } else if (StringView(interface) == StringView(wp_fractional_scale_manager_v1_interface.name)) {
+        if (chaos(Fault::NoFractionalScale)) {
+            return;
+        }
         fractionalScaleManager = (struct wp_fractional_scale_manager_v1*)(wl_registry_bind(registry, name, &wp_fractional_scale_manager_v1_interface, 1));
     } else if (StringView(interface) == StringView(zxdg_decoration_manager_v1_interface.name)) {
+        if (chaos(Fault::NoDecoration)) {
+            return;
+        }
         decorationManager = (struct zxdg_decoration_manager_v1*)(wl_registry_bind(registry, name, &zxdg_decoration_manager_v1_interface, 1));
     } else if (StringView(interface) == StringView(xdg_activation_v1_interface.name)) {
+        if (chaos(Fault::NoActivation)) {
+            return;
+        }
         activation = (struct xdg_activation_v1*)(wl_registry_bind(registry, name, &xdg_activation_v1_interface, 1));
     } else if (StringView(interface) == StringView(wp_cursor_shape_manager_v1_interface.name)) {
+        if (chaos(Fault::NoCursorShape)) {
+            return;
+        }
         cursorShapeVersion = min(version, 2u);
         cursorShapeManager = (struct wp_cursor_shape_manager_v1*)(wl_registry_bind(registry, name, &wp_cursor_shape_manager_v1_interface, cursorShapeVersion));
     } else if (StringView(interface) == StringView(zwp_text_input_manager_v3_interface.name)) {
+        if (chaos(Fault::NoTextInput)) {
+            return;
+        }
         textInputManager = (struct zwp_text_input_manager_v3*)(wl_registry_bind(registry, name, &zwp_text_input_manager_v3_interface, 1));
         createSelectionDevices();
     } else if (StringView(interface) == StringView(wl_output_interface.name) && output == nullptr) {
+        if (chaos(Fault::NoOutput)) {
+            return;
+        }
         output = (struct wl_output*)(wl_registry_bind(registry, name, &wl_output_interface, min(version, 4u)));
         outputName = name;
         wl_output_add_listener(output, &outputListener, this);

@@ -27,6 +27,16 @@ namespace {
         "display-link",
         "display-callback",
         "poll-interrupted",
+        "no-clipboard",
+        "no-primary",
+        "no-text-input",
+        "no-viewport",
+        "no-fractional-scale",
+        "no-decoration",
+        "no-activation",
+        "no-cursor-shape",
+        "no-output",
+        "legacy-seat",
     };
     static_assert(sizeof(names) / sizeof(*names) == (unsigned)Fault::Count);
 

@@ -17,6 +17,16 @@ namespace plt {
         DisplayLink,
         DisplayCallback,
         PollInterrupted,
+        NoClipboard,
+        NoPrimary,
+        NoTextInput,
+        NoViewport,
+        NoFractionalScale,
+        NoDecoration,
+        NoActivation,
+        NoCursorShape,
+        NoOutput,
+        LegacySeat,
         Count,
     };
 
