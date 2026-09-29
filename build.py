@@ -219,3 +219,38 @@ if build.target == build.host and not platforms_headless:
     group("test", plt_tests)
 
 install(libplt)
+
+# Real desktop clients run as separate executable/Python pairs.
+if system == "Linux" and not platforms_headless:
+    e2e_support = library(
+        name="plt_e2e_support",
+        srcs=["$(S)/tst/e2e/app.cpp", "$(S)/tst/e2e/vulkan.cpp"],
+        deps=[libplt, pkg_config("cairo"), pkg_config("vulkan")],
+    )
+    e2e_binaries = []
+    for source in sorted(build.glob("$(S)/tst/e2e/*.cpp")):
+        name = os.path.basename(source).removesuffix(".cpp")
+        if name in {"app", "vulkan"}:
+            continue
+        e2e_binaries.append(program(
+            name=f"e2e_{name}",
+            output=f"$(B)/e2e/{name}",
+            srcs=[source],
+            deps=[e2e_support],
+        ))
+    group("e2e-binaries", *e2e_binaries)
+
+    e2e_run = command(
+        name="plt_e2e",
+        inputs=sorted(build.glob("$(S)/tst/e2e/*.py")),
+        outputs=["$(B)/e2e-results/results.json"],
+        deps=e2e_binaries,
+        cmd=[[
+            "python3", "$(S)/tst/e2e/run.py",
+            "--binary-dir", "$(B)/e2e",
+            "--artifacts", "$(B)/e2e-results",
+        ]],
+        descr="TS",
+        color="green",
+    )
+    group("e2e", e2e_run)

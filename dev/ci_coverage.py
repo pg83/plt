@@ -25,6 +25,7 @@ def main():
     wayland = args.build_dir / "plt_wayland_integration_tests"
     if wayland.exists():
         binaries.append(wayland)
+    binaries.extend(sorted((args.build_dir / "e2e").glob("*")))
     objects = [str(binaries[0])]
     for binary in binaries[1:]:
         objects.extend(["-object", str(binary)])

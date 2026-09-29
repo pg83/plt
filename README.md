@@ -45,3 +45,15 @@ CC=clang CXX=clang++ LIBSTD_SOURCE=../std bash dev/ci.sh coverage
 Coverage additionally requires `llvm-profdata` and `llvm-cov` from the
 compiler's LLVM version. The workflow records the container images and
 libstd revision used by CI; `dev/ci_linux.sh` installs their dependencies.
+
+## End-to-end tests
+
+[Real compositor scenarios](tst/e2e/README.md) pair C++ applications with Python
+drivers. Separate `e2e-shm` and `e2e-lavapipe` jobs run all scenarios under Sway,
+check captured pixels, and upload PNG screenshots and logs. Linux coverage
+includes both rendering paths. All CI configurations use explicit jobs.
+
+```sh
+./build e2e-binaries
+./build e2e
+```

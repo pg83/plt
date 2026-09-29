@@ -48,35 +48,11 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  tests-linux:
-    name: Tests ${{ matrix.name }}
+  tests-glibc:
+    name: Tests GCC / glibc
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: GCC / glibc
-            id: glibc
-            image: GCC_IMAGE
-            compiler: gcc
-            mode: test
-          - name: Clang / Alpine musl
-            id: musl
-            image: ALPINE_IMAGE
-            compiler: clang
-            mode: test
-          - name: Clang / ASan
-            id: asan
-            image: UBUNTU_IMAGE
-            compiler: clang
-            mode: asan
-          - name: Clang / UBSan
-            id: ubsan
-            image: UBUNTU_IMAGE
-            compiler: clang
-            mode: ubsan
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,22 +66,133 @@ jobs:
 
       - name: Run unit and Wayland integration tests
         env:
-          CI_IMAGE: ${{ env[matrix.image] }}
-          CI_COMPILER: ${{ matrix.compiler }}
-          CI_MODE: ${{ matrix.mode }}
+          CI_IMAGE: ${{ env.GCC_IMAGE }}
+          CI_COMPILER: gcc
+          CI_MODE: test
         run: |
           set -o pipefail
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
             "$CI_IMAGE" sh dev/ci_linux.sh "$CI_MODE" "$CI_COMPILER" \
-            2>&1 | tee "$RUNNER_TEMP/tests-${{ matrix.id }}.log"
+            2>&1 | tee "$RUNNER_TEMP/tests-glibc.log"
 
       - name: Upload failure log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tests-${{ matrix.id }}-log
-          path: ${{ runner.temp }}/tests-${{ matrix.id }}.log
+          name: tests-glibc-log
+          path: ${{ runner.temp }}/tests-glibc.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  tests-musl:
+    name: Tests Clang / Alpine musl
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out libstd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pg83/std
+          ref: ${{ env.LIBSTD_REVISION }}
+          path: .deps/libstd
+
+      - name: Run unit and Wayland integration tests
+        env:
+          CI_IMAGE: ${{ env.ALPINE_IMAGE }}
+          CI_COMPILER: clang
+          CI_MODE: test
+        run: |
+          set -o pipefail
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
+            "$CI_IMAGE" sh dev/ci_linux.sh "$CI_MODE" "$CI_COMPILER" \
+            2>&1 | tee "$RUNNER_TEMP/tests-musl.log"
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tests-musl-log
+          path: ${{ runner.temp }}/tests-musl.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  tests-asan:
+    name: Tests Clang / ASan
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out libstd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pg83/std
+          ref: ${{ env.LIBSTD_REVISION }}
+          path: .deps/libstd
+
+      - name: Run unit and Wayland integration tests
+        env:
+          CI_IMAGE: ${{ env.UBUNTU_IMAGE }}
+          CI_COMPILER: clang
+          CI_MODE: asan
+        run: |
+          set -o pipefail
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
+            "$CI_IMAGE" sh dev/ci_linux.sh "$CI_MODE" "$CI_COMPILER" \
+            2>&1 | tee "$RUNNER_TEMP/tests-asan.log"
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tests-asan-log
+          path: ${{ runner.temp }}/tests-asan.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  tests-ubsan:
+    name: Tests Clang / UBSan
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out libstd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pg83/std
+          ref: ${{ env.LIBSTD_REVISION }}
+          path: .deps/libstd
+
+      - name: Run unit and Wayland integration tests
+        env:
+          CI_IMAGE: ${{ env.UBUNTU_IMAGE }}
+          CI_COMPILER: clang
+          CI_MODE: ubsan
+        run: |
+          set -o pipefail
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
+            "$CI_IMAGE" sh dev/ci_linux.sh "$CI_MODE" "$CI_COMPILER" \
+            2>&1 | tee "$RUNNER_TEMP/tests-ubsan.log"
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tests-ubsan-log
+          path: ${{ runner.temp }}/tests-ubsan.log
           if-no-files-found: ignore
           retention-days: 7
 
@@ -144,19 +231,87 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  coverage-platform:
-    name: Coverage ${{ matrix.platform }}
+  e2e-shm:
+    name: E2E / shm
     needs: build
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux
-            runner: ubuntu-24.04
-          - platform: darwin
-            runner: macos-15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out libstd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pg83/std
+          ref: ${{ env.LIBSTD_REVISION }}
+          path: .deps/libstd
+
+      - name: Run real compositor scenarios
+        env:
+          PLT_E2E_RENDERER: shm
+        run: |
+          set -o pipefail
+          docker run --rm --env PLT_E2E_RENDERER \
+            --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
+            "$UBUNTU_IMAGE" sh dev/ci_linux.sh e2e clang \
+            2>&1 | tee "$RUNNER_TEMP/e2e.log"
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-shm
+          path: |
+            .build/ci-e2e/e2e-shm/
+            ${{ runner.temp }}/e2e.log
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  e2e-lavapipe:
+    name: E2E / lavapipe
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out libstd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pg83/std
+          ref: ${{ env.LIBSTD_REVISION }}
+          path: .deps/libstd
+
+      - name: Run real compositor scenarios
+        env:
+          PLT_E2E_RENDERER: lavapipe
+        run: |
+          set -o pipefail
+          docker run --rm --env PLT_E2E_RENDERER \
+            --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
+            "$UBUNTU_IMAGE" sh dev/ci_linux.sh e2e clang \
+            2>&1 | tee "$RUNNER_TEMP/e2e.log"
+
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-lavapipe
+          path: |
+            .build/ci-e2e/e2e-lavapipe/
+            ${{ runner.temp }}/e2e.log
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  coverage-linux:
+    name: Coverage linux
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -169,30 +324,27 @@ jobs:
           path: .deps/libstd
 
       - name: Run Linux tests with coverage
-        if: runner.os == 'Linux'
         run: |
           set -o pipefail
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
             "$UBUNTU_IMAGE" sh dev/ci_linux.sh coverage clang \
-            2>&1 | tee "$RUNNER_TEMP/coverage-${{ matrix.platform }}.log"
+            2>&1 | tee "$RUNNER_TEMP/coverage-linux.log"
 
-      - name: Install LLVM
-        if: runner.os == 'macOS'
-        run: brew install llvm@21
-
-      - name: Run Darwin tests with coverage
-        if: runner.os == 'macOS'
-        run: |
-          set -o pipefail
-          export PATH="$(brew --prefix llvm@21)/bin:$PATH"
-          export CC=clang CXX=clang++
-          bash dev/ci.sh coverage 2>&1 | tee "$RUNNER_TEMP/coverage-${{ matrix.platform }}.log"
+      - name: Upload coverage e2e screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-e2e-artifacts
+          path: .build/ci-coverage/e2e-*/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload platform tracefile
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: coverage-${{ matrix.platform }}
+          name: coverage-linux
           path: |
             .build/coverage/coverage.info
             .build/coverage/summary.txt
@@ -204,14 +356,60 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: coverage-${{ matrix.platform }}-log
-          path: ${{ runner.temp }}/coverage-${{ matrix.platform }}.log
+          name: coverage-linux-log
+          path: ${{ runner.temp }}/coverage-linux.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  coverage-darwin:
+    name: Coverage darwin
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out libstd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pg83/std
+          ref: ${{ env.LIBSTD_REVISION }}
+          path: .deps/libstd
+
+      - name: Install LLVM
+        run: brew install llvm@21
+
+      - name: Run Darwin tests with coverage
+        run: |
+          set -o pipefail
+          export PATH="$(brew --prefix llvm@21)/bin:$PATH"
+          export CC=clang CXX=clang++
+          bash dev/ci.sh coverage 2>&1 | tee "$RUNNER_TEMP/coverage-darwin.log"
+
+      - name: Upload platform tracefile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-darwin
+          path: |
+            .build/coverage/coverage.info
+            .build/coverage/summary.txt
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-darwin-log
+          path: ${{ runner.temp }}/coverage-darwin.log
           if-no-files-found: ignore
           retention-days: 7
 
   coverage:
     name: Coverage
-    needs: [build, coverage-platform]
+    needs: [build, coverage-linux, coverage-darwin]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

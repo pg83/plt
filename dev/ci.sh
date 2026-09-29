@@ -10,7 +10,7 @@ build_dir="$root/.build/ci-$mode"
 jobs=${CI_JOBS:-$(getconf _NPROCESSORS_ONLN)}
 
 case "$mode" in
-    build|test) ;;
+    build|test|e2e) ;;
     asan|ubsan)
         "$CXX" --version | grep -qi clang
         sanitizer=address
@@ -28,7 +28,7 @@ case "$mode" in
         mkdir -p "$build_dir/profiles"
         export LLVM_PROFILE_FILE="$build_dir/profiles/%m-%p.profraw"
         ;;
-    *) echo "usage: $0 build|test|asan|ubsan|coverage" >&2; exit 2 ;;
+    *) echo "usage: $0 build|test|e2e|asan|ubsan|coverage" >&2; exit 2 ;;
 esac
 
 "$CXX" --version
@@ -39,9 +39,29 @@ esac
 export CPPFLAGS="${CPPFLAGS:-} -I$std_source"
 export LDFLAGS="${LDFLAGS:-} -L$build_dir/std"
 if [[ "$mode" == build ]]; then
-    python3 ./build -B "$build_dir/plt" -j "$jobs" plt plt_unit_tests plt_wayland_integration_tests
-else
+    python3 ./build -B "$build_dir/plt" -j "$jobs" plt plt_unit_tests plt_wayland_integration_tests e2e-binaries
+elif [[ "$mode" != e2e ]]; then
     python3 ./build -B "$build_dir/plt" -j "$jobs" test
+fi
+if [[ "$(uname -s)" == Linux && ( "$mode" == e2e || "$mode" == coverage ) ]]; then
+    python3 ./build -B "$build_dir/plt" -j "$jobs" e2e-binaries
+    renderers=shm
+    if [[ "$mode" == coverage ]]; then
+        renderers="shm lavapipe"
+    else
+        renderers=${PLT_E2E_RENDERER:-shm}
+    fi
+    # Sway refuses to run as root. Containers build as root, then run clients
+    # and the compositor as nobody, retaining all artifacts in the workspace.
+    runner=()
+    if [[ "$(id -u)" == 0 ]]; then
+        chown -R nobody "$build_dir"
+        runner=(runuser -u nobody --)
+    fi
+    for renderer in $renderers; do
+        "${runner[@]}" python3 tst/e2e/run.py --binary-dir "$build_dir/plt/e2e" \
+            --artifacts "$build_dir/e2e-$renderer" --renderer "$renderer"
+    done
 fi
 if [[ "$mode" == coverage ]]; then
     python3 dev/ci_coverage.py "$build_dir/plt" "$build_dir/profiles" "$root/.build/coverage"
