@@ -7,6 +7,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import zlib
 
 out = Path(os.environ["PLT_E2E_ARTIFACTS"])
 cg = C.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
@@ -27,11 +28,17 @@ cf.CFRelease.argtypes = [C.c_void_p]
 with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
     drop_file = Path(temp) / "document.txt"
     drop_file.write_text("document to import")
+    icon = Path(temp) / "icon.png"
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    icon.write_bytes(b"invalid image" if os.environ.get("PLT_PASSIVE") else
+                     b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">2I5B", 1, 1, 8, 6, 0, 0, 0)) +
+                     chunk(b"IDAT", zlib.compress(b"\0\xff\0\0\xff")) + chunk(b"IEND", b""))
     fifo = Path(temp) / "commands"
     os.mkfifo(fifo)
     with (out / "client.log").open("w") as log:
         app = subprocess.Popen([os.environ["PLT_E2E_BINARY"]],
-            env={**os.environ, "PLT_COMMAND_PIPE": str(fifo), "PLT_DROP_FILE": str(drop_file)}, stdout=log, stderr=subprocess.STDOUT)
+            env={**os.environ, "PLT_COMMAND_PIPE": str(fifo), "PLT_DROP_FILE": str(drop_file), "PLT_ICON": str(icon)}, stdout=log, stderr=subprocess.STDOUT)
     try:
         def wait(predicate, label, timeout=15):
             end = time.monotonic() + timeout
@@ -95,6 +102,25 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             screenshot("initial", "204060")
             command("title")
             command("caret")
+            if os.environ.get("PLT_PASSIVE"):
+                command("mark")
+                command("compose")
+                command("invalid-text")
+                key(0)
+                key(56)
+                window, x, y, width, height = geometry()
+                for kind in (5, 1, 6, 2):
+                    event = cg.CGEventCreateMouseEvent(None, kind, Point(x + width / 2, y + height / 2), 0)
+                    cg.CGEventPost(0, event)
+                    cf.CFRelease(event)
+                    time.sleep(.05)
+                command("gestures")
+                command("move")
+                screenshot("passive", "204060")
+                assert not re.search(r"^(TEXT|KEY|SCROLL|BUTTON|MOTION|PREEDIT) ", text(), re.M), text()
+                commands.write("quit\n")
+                assert app.wait(timeout=15) == 0
+                raise SystemExit(0)
             command("mark")
             key(125)  # The candidate-navigation press/release belongs to the IME.
             command("compose")
@@ -102,6 +128,10 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             key(0)  # Physical A, delivered by WindowServer to the application.
             wait(lambda: "TEXT 97" in text(), "keyboard text input")
             screenshot("typed", "c04040")
+            before = len(text())
+            command("invalid-text")
+            wait(lambda: "TEXT 65" in text()[before:], "valid scalar after malformed UTF-16")
+            assert not re.search(r"TEXT (55296|56320|57343|10|127|63232)\n", text()[before:])
             if os.environ.get("PLT_RECOVERY_ONLY"):
                 fault = os.environ["PLT_CHAOS"].split("@")[0]
                 wait(lambda: "CHAOS " + fault in text(), "fault injection")
@@ -111,13 +141,16 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                 assert app.wait(timeout=15) == 0
                 raise SystemExit(0)
             # Named keys, arrows, keypad and modifiers take native translation paths.
-            for code in (36, 48, 51, 53, 115, 119, 116, 121, 123, 124, 125, 126,
+            for code in (71, 114, 117, 36, 48, 51, 53, 115, 119, 116, 121, 123, 124, 125, 126,
                          122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111,
                          82, 83, 84, 85, 86, 87, 88, 89, 91, 92, 65, 67, 69, 75, 76, 78, 81):
                 key(code)
             key(0, 1 << 17)  # Shift
             key(11, 1 << 18)  # Control+B
             key(3, 1 << 19)  # Option+F
+            key(0, 1 << 20)  # Command+A
+            key(0, 1 << 16)  # Caps Lock modifier
+            key(48, 1 << 17)  # Back-tab
             window, x, y, width, height = geometry()
             point = Point(x + width / 4, y + height / 2)
             for kind in (5, 1, 6, 2, 3, 7, 4, 25, 27, 26):
@@ -137,6 +170,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                 cg.CGEventPost(0, event)
                 cf.CFRelease(event)
             wait(lambda: "SCROLL" in text(), "native wheel input")
+            command("gestures")
             command("resize")
             wait(lambda: "FRAME 640 360 " in text(), "resize in pixels")
             command("move")
@@ -152,6 +186,9 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             screenshot("live-resized", "8040a0")
             for icon in range(37):
                 command(f"cursor {icon}")
+            command("clear-clipboard")
+            command("paste")
+            command("copy-invalid")
             command("copy")
             assert subprocess.check_output(["pbpaste"]).decode() == "plt clipboard: Привет 🌍"
             command("abandon")
@@ -184,11 +221,17 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             command("restore")
             screenshot("restored", "40a060")
             command("maximize")
+            command("maximize")
+            command("resize")
             screenshot("maximized", "40a060")
+            command("restore")
             command("unmaximize")
             command("fullscreen")
             time.sleep(1)
             screenshot("fullscreen", "40a060")
+            command("resize")
+            command("fullscreen")
+            command("restore")
             command("unfullscreen")
             time.sleep(1)
             screenshot("windowed", "40a060")

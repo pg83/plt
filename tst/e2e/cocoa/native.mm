@@ -107,6 +107,29 @@ bool Canvas::command(const char* value) {
     id<NSTextInputClient> client = (id<NSTextInputClient>)window.contentView;
     if (strcmp(value, "mark") == 0) {
         [client setMarkedText:@"にほん" selectedRange:NSMakeRange(1, 1) replacementRange:NSMakeRange(NSNotFound, 0)];
+    } else if (strcmp(value, "clear-clipboard") == 0) {
+        [[NSPasteboard generalPasteboard] clearContents];
+    } else if (strcmp(value, "invalid-text") == 0) {
+        const unichar bytes[] = {0xd800, 'A', 0xdc00, 0xdfff, '\n', 0x7f, 0xf700, 0xd800};
+        NSString* malformed = [NSString stringWithCharacters:bytes length:sizeof(bytes) / sizeof(*bytes)];
+        [client insertText:malformed replacementRange:NSMakeRange(NSNotFound, 0)];
+    } else if (strcmp(value, "gestures") == 0) {
+        // Inject real CoreGraphics trackpad events; AppKit constructs NSEvents.
+        NSPoint center = [window convertPointToScreen:NSMakePoint(100, 100)];
+        CGPoint point = CGPointMake(center.x, CGDisplayBounds(CGMainDisplayID()).size.height - center.y);
+        const int phases[] = {128, 1, 2, 4, 8};
+        for (int phase : phases) {
+            CGEventRef event = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitPixel, 2, 8, 4);
+            CGEventSetLocation(event, point);
+            CGEventSetIntegerValueField(event, kCGScrollWheelEventScrollPhase, phase);
+            CGEventPost(kCGHIDEventTap, event);
+            CFRelease(event);
+        }
+        CGEventRef momentum = CGEventCreateScrollWheelEvent(nullptr, kCGScrollEventUnitPixel, 1, 8);
+        CGEventSetLocation(momentum, point);
+        CGEventSetIntegerValueField(momentum, kCGScrollWheelEventMomentumPhase, 1);
+        CGEventPost(kCGHIDEventTap, momentum);
+        CFRelease(momentum);
     } else if (strcmp(value, "compose") == 0) {
         // Embedded IME client: exercise the public NSTextInputClient contract
         // with marked text, candidate geometry, replacement and cancellation.
@@ -122,9 +145,13 @@ bool Canvas::command(const char* value) {
         STD_INSIST(caret.size.height > 0);
         [client characterIndexForPoint:caret.origin];
         [client validAttributesForMarkedText];
+        STD_INSIST([client attributedSubstringForProposedRange:NSMakeRange(NSNotFound, 0) actualRange:nullptr] == nil);
+        STD_INSIST([client attributedSubstringForProposedRange:NSMakeRange(0, 1) actualRange:nullptr] != nil);
+        [client firstRectForCharacterRange:NSMakeRange(0, 1) actualRange:nullptr];
         [client setMarkedText:[[NSAttributedString alloc] initWithString:@"日本"] selectedRange:NSMakeRange(2, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
         [client insertText:[[NSAttributedString alloc] initWithString:@"日本🌍"] replacementRange:NSMakeRange(NSNotFound, 0)];
         STD_INSIST(![client hasMarkedText]);
+        STD_INSIST([client attributedSubstringForProposedRange:NSMakeRange(0, 1) actualRange:nullptr] == nil);
         STD_INSIST([client markedRange].location == NSNotFound);
         STD_INSIST([client selectedRange].location == NSNotFound);
         [client setMarkedText:@"" selectedRange:NSMakeRange(0, 0) replacementRange:NSMakeRange(NSNotFound, 0)];

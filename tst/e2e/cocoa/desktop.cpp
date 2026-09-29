@@ -54,6 +54,17 @@ namespace {
 Desktop::Desktop()
     : platform(Platform::create(*owner))
 {
+    Buffer icon;
+    if (const char* path = getenv("PLT_ICON")) {
+        FILE* file = fopen(path, "rb");
+        STD_INSIST(file != nullptr);
+        char bytes[4096];
+        size_t count;
+        while ((count = fread(bytes, 1, sizeof(bytes), file)) != 0) {
+            icon.append(bytes, count);
+        }
+        fclose(file);
+    }
     window = platform->createWindow(
         *owner,
         {
@@ -64,11 +75,12 @@ Desktop::Desktop()
             .minimumWidth = 160,
             .minimumHeight = 120,
             .decorations = true,
-            .input = createFiberInputSink(*owner, *platform->scheduler(), *this),
+            .input = getenv("PLT_PASSIVE") ? nullptr : createFiberInputSink(*owner, *platform->scheduler(), *this),
             .events = this,
             .frame = this,
             .drop = this,
-            .appName = StringView(u8"PLT E2E"),
+            .icon = StringView(icon),
+            .appName = getenv("PLT_PASSIVE") ? StringView() : StringView(u8"PLT E2E"),
         }
     );
     canvas = MetalCanvas::create(*owner, window->renderContext());
@@ -150,6 +162,7 @@ void Desktop::command(const char* line) {
         const StringView payload(u8"plt clipboard: Привет 🌍");
         output->write(payload.data(), payload.length());
         output->finish();
+        output->finish();
         delete output;
         Input* input = clipboard->read();
         Buffer readback;
@@ -165,6 +178,15 @@ void Desktop::command(const char* line) {
         delete input;
         printf("PASTED %s\n", content.cStr());
         color = 0x40a060;
+    } else if (strcmp(line, "copy-invalid") == 0) {
+        Output* output = window->secondary()->write();
+        output->write("\xff", 1);
+        output->finish();
+        delete output;
+        Input* input = window->secondary()->read();
+        char byte;
+        STD_INSIST(input->read(&byte, 1) == 0);
+        delete input;
     } else if (strcmp(line, "abandon") == 0) {
         Output* output = window->secondary()->write();
         output->write("discard", 7);
