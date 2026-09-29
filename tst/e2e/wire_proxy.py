@@ -73,9 +73,12 @@ class Proxy:
         self.rules = [dict(rule, fired=False) for rule in rules]
         self.path = str(Path(session.runtime.name) / "fault-wayland")
         self.interfaces = {}
-        prefix = subprocess.check_output(["pkg-config", "--variable=prefix", "wayland-client"], text=True).strip()
+        core = subprocess.check_output(["pkg-config", "--variable=pkgdatadir", "wayland-scanner"], text=True).strip()
         protocols = subprocess.check_output(["pkg-config", "--variable=pkgdatadir", "wayland-protocols"], text=True).strip()
-        files = [Path(prefix) / "share/wayland/wayland.xml", *Path(protocols).rglob("*.xml")]
+        # Retired xdg-shell v5 reused stable interface names with incompatible
+        # opcodes. Prefer the stable definitions used by the actual client.
+        files = sorted(Path(protocols).rglob("*.xml"), key=lambda path: ("/stable/" in str(path), str(path)))
+        files.append(Path(core) / "wayland.xml")
         for path in files:
             for interface in ET.parse(path).getroot().findall("interface"):
                 self.interfaces[interface.attrib["name"]] = {
@@ -104,7 +107,10 @@ class Proxy:
             return frame
         message = messages[opcode]
         arguments = message.findall("arg")
-        values = decode(arguments, frame)
+        try:
+            values = decode(arguments, frame)
+        except (AssertionError, struct.error) as error:
+            raise RuntimeError(f"decode {direction} {object_id}:{interface}.{message.attrib['name']} {frame.hex()}") from error
         for argument in arguments:
             if argument.attrib["type"] == "new_id":
                 value = values[argument.attrib["name"]]
@@ -198,7 +204,7 @@ class Proxy:
         self.thread.join(timeout=3)
         self.listener.close()
         assert not self.thread.is_alive(), "Wayland relay did not stop"
+        if self.error:
+            raise self.error
         if kind is None:
-            if self.error:
-                raise self.error
             assert all(rule["fired"] for rule in self.rules), self.rules
