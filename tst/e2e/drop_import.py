@@ -4,7 +4,7 @@ from pathlib import Path
 from session import Session
 
 root = Path(os.environ["PLT_E2E_ARTIFACTS"])
-for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "leave", "pipe-failure", "no-offer", "close-hover", "legacy-copy", "legacy-move"):
+for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "leave", "pipe-failure", "no-offer", "close-hover", "legacy-copy", "legacy-move", "renegotiate", "no-target"):
     os.environ["PLT_E2E_ARTIFACTS"] = str(root / mode)
     with Session(mode) as s:
         fault = "selection-pipe@0" if mode == "pipe-failure" else "legacy-data-device@0" if mode.startswith("legacy-") else ""
@@ -20,8 +20,13 @@ for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "
         s.button()
         s.logged("DRAG STARTED")
         s.pointer(100, 100, "plt-drop-target")
-        if mode != "no-offer":
+        if mode not in ("no-offer", "no-target"):
             s.logged("HOVER")
+        if mode == "renegotiate":
+            for x in (200, 300, 100):
+                s.pointer(x, 100, "plt-drop-target")
+                s.logged(f"HOVER {x}")
+            s.logged("ACTION 2")
         if mode == "leave":
             s.pointer(100, 100, "plt-drag-source")
             s.logged("LEFT")
@@ -39,7 +44,7 @@ for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "
             # Before wl_data_device v3 there is no action negotiation: copy.
             s.logged("DROPPED [dragged document]")
             s.logged("ACTION 1")
-        elif mode in ("copy", "move"):
+        elif mode in ("copy", "move", "renegotiate"):
             s.logged("DROPPED [dragged document]")
             s.logged("SOURCE FINISHED")
             s.logged("ACTION " + ("2" if mode == "move" else "1"))
@@ -53,7 +58,7 @@ for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "
         else:
             s.logged("SOURCE CANCELLED")
             assert "DROPPED" not in (s.artifacts / "client.log").read_text()
-        color = "40a060" if mode in ("copy", "move", "partial", "pipe-failure", "legacy-copy", "legacy-move") else "204060"
+        color = "40a060" if mode in ("copy", "move", "partial", "pipe-failure", "legacy-copy", "legacy-move", "renegotiate") else "204060"
         s.screenshot("target", [(.1, .5, .9, .8, color)], app_id="plt-drop-target")
         s.ipc(f'[con_id={target["id"]}] kill')
         assert s.client.wait(timeout=10) == 0

@@ -2135,7 +2135,8 @@ void PlatformImpl::writeSelection(int fd, StringView content) {
         }
         size_t offset = 0;
         while (offset != owned.length()) {
-            if (!scheduler_->awaitWritable(fd, selectionTransferTimeoutUs)) {
+            const bool writable = chaos(Fault::SelectionTimeout) ? false : scheduler_->awaitWritable(fd, selectionTransferTimeoutUs);
+            if (!writable) {
                 break;
             }
             const size_t chunk = min<size_t>(owned.length() - offset, 64 * 1024);
@@ -2217,7 +2218,8 @@ size_t StreamInput::readImpl(void* data, size_t len) {
         }
         // The watchdog: a peer that stops making progress for this long
         // aborts the transfer instead of pinning the pipe.
-        if (platform.scheduler_->current() == nullptr || !platform.scheduler_->awaitReadable(fd, selectionTransferTimeoutUs)) {
+        const bool readable = platform.scheduler_->current() != nullptr && (chaos(Fault::SelectionTimeout) ? false : platform.scheduler_->awaitReadable(fd, selectionTransferTimeoutUs));
+        if (!readable) {
             close(fd);
             fd = -1;
             return 0;

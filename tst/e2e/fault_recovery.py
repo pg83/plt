@@ -7,19 +7,19 @@ from session import Session
 root = Path(os.environ["PLT_E2E_ARTIFACTS"])
 for fault in ("selection-pipe", "selection-flags", "selection-set-flags", "selection-read", "read-interrupted", "read-again",
               "selection-write", "write-interrupted", "write-again", "write-zero", "compose-table",
-              "keymap-map", "keymap-compile", "keymap-state", "send-flags", "send-set-flags", "utf8-string", "signal-mask", "signal-pending", "frame-read"):
+              "keymap-map", "keymap-compile", "keymap-state", "send-flags", "send-set-flags", "utf8-string", "signal-mask", "signal-pending", "frame-read", "send-timeout", "receive-timeout"):
     os.environ["PLT_E2E_ARTIFACTS"] = str(root / fault)
     with Session(fault) as s:
-        injected = {"send-flags": "selection-flags", "send-set-flags": "selection-set-flags", "frame-read": "read-again"}.get(fault, fault)
-        s.launch(PLT_CHAOS="" if fault == "utf8-string" else f"{injected}@0")
+        injected = {"send-flags": "selection-flags", "send-set-flags": "selection-set-flags", "frame-read": "read-again", "send-timeout": "selection-timeout", "receive-timeout": "selection-timeout"}.get(fault, fault)
+        s.launch(PLT_CHAOS="" if fault == "utf8-string" else ("read-again@0," if fault == "receive-timeout" else "") + f"{injected}@0")
         s.focus()
         if fault == "compose-table":
             s.command("wtype", "-P", "a", "-s", "700", "-p", "a")
-        if fault in ("selection-write", "write-interrupted", "write-again", "write-zero", "send-flags", "send-set-flags", "signal-mask", "signal-pending"):
+        if fault in ("selection-write", "write-interrupted", "write-again", "write-zero", "send-flags", "send-set-flags", "signal-mask", "signal-pending", "send-timeout"):
             s.key("c")
             s.logged("COPY")
             value = s.command("wl-paste", "--no-newline")
-            assert value == (b"" if fault in ("selection-write", "send-flags", "send-set-flags", "signal-mask") else b"recovered"), value
+            assert value == (b"" if fault in ("selection-write", "send-flags", "send-set-flags", "signal-mask", "send-timeout") else b"recovered"), value
             s.logged(f"CHAOS {injected}")
             assert s.command("wl-paste", "--no-newline") == b"recovered"
         else:
@@ -39,7 +39,7 @@ for fault in ("selection-pipe", "selection-flags", "selection-set-flags", "selec
             s.key("v")
             if fault != "utf8-string":
                 s.logged(f"CHAOS {injected}")
-            failed = fault in ("selection-pipe", "selection-flags", "selection-set-flags", "selection-read")
+            failed = fault in ("selection-pipe", "selection-flags", "selection-set-flags", "selection-read", "receive-timeout")
             s.logged("PASTE []" if failed else "PASTE [recovered]")
             if failed:
                 s.screenshot("failed", [(.1, .5, .9, .8, "c04040")])

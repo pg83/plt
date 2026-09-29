@@ -50,7 +50,17 @@ void Editor::key(const KeyInput& input) {
         color = content.empty() ? 0xc04040 : 0x40a060;
     } else if (input.baseCodepoint == 'c') {
         Output* stream = window->secondary()->write();
-        stream->write("recovered", 9);
+        if (getenv("PLT_LARGE_COPY") != nullptr) {
+            char block[4096];
+            for (char& byte : block) {
+                byte = 'x';
+            }
+            for (unsigned i = 0; i != 1024; ++i) {
+                stream->write(block, sizeof(block));
+            }
+        } else {
+            stream->write("recovered", 9);
+        }
         stream->finish();
         delete stream;
         puts("COPY");

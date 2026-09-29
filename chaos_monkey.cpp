@@ -62,6 +62,7 @@ namespace {
         "cocoa-key-translate",
         "no-app-asn",
         "no-app-label",
+        "selection-timeout",
     };
     static_assert(sizeof(names) / sizeof(*names) == (unsigned)Fault::Count);
 

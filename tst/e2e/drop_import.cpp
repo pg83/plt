@@ -225,9 +225,12 @@ void Target::paint(Canvas& canvas) {
     canvas.text(20, 40, StringView(u8"Document drop target"));
 }
 
-DropReply Target::dragOver(const DropOffer& offer, i32, i32) {
+DropReply Target::dragOver(const DropOffer& offer, i32 x, i32) {
     const char* mode = setting("PLT_DROP_MODE", "copy");
-    puts("HOVER");
+    printf("HOVER %d\n", x);
+    if (strcmp(mode, "renegotiate") == 0) {
+        return {x >= 180 ? StringView(u8"text/uri-list") : StringView(u8"text/plain;charset=utf-8"), x >= 280 ? DropAction::Move : DropAction::Copy};
+    }
     if (strcmp(mode, "close-hover") == 0) {
         owner = ObjPool::fromMemory();
         window = nullptr;
@@ -284,7 +287,7 @@ int main() {
     auto owner = ObjPool::fromMemory();
     Platform* platform = Platform::create(*owner);
     Target target(platform);
-    target.open("plt-drop-target", 400, 280, &target);
+    target.open("plt-drop-target", 400, 280, strcmp(setting("PLT_DROP_MODE", ""), "no-target") == 0 ? nullptr : &target);
     Source source(target.platform);
     source.open("plt-drag-source", 300, 220);
     source.connect();

@@ -52,6 +52,7 @@ namespace plt {
         CocoaKeyTranslate,
         NoAppAsn,
         NoAppLabel,
+        SelectionTimeout,
         Count,
     };
 
