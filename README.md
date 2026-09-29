@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/pg83/plt/branch/master/graph/badge.svg)](https://app.codecov.io/gh/pg83/plt/tree/master)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-informational)](STYLE.md)
-[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-8a8a8a)](#ci)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-8a8a8a)](.github/workflows/ci.yml)
 
 Small native desktop platform layer built on libstd.
 
@@ -20,46 +20,4 @@ Build with:
 
 ```sh
 ./build
-```
-
-## CI
-
-The initial `build` job gates every test and coverage job. The suite runs
-with GCC/glibc, Clang/Alpine musl, Clang ASan, Clang UBSan, and Clang on
-Darwin (including Cocoa tests). Each job builds a pinned libstd revision
-with the same compiler and instrumentation as plt.
-
-Linux, macOS 15 and macOS 14 compatibility coverage runs export separate LLVM tracefiles. One
-`coverage` job merges them and uploads the combined report to Codecov
-using OIDC. CI requires 100% line and branch coverage of the complete library,
-including objects unused by test executables. Tests, dependencies and generated
-sources are excluded.
-
-To reproduce a job with the required compiler and dependencies installed:
-
-```sh
-CC=clang CXX=clang++ LIBSTD_SOURCE=../std bash dev/ci.sh test
-CC=clang CXX=clang++ LIBSTD_SOURCE=../std bash dev/ci.sh asan
-CC=clang CXX=clang++ LIBSTD_SOURCE=../std bash dev/ci.sh ubsan
-CC=clang CXX=clang++ LIBSTD_SOURCE=../std bash dev/ci.sh coverage
-```
-
-Coverage additionally requires `llvm-profdata` and `llvm-cov` from the
-compiler's LLVM version. The workflow records the container images and
-libstd revision used by CI; `dev/ci_linux.sh` installs their dependencies.
-
-## End-to-end tests
-
-[Real compositor scenarios](tst/e2e/README.md) pair C++ applications with Python
-drivers. Every Linux test job (GCC, musl, ASan, UBSan and coverage) runs all scenarios
-under Sway with both shm and lavapipe, checks captured pixels, and uploads PNG
-screenshots and logs. Darwin runs a native Cocoa/Metal desktop with external
-input, native drag-and-drop, IME, asynchronous document import and screenshot checks.
-Tests link a separate `plt_test` library with deterministic chaos scripts; the
-installed `plt` library contains no fault controls. Linux coverage
-includes both rendering paths. All CI configurations use explicit jobs.
-
-```sh
-./build e2e-binaries
-./build e2e
 ```
