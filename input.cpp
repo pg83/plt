@@ -18,19 +18,7 @@ namespace {
     struct FiberSinkImpl;
 
     struct SinkEvent final: public IntrusiveNode {
-        enum class Type : u8 {
-            Key,
-            Text,
-            Preedit,
-            PointerMotion,
-            PointerButton,
-            Scroll,
-            Focus,
-            PointerPresence,
-            Flush
-        };
-
-        Type type = Type::Flush;
+        void (*deliver)(InputSink& target, const SinkEvent& event) = nullptr;
         KeyInput key{};
         TextInput text{};
         PointerMotionInput motion{};
@@ -65,7 +53,6 @@ namespace {
         void flush() override;
 
         void push(SinkEvent& event);
-        void deliver(const SinkEvent& event);
 
         Scheduler& scheduler;
         InputSink& target;
@@ -90,7 +77,7 @@ void SinkPump::run() {
         // Keep the event owned by the queue while delivery can block:
         // releasing the fiber does not unwind its stack.
         SinkEvent* const event = static_cast<SinkEvent*>(impl.queue.mutFront());
-        impl.deliver(*event);
+        event->deliver(impl.target, *event);
         impl.queue.popFront();
         impl.events.release(event);
     }
@@ -115,65 +102,29 @@ void FiberSinkImpl::push(SinkEvent& event) {
     fiber->wake();
 }
 
-void FiberSinkImpl::deliver(const SinkEvent& event) {
-    const StringView payload(event.payload);
-    switch (event.type) {
-        case SinkEvent::Type::Key: {
-            target.key(event.key);
-            return;
-        }
-        case SinkEvent::Type::Text: {
-            target.text(event.text);
-            return;
-        }
-        case SinkEvent::Type::Preedit: {
-            target.preedit(payload, event.cursorBegin, event.cursorEnd);
-            return;
-        }
-        case SinkEvent::Type::PointerMotion: {
-            target.pointerMotion(event.motion);
-            return;
-        }
-        case SinkEvent::Type::PointerButton: {
-            target.pointerButton(event.button);
-            return;
-        }
-        case SinkEvent::Type::Scroll: {
-            target.scroll(event.scroll);
-            return;
-        }
-        case SinkEvent::Type::Focus: {
-            target.focus(event.flag);
-            return;
-        }
-        case SinkEvent::Type::PointerPresence: {
-            target.pointerPresence(event.flag);
-            return;
-        }
-        case SinkEvent::Type::Flush: {
-            target.flush();
-            return;
-        }
-    }
-}
-
 void FiberSinkImpl::key(const KeyInput& input) {
     SinkEvent& event = *events.make();
-    event.type = SinkEvent::Type::Key;
+    event.deliver = [](InputSink& target, const SinkEvent& event) {
+        target.key(event.key);
+    };
     event.key = input;
     push(event);
 }
 
 void FiberSinkImpl::text(const TextInput& input) {
     SinkEvent& event = *events.make();
-    event.type = SinkEvent::Type::Text;
+    event.deliver = [](InputSink& target, const SinkEvent& event) {
+        target.text(event.text);
+    };
     event.text = input;
     push(event);
 }
 
 void FiberSinkImpl::preedit(StringView text, i32 cursorBegin, i32 cursorEnd) {
     SinkEvent& event = *events.make();
-    event.type = SinkEvent::Type::Preedit;
+    event.deliver = [](InputSink& target, const SinkEvent& event) {
+        target.preedit(StringView(event.payload), event.cursorBegin, event.cursorEnd);
+    };
     event.payload.append(text.data(), text.length());
     event.cursorBegin = cursorBegin;
     event.cursorEnd = cursorEnd;
@@ -182,42 +133,54 @@ void FiberSinkImpl::preedit(StringView text, i32 cursorBegin, i32 cursorEnd) {
 
 void FiberSinkImpl::pointerMotion(const PointerMotionInput& input) {
     SinkEvent& event = *events.make();
-    event.type = SinkEvent::Type::PointerMotion;
+    event.deliver = [](InputSink& target, const SinkEvent& event) {
+        target.pointerMotion(event.motion);
+    };
     event.motion = input;
     push(event);
 }
 
 void FiberSinkImpl::pointerButton(const PointerButtonInput& input) {
     SinkEvent& event = *events.make();
-    event.type = SinkEvent::Type::PointerButton;
+    event.deliver = [](InputSink& target, const SinkEvent& event) {
+        target.pointerButton(event.button);
+    };
     event.button = input;
     push(event);
 }
 
 void FiberSinkImpl::scroll(const ScrollInput& input) {
     SinkEvent& event = *events.make();
-    event.type = SinkEvent::Type::Scroll;
+    event.deliver = [](InputSink& target, const SinkEvent& event) {
+        target.scroll(event.scroll);
+    };
     event.scroll = input;
     push(event);
 }
 
 void FiberSinkImpl::focus(bool focused) {
     SinkEvent& event = *events.make();
-    event.type = SinkEvent::Type::Focus;
+    event.deliver = [](InputSink& target, const SinkEvent& event) {
+        target.focus(event.flag);
+    };
     event.flag = focused;
     push(event);
 }
 
 void FiberSinkImpl::pointerPresence(bool present) {
     SinkEvent& event = *events.make();
-    event.type = SinkEvent::Type::PointerPresence;
+    event.deliver = [](InputSink& target, const SinkEvent& event) {
+        target.pointerPresence(event.flag);
+    };
     event.flag = present;
     push(event);
 }
 
 void FiberSinkImpl::flush() {
     SinkEvent& event = *events.make();
-    event.type = SinkEvent::Type::Flush;
+    event.deliver = [](InputSink& target, const SinkEvent&) {
+        target.flush();
+    };
     push(event);
 }
 

@@ -80,7 +80,7 @@ Desktop::Desktop()
             .input = getenv("PLT_PASSIVE") ? nullptr : createFiberInputSink(*owner, *platform->scheduler(), *this),
             .events = this,
             .frame = this,
-            .drop = this,
+            .drop = getenv("PLT_NO_DROP") ? nullptr : this,
             .icon = StringView(icon),
             .appName = getenv("PLT_PASSIVE") ? StringView() : StringView(u8"PLT E2E"),
         }

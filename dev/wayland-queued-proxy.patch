@@ -1,0 +1,14 @@
+--- a/src/wayland-client.c
++++ b/src/wayland-client.c
+@@ -264,8 +264,10 @@ validate_closure_objects(struct wl_closure *closure)
+ 		case WL_ARG_NEW_ID:
+ 		case WL_ARG_OBJECT:
+ 			proxy = (struct wl_proxy *) closure->args[i].o;
+-			if (proxy && proxy->flags & WL_PROXY_FLAG_DESTROYED)
++			if (proxy && proxy->flags & WL_PROXY_FLAG_DESTROYED) {
++				wl_proxy_unref(proxy);
+ 				closure->args[i].o = NULL;
++			}
+ 			break;
+ 		default:
+ 			break;

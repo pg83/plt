@@ -138,7 +138,13 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             if os.environ.get("PLT_RECOVERY_ONLY"):
                 fault = os.environ["PLT_CHAOS"].split("@")[0]
                 if fault.startswith("cocoa-key-"):
-                    key(0, 1 << 17)  # Shift asks for the ASCII base layout.
+                    cg.CGEventSetIntegerValueField.argtypes = [C.c_void_p, C.c_uint32, C.c_int64]
+            repeat = cg.CGEventCreateKeyboardEvent(None, 0, True)
+            cg.CGEventSetIntegerValueField(repeat, 8, 1)  # kCGKeyboardEventAutorepeat
+            cg.CGEventPostToPid(app.pid, repeat)
+            cf.CFRelease(repeat)
+            wait(lambda: "KEY 1 2 " in text(), "native key repeat")
+            key(0, 1 << 17)  # Shift asks for the ASCII base layout.
                 wait(lambda: "CHAOS " + fault in text(), "fault injection")
                 command("resize")
                 screenshot("recovered", "c04040")
@@ -150,6 +156,12 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                          122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111,
                          82, 83, 84, 85, 86, 87, 88, 89, 91, 92, 65, 67, 69, 75, 76, 78, 81):
                 key(code)
+            cg.CGEventSetIntegerValueField.argtypes = [C.c_void_p, C.c_uint32, C.c_int64]
+            repeat = cg.CGEventCreateKeyboardEvent(None, 0, True)
+            cg.CGEventSetIntegerValueField(repeat, 8, 1)  # kCGKeyboardEventAutorepeat
+            cg.CGEventPostToPid(app.pid, repeat)
+            cf.CFRelease(repeat)
+            wait(lambda: "KEY 1 2 " in text(), "native key repeat")
             key(0, 1 << 17)  # Shift
             key(11, 1 << 18)  # Control+B
             key(3, 1 << 19)  # Option+F
@@ -157,8 +169,8 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             key(0, 1 << 16)  # Caps Lock modifier
             key(48, 1 << 17)  # Back-tab
             cg.CGEventKeyboardSetUnicodeString.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(C.c_uint16)]
-            for text_input in ("🌍", "é", "\uf727"):
-                raw = text_input.encode("utf-16-le")
+            for text_input in ("🌍", "é", "\uf727", "\ud800", "\0"):
+                raw = text_input.encode("utf-16-le", errors="surrogatepass")
                 units = (C.c_uint16 * (len(raw) // 2)).from_buffer_copy(raw)
                 for pressed in (True, False):
                     event = cg.CGEventCreateKeyboardEvent(None, 0, pressed)
@@ -179,8 +191,16 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                 cf.CFRelease(event)
             wait(lambda: "BUTTON 0 1" in text(), "mouse input")
             screenshot("clicked", "8040a0")
-            for code in (56, 60, 59, 62, 58, 61, 55, 54, 57):
+            for code in (56, 60, 59, 62, 58, 61, 55, 54, 57, 63):
                 key(code)
+            for code, pressed, flags in ((56, True, (1 << 17) | 2),
+                                         (60, True, (1 << 17) | 2 | 4),
+                                         (56, False, (1 << 17) | 4), (60, False, 0)):
+                event = cg.CGEventCreateKeyboardEvent(None, code, pressed)
+                cg.CGEventSetFlags(event, flags)
+                cg.CGEventPostToPid(app.pid, event)
+                cf.CFRelease(event)
+                time.sleep(.03)
             cg.CGEventCreateScrollWheelEvent.restype = C.c_void_p
             cg.CGEventCreateScrollWheelEvent.argtypes = [C.c_void_p, C.c_uint32, C.c_uint32, C.c_int32]
             for unit in (0, 1):
@@ -222,6 +242,8 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             drops = [("text", "dropped document", 0), ("file", drop_file.as_uri(), 0),
                      ("both", "dropped document", 1), ("lost", "", 0), ("lostfile", "", 0), ("text", None, 2), ("text", None, 3),
                      ("text", None, 4), ("text", "", 5), ("text", None, 6)]
+            if os.environ.get("PLT_NO_DROP"):
+                drops = [("text", None, 2)]
             for kind, expected, mode in drops:
                 command(f"dropmode {mode}")
                 start = len(text())
@@ -238,6 +260,9 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                 mouse(1, sx, sy)
                 for step in range(1, 16):
                     mouse(6, sx + (tx - sx) * step / 15, sy + (ty - sy) * step / 15)
+                if os.environ.get("PLT_NO_DROP"):
+                    mouse(6, sx, sy)
+                    mouse(6, tx, ty)
                 mouse(2, tx, ty)
                 wait(lambda: "DROP RESULT " in text()[start:], "native drag completion")
                 if expected is not None:

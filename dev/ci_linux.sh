@@ -4,14 +4,14 @@ set -eu
 mode=${1:-test}
 toolchain=${2:-clang}
 if [ -f /etc/alpine-release ]; then
-    apk add --no-cache bash binutils clang21 g++ linux-headers lld python3 pkgconf \
+    apk add --no-cache bash binutils clang21 g++ linux-headers lld python3 pkgconf meson ninja curl bzip2 patch expat-dev libffi-dev \
         wayland-dev wayland-protocols libxkbcommon-dev cairo-dev fontconfig-dev vulkan-headers vulkan-loader-dev
     export CC=clang-21 CXX=clang++-21
     export LDFLAGS="${LDFLAGS:-} -fuse-ld=lld"
 else
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install --yes --no-install-recommends python3 pkg-config \
+    apt-get install --yes --no-install-recommends python3 pkg-config meson ninja-build curl bzip2 patch libexpat1-dev libffi-dev \
         libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libcairo2-dev libfontconfig-dev libvulkan-dev
     if [ "$toolchain" = gcc ]; then
         export CC=gcc CXX=g++
@@ -38,4 +38,9 @@ if [ "$mode" != build ]; then
     export LP_NUM_THREADS=2
     export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
 fi
+bash dev/ci_wayland.sh
+wayland_prefix="$PWD/.build/wayland-dependency/install"
+export PATH="$wayland_prefix/bin:$PATH"
+export PKG_CONFIG_PATH="$wayland_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+export LD_LIBRARY_PATH="$wayland_prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec bash dev/ci.sh "$mode"

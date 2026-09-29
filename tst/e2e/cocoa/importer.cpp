@@ -9,6 +9,7 @@
 #include <std/sys/crt.h>
 #include <std/mem/obj_pool.h>
 #include <std/thr/runable.h>
+#include <std/thr/poll_fd.h>
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -63,6 +64,10 @@ namespace {
         Poller* poller = nullptr;
         Report* superseded = nullptr;
         bool delivered = false;
+    };
+
+    struct RetiredSubscription final: public PollCallback {
+        void ready(PollFD event) override;
     };
 
     struct Progress final: public TimerCallback {
@@ -200,9 +205,22 @@ void Progress::ready() {
     app.platform->poller()->deadline(monotonicNowUs() + 2000, *this);
 }
 
+void RetiredSubscription::ready(PollFD) {
+    STD_INSIST(false);
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IOLBF, 0);
     Importer app;
+    int retired[2];
+    STD_INSIST(pipe(retired) == 0);
+    RetiredSubscription subscription;
+    PollWaiter waiter;
+    waiter.fd = {.fd = retired[0], .flags = PollFlag::In};
+    waiter.callback = &subscription;
+    app.platform->poller()->arm(waiter);
+    app.platform->poller()->cancel(waiter);
+    STD_INSIST(write(retired[1], "x", 1) == 1);
     Progress progress(app);
     app.platform->poller()->deadline(0, progress);
     Report stale("stale"), current("current"), duplicate("duplicate");
@@ -234,6 +252,10 @@ int main() {
     STD_INSIST(indexer.done);
     indexer.handle->wake();
     STD_INSIST(pthread_join(thread, nullptr) == 0);
+    char unread;
+    STD_INSIST(read(retired[0], &unread, 1) == 1 && unread == 'x');
+    close(retired[0]);
+    close(retired[1]);
     STD_INSIST(app.imported && app.notified && progress.ticks > 0);
     STD_INSIST(current.delivered && !stale.delivered && !duplicate.delivered);
 }

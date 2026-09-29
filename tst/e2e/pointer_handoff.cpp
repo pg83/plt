@@ -17,6 +17,7 @@ namespace {
         bool source;
         bool& waiting;
         bool entered = false;
+        bool handedOff = false;
         bool clicked = false;
     };
 }
@@ -35,7 +36,8 @@ void Document::paint(Canvas& canvas) {
 
 void Document::pointerPresence(bool present) {
     printf("PRESENCE %d %d\n", source, present);
-    if (source && !present && entered) {
+    if (source && !present && entered && !handedOff) {
+        handedOff = true;
         entered = false;
         waiting = true;
         platform->run();
