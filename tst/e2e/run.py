@@ -15,11 +15,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary-dir", type=Path, required=True)
     parser.add_argument("--artifacts", type=Path, required=True)
-    parser.add_argument("--renderer", choices=("shm", "lavapipe"), default="shm")
+    parser.add_argument("--renderer", choices=("shm", "lavapipe", "metal"), default="shm")
     parser.add_argument("--filter", default="*")
+    parser.add_argument("--source-dir", type=Path, default=Path(__file__).resolve().parent)
     args = parser.parse_args()
     args.artifacts.mkdir(parents=True, exist_ok=True)
-    source = Path(__file__).resolve().parent
+    source = args.source_dir.resolve()
     scenarios = [p for p in sorted(source.glob(args.filter + ".py")) if p.with_suffix(".cpp").exists()]
     if not scenarios:
         parser.error("no matching C++/Python scenario pairs")

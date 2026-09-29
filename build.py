@@ -265,3 +265,13 @@ if system == "Linux" and not platforms_headless:
         color="green",
     )
     group("e2e", e2e_run)
+
+if system == "Darwin" and not platforms_headless:
+    cocoa_e2e = program(
+        name="e2e_cocoa_desktop",
+        output="$(B)/e2e/desktop",
+        srcs=["$(S)/tst/e2e/cocoa/desktop.cpp", "$(S)/tst/e2e/cocoa/native.mm"],
+        cxxflags=backend_cxxflags,
+        deps=[libplt, libstd],
+    )
+    group("e2e-binaries", cocoa_e2e)

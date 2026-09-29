@@ -72,6 +72,11 @@ if [[ "$(uname -s)" == Linux && "$mode" != build ]]; then
     done
     if [[ "$e2e_status" != 0 ]]; then exit "$e2e_status"; fi
 fi
+if [[ "$(uname -s)" == Darwin && "$mode" != build ]]; then
+    python3 ./build -B "$build_dir/plt" -j "$jobs" e2e-binaries
+    python3 tst/e2e/run.py --binary-dir "$build_dir/plt/e2e" \
+        --artifacts "$build_dir/e2e-metal" --renderer metal --source-dir tst/e2e/cocoa
+fi
 if [[ "$mode" == coverage ]]; then
     python3 dev/ci_coverage.py "$build_dir/plt" "$build_dir/profiles" "$root/.build/coverage"
 fi
