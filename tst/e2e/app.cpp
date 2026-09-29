@@ -180,7 +180,7 @@ App::App(Platform* shared)
 App::~App() {
 }
 
-void App::open(const char* title, u32 width, u32 height) {
+void App::open(const char* title, u32 width, u32 height, DropTarget* drop) {
     id = title;
     window = platform->createWindow(
         *owner,
@@ -195,6 +195,7 @@ void App::open(const char* title, u32 width, u32 height) {
             .input = strcmp(setting("PLT_PASSIVE", "0"), "1") == 0 ? nullptr : createFiberInputSink(*owner, *platform->scheduler(), *this),
             .events = this,
             .frame = this,
+            .drop = drop,
         }
     );
     surface = owner->make<Surface>(*owner, window->renderContext());

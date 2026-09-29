@@ -28,7 +28,7 @@ namespace plt::e2e {
         explicit App(Platform* shared = nullptr);
         virtual ~App();
 
-        void open(const char* title, u32 width = 400, u32 height = 280);
+        void open(const char* title, u32 width = 400, u32 height = 280, DropTarget* drop = nullptr);
         void run();
         virtual void paint(Canvas& canvas) = 0;
         bool frame(const WindowInfo& info) override;
