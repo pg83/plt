@@ -29,7 +29,7 @@ def main():
         start = time.monotonic()
         output = (args.artifacts / scenario.stem).resolve()
         output.mkdir(parents=True, exist_ok=True)
-        env = {**os.environ, "PLT_E2E_BINARY": str((args.binary_dir / scenario.stem).resolve()),
+        env = {**os.environ, "PLT_E2E_BINARY": str((args.binary_dir / scenario.stem).absolute()),
                "PLT_E2E_DEVICES": str((args.binary_dir / "devices").resolve()),
                "PLT_E2E_ARTIFACTS": str(output), "PLT_E2E_RENDERER": args.renderer}
         try:
