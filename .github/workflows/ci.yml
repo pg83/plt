@@ -413,10 +413,16 @@ jobs:
         run: brew install llvm@21
 
       - name: Run Darwin tests with coverage
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_16.2.app/Contents/Developer
         run: |
           set -o pipefail
           export PATH="$(brew --prefix llvm@21)/bin:$PATH"
           export CC=clang CXX=clang++
+          sdk=$(xcrun --sdk macosx --show-sdk-path)
+          export CPPFLAGS="-isysroot $sdk"
+          export CXXFLAGS="-mmacosx-version-min=14.0"
+          export LDFLAGS="-isysroot $sdk -mmacosx-version-min=14.0"
           bash dev/ci.sh coverage 2>&1 | tee "$RUNNER_TEMP/coverage-darwin-legacy.log"
 
       - name: Upload native e2e screenshots and logs

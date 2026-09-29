@@ -2490,7 +2490,9 @@ void PlatformImpl::textInputLeft(struct wl_surface* surface) {
     pendingCommit = false;
     pendingPreeditText.reset();
     pendingCommitText.reset();
-    if (preeditVisible && focused != nullptr && focused->input != nullptr) {
+    // Visible preedit was delivered to this immutable input sink. A focus
+    // replacement clears it before installing any other window.
+    if (preeditVisible && focused != nullptr) {
         focused->input->preedit({}, -1, -1);
         focused->input->flush();
     }
