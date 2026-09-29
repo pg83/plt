@@ -192,6 +192,34 @@ void Preview::key(const KeyInput& input) {
             name = "linked";
             break;
         }
+        case 'x': {
+            // Preview transitions retain the original document size across
+            // nested maximize/fullscreen states and duplicate requests.
+            document->window->requestMaximized(true);
+            document->window->requestMaximized(true);
+            document->window->requestFullscreen(true);
+            document->window->requestFullscreen(true);
+            document->window->requestFullscreen(false);
+            document->window->requestMaximized(false);
+            document->window->requestFullscreen(true);
+            document->window->requestMaximized(true);
+            document->window->requestMaximized(false);
+            document->window->requestFullscreen(false);
+            name = "nested";
+            break;
+        }
+        case 'z': {
+            document->window->requestResize(0, 192);
+            document->window->requestResize(256, 0);
+            auto info = document->window->info();
+            info.contentScale = 0;
+            info.maximized = true;
+            document->window->configure(info);
+            document->window->requestMaximized(false);
+            STD_INSIST(document->window->info().contentScale == 1.0f);
+            name = "restored-config";
+            break;
+        }
         default: {
             return;
         }
@@ -207,4 +235,6 @@ int main() {
     app.open("plt-layout-preview");
     app.run();
     app.document->window->requestClose();
+    app.document->window->requestFrame();
+    STD_INSIST(!app.document->window->framePending());
 }

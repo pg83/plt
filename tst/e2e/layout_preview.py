@@ -15,7 +15,8 @@ with Session("layout_preview") as s:
     for key, name, width, height in [
         ("r", "resized", 256, 192), ("m", "maximized", 640, 480),
         ("n", "restored", 256, 192), ("f", "fullscreen", 640, 480),
-        ("w", "windowed", 256, 192), ("l", "linked", 256, 192),
+        ("w", "windowed", 256, 192), ("x", "nested", 256, 192),
+        ("z", "restored-config", 256, 192), ("l", "linked", 256, 192),
     ]:
         s.type(key)
         verify(name, width, height)

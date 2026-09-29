@@ -45,6 +45,15 @@ namespace {
         u64 timeout;
     };
 
+    struct Report final: public TimerCallback {
+        explicit Report(const char* label);
+        void ready() override;
+        const char* label;
+        Poller* poller = nullptr;
+        Report* superseded = nullptr;
+        bool delivered = false;
+    };
+
     struct Progress final: public TimerCallback {
         explicit Progress(Importer& app);
         void ready() override;
@@ -131,6 +140,19 @@ void Preview::run() {
     STD_INSIST(false);
 }
 
+Report::Report(const char* label_)
+    : label(label_)
+{
+}
+
+void Report::ready() {
+    delivered = true;
+    printf("REPORT %s\n", label);
+    if (superseded != nullptr) {
+        poller->cancel(*superseded);
+    }
+}
+
 Progress::Progress(Importer& app_)
     : app(app_)
 {
@@ -146,7 +168,16 @@ int main() {
     setvbuf(stdout, nullptr, _IOLBF, 0);
     Importer app;
     Progress progress(app);
-    app.platform->poller()->timeout(1000, progress);
+    app.platform->poller()->deadline(0, progress);
+    Report stale("stale"), current("current"), duplicate("duplicate");
+    current.poller = app.platform->poller();
+    current.superseded = &duplicate;
+    // Coalesce obsolete status updates, including one already queued for
+    // this event-loop pass when the replacement is delivered.
+    app.platform->poller()->defer(stale);
+    app.platform->poller()->defer(current);
+    app.platform->poller()->defer(duplicate);
+    app.platform->poller()->cancel(stale);
     Preview obsolete(app, 0);
     Preview expired(app, 2000);
     {
@@ -161,4 +192,5 @@ int main() {
     app.platform->poller()->cancel(progress);
     STD_INSIST(pthread_join(thread, nullptr) == 0);
     STD_INSIST(app.imported && app.notified && progress.ticks > 0);
+    STD_INSIST(current.delivered && !stale.delivered && !duplicate.delivered);
 }
