@@ -28,6 +28,9 @@ for case in cases:
                 s.logged("KEY 97 ")
             else:
                 assert "KEY " not in (s.artifacts / "client.log").read_text()
+            before = (s.artifacts / "client.log").read_text().count("COMMAND c")
+            commands.write("c\n")
+            s.wait(lambda: (s.artifacts / "client.log").read_text().count("COMMAND c") > before, "replace selection")
             s.screenshot("preview", [(.1, .5, .9, .8, "40a060")])
             commands.write("q\n")
             assert s.client.wait(timeout=10) == 0

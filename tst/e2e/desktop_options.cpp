@@ -64,6 +64,10 @@ void Preview::run() {
                 delete output;
                 Input* input = clipboard->read();
                 Buffer content;
+                char first;
+                if (input->read(&first, 1) != 0) {
+                    content.append(&first, 1);
+                }
                 input->readAll(content);
                 delete input;
                 printf("SELECTION [%s]\n", content.cStr());
