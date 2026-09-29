@@ -265,8 +265,8 @@ if system == "Linux" and not platforms_headless:
         e2e_binaries.append(program(
             name=f"e2e_{name}",
             output=f"$(B)/e2e/{name}",
-            srcs=[source],
-            deps=[e2e_support],
+            srcs=[source, "$(S)/tst/e2e/app.cpp", "$(S)/tst/e2e/vulkan.cpp"] if name == "production" else [source],
+            deps=[libplt, pkg_config("cairo"), pkg_config("fontconfig"), pkg_config("vulkan")] if name == "production" else [e2e_support],
         ))
     group("e2e-binaries", *e2e_binaries)
 

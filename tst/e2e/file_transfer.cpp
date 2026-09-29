@@ -60,6 +60,10 @@ void Transfer::start() {
     STD_INSIST(output >= 0);
     lock = platform->scheduler()->createMutex(*owner);
     STD_INSIST(!lock->heldByCurrent());
+    // Reserve the output from the event loop before any sender fiber exists.
+    STD_INSIST(lock->tryLock());
+    STD_INSIST(lock->locked() && !lock->heldByCurrent());
+    lock->unlock();
     senders[0].app = senders[1].app = this;
     senders[0].path = setting("PLT_TRANSFER_FIRST", "");
     senders[1].path = setting("PLT_TRANSFER_SECOND", "");

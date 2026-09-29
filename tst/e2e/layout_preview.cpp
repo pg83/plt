@@ -1,11 +1,14 @@
 #include "app.h"
+#include "fiber.h"
 #include "poller.h"
+#include "loop_wake.h"
 #include "platform_headless.h"
 
 #include <std/ios/input.h>
 #include <std/dbg/insist.h>
 #include <std/ios/output.h>
 #include <std/lib/vector.h>
+#include <std/thr/runable.h>
 
 #include <cairo.h>
 #include <stdio.h>
@@ -16,15 +19,17 @@ using namespace plt::e2e;
 using namespace stl;
 
 namespace {
-    struct Document final: public FrameCallback, public WindowEvents, public TimerCallback {
+    struct Document final: public FrameCallback, public WindowEvents, public TimerCallback, public Runable {
         explicit Document(ObjPool& owner);
         bool frame(const WindowInfo& info) override;
         void close() override;
         void ready() override;
         void render();
+        void run() override;
         void save(const char* name);
         Platform* platform;
         WindowHeadless* window;
+        LoopWake* wake;
         bool changed = false;
     };
 
@@ -38,6 +43,7 @@ namespace {
 Document::Document(ObjPool& owner)
     : platform(createHeadlessPlatform(owner))
 {
+    wake = platform->createLoopWake(owner, *this);
     window = static_cast<WindowHeadless*>(platform->createWindow(
         owner,
         {
@@ -110,8 +116,14 @@ void Document::ready() {
     }
 }
 
+void Document::run() {
+    platform->scheduler()->yield();
+    wake->signal();
+}
+
 void Document::render() {
-    platform->poller()->timeout(100, *this);
+    auto job = ObjPool::fromMemory();
+    platform->scheduler()->create(*job, *this);
     platform->run();
     STD_INSIST(!window->framePending());
 }

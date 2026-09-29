@@ -116,6 +116,9 @@ int main() {
         } else if (sscanf(line, "scroll %d", &steps) == 1) {
             zwlr_virtual_pointer_v1_axis_source(pointer, WL_POINTER_AXIS_SOURCE_WHEEL);
             zwlr_virtual_pointer_v1_axis_discrete(pointer, time, WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_int(steps * 10), steps);
+        } else if (sscanf(line, "wheel %u %d", &axis, &steps) == 2 && axis <= 1) {
+            zwlr_virtual_pointer_v1_axis_source(pointer, WL_POINTER_AXIS_SOURCE_WHEEL);
+            zwlr_virtual_pointer_v1_axis_discrete(pointer, time, axis, wl_fixed_from_int(steps * 10), steps);
         } else if (sscanf(line, "smooth %u %d", &axis, &steps) == 2 && axis <= 1) {
             zwlr_virtual_pointer_v1_axis_source(pointer, WL_POINTER_AXIS_SOURCE_FINGER);
             zwlr_virtual_pointer_v1_axis(pointer, time, axis, wl_fixed_from_int(steps));

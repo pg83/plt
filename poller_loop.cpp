@@ -250,7 +250,7 @@ void PollerLoopImpl::wait(u64 monotonicDeadline) {
         result = chaos(Fault::PollInterrupted) || chaos(Fault::PollError) ? -1 : ::poll(pollFDs.mutData(), pollFDs.length(), timeoutMilliseconds);
     } while (result < 0 && errno == EINTR);
     if (result < 0) {
-        Errno(errno == 0 ? EINVAL : errno).raise(StringView(u8"poll failed"));
+        Errno(errno).raise(StringView(u8"poll failed"));
     }
 
     // Detach every ready waiter before the first callback runs: a callback

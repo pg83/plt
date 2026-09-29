@@ -268,7 +268,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             command("unfullscreen")
             time.sleep(1)
             screenshot("windowed", "40a060")
-            commands.write("quit\n")
+            commands.write("system-close\n")
             assert app.wait(timeout=15) == 0
     finally:
         if app.poll() is None:

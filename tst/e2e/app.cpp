@@ -208,6 +208,8 @@ void App::run() {
 }
 
 bool App::frame(const WindowInfo& info) {
+    // Renderers may use this to lower their quality during interactive resize.
+    window->inLiveResize();
     if (!surface->paint(*this, info)) {
         return false;
     }

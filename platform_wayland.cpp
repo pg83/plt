@@ -647,9 +647,6 @@ namespace {
         .offer = primaryOfferOffer,
     };
 
-    void dataSourceTarget(void*, struct wl_data_source*, const char*) {
-    }
-
     void dataSourceSend(void* data, struct wl_data_source*, const char*, int fd) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
         platform.writeSelection(fd, StringView(platform.clipboardContent));
@@ -664,12 +661,8 @@ namespace {
     }
 
     const struct wl_data_source_listener dataSourceListener{
-        .target = dataSourceTarget,
         .send = dataSourceSend,
         .cancelled = dataSourceCancelled,
-        .dnd_drop_performed = [](void*, struct wl_data_source*) {},
-        .dnd_finished = [](void*, struct wl_data_source*) {},
-        .action = [](void*, struct wl_data_source*, u32) {},
     };
 
     void primarySourceSend(void* data, struct zwp_primary_selection_source_v1*, const char*, int fd) {
@@ -703,13 +696,8 @@ namespace {
         if (proxy == nullptr) {
             return;
         }
-        if (platform.pendingClipboardOffer.data == proxy) {
-            platform.clipboardOffer = platform.pendingClipboardOffer;
-            platform.pendingClipboardOffer = {};
-        } else {
-            platform.clipboardOffer.data = proxy;
-            wl_data_offer_add_listener(proxy, &dataOfferListener, &platform.clipboardOffer);
-        }
+        platform.clipboardOffer = platform.pendingClipboardOffer;
+        platform.pendingClipboardOffer = {};
     }
 
     const struct wl_data_device_listener dataDeviceListener{
@@ -746,13 +734,8 @@ namespace {
         if (proxy == nullptr) {
             return;
         }
-        if (platform.pendingPrimaryOffer.primary == proxy) {
-            platform.primaryOffer = platform.pendingPrimaryOffer;
-            platform.pendingPrimaryOffer = {};
-        } else {
-            platform.primaryOffer.primary = proxy;
-            zwp_primary_selection_offer_v1_add_listener(proxy, &primaryOfferListener, &platform.primaryOffer);
-        }
+        platform.primaryOffer = platform.pendingPrimaryOffer;
+        platform.pendingPrimaryOffer = {};
     }
 
     const struct zwp_primary_selection_device_v1_listener primaryDeviceListener{
@@ -804,12 +787,10 @@ namespace {
         // presses would type the key that switched focus into the terminal.
         // Their eventual releases are suppressed to match.
         platform.enterPressedKeys.clear();
-        if (keys != nullptr) {
-            const u32* key = (const u32*)(keys->data);
-            const u32* const keysEnd = key + keys->size / sizeof(*key);
-            for (; key != keysEnd; ++key) {
-                platform.enterPressedKeys.pushBack(*key);
-            }
+        const u32* key = (const u32*)(keys->data);
+        const u32* const keysEnd = key + keys->size / sizeof(*key);
+        for (; key != keysEnd; ++key) {
+            platform.enterPressedKeys.pushBack(*key);
         }
         if (platform.keyboardFocus != nullptr) {
             platform.keyboardFocus->focused = true;
@@ -977,14 +958,6 @@ namespace {
         pointerAxisSteps(data, pointer, axis, discrete * 120);
     },
         .axis_value120 = pointerAxisSteps,
-        .axis_relative_direction = [](void*, struct wl_pointer*, u32, u32) {},
-// Older Wayland headers (<= 1.25) have no warp event; the seat is
-// bound at version 8, so the handler is unreachable there anyway.
-#ifdef WL_POINTER_WARP_SINCE_VERSION
-        .warp = [](void* data, struct wl_pointer*, wl_fixed_t x, wl_fixed_t y) {
-        pointerMotion(data, nullptr, 0, x, y);
-    },
-#endif
     };
 
     void seatCapabilities(void* data, struct wl_seat*, u32 capabilities) {
@@ -1119,13 +1092,7 @@ namespace {
     const struct xdg_activation_token_v1_listener activationTokenListener{
         .done = [](void* data, struct xdg_activation_token_v1* token, const char* value) {
         WindowImpl& window = *(WindowImpl*)(data);
-        if (window.activationToken != token) {
-            xdg_activation_token_v1_destroy(token);
-            return;
-        }
-        if (window.platform.activation != nullptr) {
-            xdg_activation_v1_activate(window.platform.activation, value, window.surface);
-        }
+        xdg_activation_v1_activate(window.platform.activation, value, window.surface);
         xdg_activation_token_v1_destroy(token);
         window.activationToken = nullptr;
     },
@@ -1953,9 +1920,6 @@ InputKey PlatformImpl::inputKey(xkb_keysym_t symbol) const {
 }
 
 u32 PlatformImpl::keymapCodepoint(xkb_keycode_t key, xkb_layout_index_t layout) const {
-    if (keymap == nullptr) {
-        return 0;
-    }
     const xkb_keysym_t* symbols = nullptr;
     if (xkb_keymap_key_get_syms_by_level(keymap, key, layout, 0, &symbols) <= 0) {
         return 0;
@@ -2069,7 +2033,7 @@ void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool re
     }
     keyboardFocus->input->flush();
 
-    if (!repeated && state == WL_KEYBOARD_KEY_STATE_PRESSED && repeatRate != 0 && keymap != nullptr && xkb_keymap_key_repeats(keymap, keycode)) {
+    if (!repeated && state == WL_KEYBOARD_KEY_STATE_PRESSED && repeatRate != 0 && xkb_keymap_key_repeats(keymap, keycode)) {
         repeatWindow = keyboardFocus;
         repeatKeycode = key;
         repeatSerial = serial;
@@ -2091,9 +2055,7 @@ void PlatformImpl::repeat() {
 void PlatformImpl::stopRepeat() {
     repeatWindow = nullptr;
     repeatKeycode = 0;
-    if (repeatFiber_ != nullptr) {
-        repeatFiber_->wake();
-    }
+    repeatFiber_->wake();
 }
 
 RepeatBody::RepeatBody(PlatformImpl* platform_)
@@ -2265,11 +2227,6 @@ void PlatformImpl::dragEntered(u32 serial, struct wl_surface* surface, wl_fixed_
     WindowImpl* const window = surface == nullptr ? nullptr : (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
     Offer adopted;
     if (offer != nullptr) {
-        if (pendingClipboardOffer.data != offer) {
-            pendingClipboardOffer.reset();
-            pendingClipboardOffer.data = offer;
-            wl_data_offer_add_listener(offer, &dataOfferListener, &pendingClipboardOffer);
-        }
         adopted = pendingClipboardOffer;
         pendingClipboardOffer = {};
     }
@@ -2468,9 +2425,6 @@ void PlatformImpl::activate(WindowImpl& window) {
 }
 
 void PlatformImpl::enableTextInput(WindowImpl& window) {
-    if (textInput == nullptr) {
-        return;
-    }
     zwp_text_input_v3_enable(textInput);
     zwp_text_input_v3_set_content_type(textInput, ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE, ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_TERMINAL);
     if (window.textInputWidth != 0 && window.textInputHeight != 0) {
@@ -2481,9 +2435,6 @@ void PlatformImpl::enableTextInput(WindowImpl& window) {
 }
 
 void PlatformImpl::disableTextInput() {
-    if (textInput == nullptr) {
-        return;
-    }
     zwp_text_input_v3_disable(textInput);
     zwp_text_input_v3_commit(textInput);
     flushDisplay();
@@ -2816,11 +2767,7 @@ void WindowImpl::cancelFrame() {
 }
 
 void WindowImpl::frameReady(struct wl_callback* callback) {
-    if (callback != frameCallback) {
-        wl_callback_destroy(callback);
-        return;
-    }
-    wl_callback_destroy(frameCallback);
+    wl_callback_destroy(callback);
     frameCallback = nullptr;
     if (frameRequested) {
         requestFrame();

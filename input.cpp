@@ -112,9 +112,7 @@ FiberSinkImpl::~FiberSinkImpl() noexcept {
 
 void FiberSinkImpl::push(SinkEvent& event) {
     queue.pushBack(&event);
-    if (fiber != nullptr) {
-        fiber->wake();
-    }
+    fiber->wake();
 }
 
 void FiberSinkImpl::deliver(const SinkEvent& event) {
@@ -122,39 +120,39 @@ void FiberSinkImpl::deliver(const SinkEvent& event) {
     switch (event.type) {
         case SinkEvent::Type::Key: {
             target.key(event.key);
-            break;
+            return;
         }
         case SinkEvent::Type::Text: {
             target.text(event.text);
-            break;
+            return;
         }
         case SinkEvent::Type::Preedit: {
             target.preedit(payload, event.cursorBegin, event.cursorEnd);
-            break;
+            return;
         }
         case SinkEvent::Type::PointerMotion: {
             target.pointerMotion(event.motion);
-            break;
+            return;
         }
         case SinkEvent::Type::PointerButton: {
             target.pointerButton(event.button);
-            break;
+            return;
         }
         case SinkEvent::Type::Scroll: {
             target.scroll(event.scroll);
-            break;
+            return;
         }
         case SinkEvent::Type::Focus: {
             target.focus(event.flag);
-            break;
+            return;
         }
         case SinkEvent::Type::PointerPresence: {
             target.pointerPresence(event.flag);
-            break;
+            return;
         }
         case SinkEvent::Type::Flush: {
             target.flush();
-            break;
+            return;
         }
     }
 }
