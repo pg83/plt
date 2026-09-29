@@ -45,4 +45,6 @@ with Session("device-reconnect") as s:
     s.ipc("output HEADLESS-2 disable")
     s.ipc("output HEADLESS-2 enable")
     s.screenshot("second-monitor", [(.1, .5, .9, .8, "40a060")])
-    s.close()
+    s.ipc(f'[con_id={s.window()["id"]}] kill')
+    assert s.client.wait(timeout=10) == 0
+    s.client = None

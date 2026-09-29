@@ -28,8 +28,10 @@ with Session("keymap-viewer") as s:
     s.wait(lambda: re.search(r"KEY 1 2 ", (s.artifacts / "client.log").read_text()), "held key repeats")
     s.command("wtype", "-P", "dead_acute", "-s", "150", "-p", "dead_acute", "-k", "e")
     s.command("wtype", "-P", "F1", "-s", "150", "-p", "F1")
+    s.command("wtype", "-P", "a", "-P", "b", "-p", "a", "-p", "b")
+    start = len((s.artifacts / "client.log").read_text())
     held = s.start(["wtype", "-P", "a", "-s", "1000", "-p", "a"], "repeat-disabled")
-    s.wait(lambda: re.search(r"KEY 1 2 ", (s.artifacts / "client.log").read_text()), "repeat before disabling")
+    s.wait(lambda: re.search(r"KEY 1 2 ", (s.artifacts / "client.log").read_text()[start:]), "repeat before disabling")
     s.ipc("input * repeat_rate 0")
     assert held.wait(timeout=5) == 0
     s.key("z")

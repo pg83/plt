@@ -17,6 +17,8 @@ cases = {
         {"interface": "wl_output", "event": "mode", "replace": {"width": 0, "height": 0}},
         {"interface": "wp_fractional_scale_v1", "event": "preferred_scale", "replace": {"scale": 0}},
     ],
+    "held-at-focus": [{"interface": "wl_keyboard", "event": "enter", "replace": {"keys": [42, 54]}, "repeat": True}],
+    "zero-pointer-serial": [{"interface": "wl_pointer", "event": "enter", "replace": {"serial": 0}}],
     "no-keymap": [{"interface": "wl_keyboard", "event": "keymap", "replace": {"format": 0}, "repeat": True}],
     "empty-keymap": [{"interface": "wl_keyboard", "event": "keymap", "replace": {"size": 0}, "repeat": True}],
 }
@@ -31,6 +33,7 @@ for name, rules in cases.items():
             assert "TEXT 97\n" not in (s.artifacts / "client.log").read_text()
             for rule in proxy.rules:
                 rule["repeat"] = False
+        s.pointer(120, 100)
         s.key("b")
         s.logged("TEXT 98")
         s.screenshot("recovered", [(.1, .5, .9, .8, "40a060")])

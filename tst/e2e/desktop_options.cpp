@@ -73,6 +73,7 @@ void Preview::run() {
                 printf("SELECTION [%s]\n", content.cStr());
             }
         } else if (cmd == 'w') {
+            window->requestMove(80, 100);
             window->requestAttention();
             window->requestFocus();
             window->requestFocus();
@@ -101,6 +102,14 @@ int main() {
     app.open("plt-desktop-options");
     app.commands = ::open(setting("PLT_COMMAND_PIPE", ""), O_RDWR | O_NONBLOCK | O_CLOEXEC);
     STD_INSIST(app.commands >= 0);
+    Clipboard* clipboards[] = {app.window->primary(), app.window->secondary()};
+    for (Clipboard* clipboard : clipboards) {
+        Output* output = clipboard->write();
+        output->write("preview selection", 17);
+        output->finish();
+        delete output;
+    }
+    app.window->requestMove(80, 100);
     app.window->requestFocus();
     app.window->requestTextInputRect(0, 0, 8, 0);
     app.platform->scheduler()->create(*app.owner, app, 128 * 1024);

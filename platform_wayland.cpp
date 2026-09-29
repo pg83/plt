@@ -2011,6 +2011,7 @@ void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool re
         composedCount = 1;
     }
     const u16 activeModifiers = modifiers();
+    WindowImpl* const target = keyboardFocus;
     keyboardFocus->input->key({
         .key = inputKey(symbol),
         .action = action,
@@ -2019,6 +2020,11 @@ void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool re
         .baseCodepoint = baseCodepoint(keycode),
         .shiftedCodepoint = activeModifiers & InputShift ? codepoint : 0,
     });
+    // Direct input handlers may close the window or enter a modal loop that
+    // transfers focus. Do not continue delivery through a retired target.
+    if (keyboardFocus != target) {
+        return;
+    }
     if (action != InputAction::Release && !(activeModifiers & (InputControl | InputSuper))) {
         for (size_t index = 0; index != composedCount; ++index) {
             if (composed[index] >= 0x20 && composed[index] != 0x7f) {
@@ -2026,10 +2032,16 @@ void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool re
                     .codepoint = composed[index],
                     .modifiers = activeModifiers,
                 });
+                if (keyboardFocus != target) {
+                    return;
+                }
             }
         }
     }
     keyboardFocus->input->flush();
+    if (keyboardFocus != target) {
+        return;
+    }
 
     if (!repeated && state == WL_KEYBOARD_KEY_STATE_PRESSED && repeatRate != 0 && xkb_keymap_key_repeats(keymap, keycode)) {
         repeatWindow = keyboardFocus;

@@ -11,6 +11,7 @@ namespace {
         bool frame(const WindowInfo& info) override;
         void paint(Canvas& canvas) override;
         int failures = 3;
+        bool requested = false;
     };
 }
 
@@ -20,7 +21,13 @@ bool Retry::frame(const WindowInfo& info) {
         window->requestFrame();
         return false;
     }
-    return App::frame(info);
+    const bool rendered = App::frame(info);
+    if (rendered && !requested) {
+        requested = true;
+        window->requestFrame();
+        puts("REPAINT DURING PRESENT");
+    }
+    return rendered;
 }
 
 void Retry::paint(Canvas& c) {

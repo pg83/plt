@@ -57,6 +57,8 @@ def encode(object_id, opcode, arguments, values):
             continue
         if kind in ("string", "array"):
             value = value or b""
+            if kind == "array" and isinstance(value, list):
+                value = struct.pack("=" + "I" * len(value), *value)
             if isinstance(value, str):
                 value = value.encode() + (b"\0" if kind == "string" else b"")
             payload.extend(struct.pack("=I", len(value)))
@@ -87,6 +89,10 @@ class Proxy:
         self.error = None
         self.stopping = threading.Event()
         self.workers = []
+        self.primary = None
+        self.send_lock = threading.Lock()
+        self.globals = {}
+        self.retired = {}
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(self.path)
         self.listener.listen(1)
@@ -118,7 +124,12 @@ class Proxy:
                 else:
                     objects[value[2]] = value[0]
         if direction != "event":
+            if message.attrib["name"] in ("release", "destroy") and interface in self.retired:
+                self.retired[interface].set()
             return frame
+        if interface == "wl_registry" and message.attrib["name"] == "global":
+            name = values["interface"].rstrip(b"\0").decode()
+            self.globals.setdefault(name, (object_id, values))
         for rule in self.rules:
             if (rule["fired"] and not rule.get("repeat")) or (rule["interface"], rule["event"]) != (interface, message.attrib["name"]):
                 continue
@@ -161,6 +172,8 @@ class Proxy:
         pending = {}
         connections = [client]
         objects = {1: "wl_display"}
+        if primary:
+            self.primary = client
         try:
             server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             connections.append(server)
@@ -195,8 +208,9 @@ class Proxy:
                     destination = server if source is client else client
                     if outgoing:
                         control = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", descriptors))] if descriptors else []
-                        sent = destination.sendmsg([outgoing], control)
-                        destination.sendall(outgoing[sent:])
+                        with self.send_lock:
+                            sent = destination.sendmsg([outgoing], control)
+                            destination.sendall(outgoing[sent:])
                         for descriptor in descriptors:
                             socket.close(descriptor)
                         descriptors.clear()
@@ -210,6 +224,21 @@ class Proxy:
                     socket.close(descriptor)
             for connection in connections:
                 connection.close()
+
+    def global_available(self, interface, available):
+        registry, values = self.globals[interface]
+        retired = self.retired.setdefault(interface, threading.Event())
+        retired.clear()
+        name = "global" if available else "global_remove"
+        events = self.interfaces["wl_registry"]["event"]
+        event = next(event for event in events if event.attrib["name"] == name)
+        frame = encode(registry, events.index(event), event.findall("arg"), values)
+        with self.send_lock:
+            self.primary.sendall(frame)
+        if not available:
+            assert retired.wait(timeout=5), f"client did not release {interface}"
+        with self.session.artifacts.joinpath("global-faults.log").open("a") as log:
+            log.write(f"{interface} {int(available)}\n")
 
     def disconnect(self):
         self.stopping.set()
