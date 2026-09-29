@@ -94,6 +94,11 @@ class Proxy:
         self.globals = {}
         self.retired = {}
         self.restored = {}
+        self.first_objects = {}
+        self.xdg_surfaces = {}
+        self.toplevel_surfaces = {}
+        self.surface_apps = {}
+        self.current_drags = {}
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(self.path)
         self.listener.listen(1)
@@ -122,8 +127,16 @@ class Proxy:
                 value = values[argument.attrib["name"]]
                 if "interface" in argument.attrib:
                     objects[value] = argument.attrib["interface"]
+                    self.first_objects.setdefault(argument.attrib["interface"], value)
                 else:
                     objects[value[2]] = value[0]
+        if direction == "request":
+            if interface == "xdg_wm_base" and message.attrib["name"] == "get_xdg_surface":
+                self.xdg_surfaces[values["id"]] = values["surface"]
+            elif interface == "xdg_surface" and message.attrib["name"] == "get_toplevel":
+                self.toplevel_surfaces[values["id"]] = self.xdg_surfaces[object_id]
+            elif interface == "xdg_toplevel" and message.attrib["name"] == "set_app_id":
+                self.surface_apps[self.toplevel_surfaces[object_id]] = values["app_id"].rstrip(b"\0").decode()
         if direction != "event":
             if message.attrib["name"] in ("release", "destroy") and interface in self.retired:
                 self.retired[interface].set()
@@ -133,14 +146,25 @@ class Proxy:
         if interface == "wl_registry" and message.attrib["name"] == "global":
             name = values["interface"].rstrip(b"\0").decode()
             self.globals.setdefault(name, (object_id, values))
+        if interface == "wl_data_device" and message.attrib["name"] == "enter":
+            self.current_drags[object_id] = self.surface_apps.get(values["surface"])
         for rule in self.rules:
             if (rule["fired"] and not rule.get("repeat")) or (rule["interface"], rule["event"]) != (interface, message.attrib["name"]):
+                continue
+            if rule.get("first_object") and self.first_objects.get(interface) != object_id:
+                continue
+            if "after_surface" in rule and self.current_drags.get(object_id) != rule["after_surface"]:
+                continue
+            if "surface_app" in rule and self.surface_apps.get(values.get("surface")) != rule["surface_app"]:
                 continue
             if rule.get("skip", 0):
                 rule["skip"] -= 1
                 continue
             rule["fired"] = True
             self.session.artifacts.joinpath("wire-faults.json").write_text(json.dumps(self.rules))
+            if "duplicate" in rule:
+                assert all(argument.attrib["type"] != "fd" for argument in arguments)
+                return frame + encode(object_id, opcode, arguments, {**values, **rule["duplicate"]})
             if rule.get("drop"):
                 assert all(argument.attrib["type"] != "fd" for argument in arguments)
                 return b""

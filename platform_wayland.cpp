@@ -2249,7 +2249,7 @@ void PlatformImpl::runDragSession(DndSession& session) {
     Buffer acceptedMime;
     DropAction lastAction = DropAction::None;
     bool replySent = false;
-    while (true) {
+    for (;;) {
         if (session.leavePending || session.window == nullptr) {
             if (session.window != nullptr && session.window->dropTarget != nullptr) {
                 session.window->dropTarget->dragLeft();
@@ -2300,9 +2300,9 @@ void PlatformImpl::runDragSession(DndSession& session) {
 void PlatformImpl::runDropTransfer(DndSession& session) {
     // The hover phase is over; a new session may begin while this transfer
     // drains.
-    if (dndSession == &session) {
-        dndSession = nullptr;
-    }
+    // Replacing the current session marks its predecessor leavePending;
+    // runDragSession handles that before reaching a settled drop.
+    dndSession = nullptr;
     WindowImpl* const window = session.window;
     if (window->dropTarget == nullptr || session.offer.data == nullptr) {
         return;
