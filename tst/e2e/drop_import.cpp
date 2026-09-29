@@ -229,7 +229,7 @@ DropReply Target::dragOver(const DropOffer& offer, i32, i32) {
     const char* mode = setting("PLT_DROP_MODE", "copy");
     puts("HOVER");
     if (strcmp(mode, "close-hover") == 0) {
-        owner = ObjPool::Ref();
+        owner = ObjPool::fromMemory();
         window = nullptr;
         surface = nullptr;
         puts("TARGET CLOSED");

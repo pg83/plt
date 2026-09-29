@@ -49,7 +49,7 @@ namespace {
         u32 color = 0x204060;
         int pipe = -1;
         unsigned dropMode = 0;
-        ObjPool::Ref auxiliary;
+        ObjPool::Ref auxiliary = ObjPool::fromMemory();
     };
 }
 
@@ -190,7 +190,7 @@ void Desktop::command(const char* line) {
         pending->requestFrame();
         pending->requestClose();
     } else if (strcmp(line, "close-auxiliary") == 0) {
-        auxiliary = ObjPool::Ref();
+        auxiliary = ObjPool::fromMemory();
         canvas->command("detached-input");
     } else if (strcmp(line, "copy-invalid") == 0) {
         Output* output = window->secondary()->write();
