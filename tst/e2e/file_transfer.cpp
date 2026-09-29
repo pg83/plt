@@ -75,33 +75,35 @@ void Transfer::ready() {
 void Sender::run() {
     const int input = ::open(path, O_RDONLY | O_CLOEXEC);
     STD_INSIST(input >= 0);
-    if (!app->lock->tryLock()) {
-        puts("WAITING FOR TRANSACTION");
-        app->lock->lock();
-    }
-    STD_INSIST(app->lock->locked() && app->lock->heldByCurrent());
-    char bytes[16384];
-    for (;;) {
-        const ssize_t count = read(input, bytes, sizeof(bytes));
-        STD_INSIST(count >= 0);
-        if (count == 0) {
-            break;
+    {
+        if (app->lock->locked()) {
+            STD_INSIST(!app->lock->heldByCurrent());
+            puts("WAITING FOR TRANSACTION");
         }
-        ssize_t offset = 0;
-        while (offset < count) {
-            const ssize_t written = write(app->sockets[1], bytes + offset, count - offset);
-            if (written < 0) {
-                STD_INSIST(errno == EAGAIN || errno == EWOULDBLOCK);
-                STD_INSIST(app->platform->scheduler()->awaitWritable(app->sockets[1], 2'000'000));
-            } else {
-                offset += written;
+        LockGuard transaction(*app->lock);
+        STD_INSIST(app->lock->locked() && app->lock->heldByCurrent());
+        char bytes[16384];
+        for (;;) {
+            const ssize_t count = read(input, bytes, sizeof(bytes));
+            STD_INSIST(count >= 0);
+            if (count == 0) {
+                break;
             }
+            ssize_t offset = 0;
+            while (offset < count) {
+                const ssize_t written = write(app->sockets[1], bytes + offset, count - offset);
+                if (written < 0) {
+                    STD_INSIST(errno == EAGAIN || errno == EWOULDBLOCK);
+                    STD_INSIST(app->platform->scheduler()->awaitWritable(app->sockets[1], 2'000'000));
+                } else {
+                    offset += written;
+                }
+            }
+            app->platform->scheduler()->yield();
         }
-        app->platform->scheduler()->yield();
+        ::close(input);
+        ++app->sent;
     }
-    ::close(input);
-    ++app->sent;
-    app->lock->unlock();
     if (app->sent == 2 && app->sockets[1] >= 0) {
         ::close(app->sockets[1]);
         app->sockets[1] = -1;
