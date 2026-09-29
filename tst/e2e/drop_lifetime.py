@@ -9,7 +9,7 @@ with Session("drop-lifetime") as s:
     os.mkfifo(fifo)
     s.launch(PLT_COMMAND_PIPE=str(fifo))
     with (s.artifacts / "source.log").open("w") as log:
-        source = subprocess.Popen([str(s.binary.with_name("drop_import"))],
+        source = subprocess.Popen([str(Path(os.environ["PLT_E2E_BINARY"]).with_name("drop_import"))],
             env={**s.env, "PLT_SOURCE_ONLY": "1"}, stdout=log, stderr=subprocess.STDOUT)
     try:
         s.wait(lambda: "SOURCE READY" in (s.artifacts / "source.log").read_text(), "external drag source")
