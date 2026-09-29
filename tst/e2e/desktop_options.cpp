@@ -85,6 +85,7 @@ void Preview::run() {
             window->requestTextInputRect(1, 1, 8, 16);
             window->requestTextInputRect(1, 1, 9, 16);
             window->requestTextInputRect(1, 1, 9, 17);
+            window->requestPointerIcon(static_cast<PointerIcon>(255));
             for (unsigned icon = 0; icon != 37; ++icon) {
                 window->requestPointerIcon((PointerIcon)icon);
             }

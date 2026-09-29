@@ -653,9 +653,7 @@ namespace {
 
     void dataSourceCancelled(void* data, struct wl_data_source* source) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
-        if (platform.clipboardSource == source) {
-            platform.clipboardSource = nullptr;
-        }
+        platform.clipboardSource = nullptr;
         wl_data_source_destroy(source);
     }
 
@@ -671,9 +669,7 @@ namespace {
 
     void primarySourceCancelled(void* data, struct zwp_primary_selection_source_v1* source) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
-        if (platform.primarySource == source) {
-            platform.primarySource = nullptr;
-        }
+        platform.primarySource = nullptr;
         zwp_primary_selection_source_v1_destroy(source);
     }
 
@@ -864,7 +860,7 @@ namespace {
     // Seats below version 5 never send wl_pointer.frame, so flush after every
     // event which would otherwise wait for the end of the frame.
     void pointerFrameFallback(PlatformImpl& platform) {
-        if (platform.pointer != nullptr && wl_pointer_get_version(platform.pointer) < WL_POINTER_FRAME_SINCE_VERSION) {
+        if (wl_pointer_get_version(platform.pointer) < WL_POINTER_FRAME_SINCE_VERSION) {
             pointerFrame(&platform, nullptr);
         }
     }
@@ -1769,7 +1765,7 @@ InputKey PlatformImpl::inputKey(xkb_keysym_t symbol) const {
     if (symbol >= XKB_KEY_A && symbol <= XKB_KEY_Z) {
         return InputKey::Printable;
     }
-    if ((symbol >= XKB_KEY_0 && symbol <= XKB_KEY_9) || (symbol >= XKB_KEY_space && symbol <= XKB_KEY_asciitilde)) {
+    if (symbol >= XKB_KEY_space && symbol <= XKB_KEY_asciitilde) {
         return InputKey::Printable;
     }
     switch (symbol) {
@@ -2070,9 +2066,9 @@ void RepeatBody::run() {
         if (self->parkFor((u64)(impl.repeatDelay) * 1000)) {
             continue;
         }
-        while (impl.repeatKeycode != 0 && impl.repeatRate != 0) {
+        while (impl.repeatKeycode != 0) {
             impl.keyboardKey(impl.repeatSerial, impl.repeatTime, impl.repeatKeycode, WL_KEYBOARD_KEY_STATE_PRESSED, true);
-            if (impl.repeatKeycode == 0 || impl.repeatRate == 0) {
+            if (impl.repeatKeycode == 0) {
                 break;
             }
             if (self->parkFor(1'000'000 / impl.repeatRate)) {
@@ -2150,7 +2146,6 @@ size_t StreamInput::readImpl(void* data, size_t len) {
         return count;
     }
     if (fd < 0) {
-        eof = eof || local.empty();
         return 0;
     }
     for (;;) {
@@ -2302,7 +2297,7 @@ void PlatformImpl::runDropTransfer(DndSession& session) {
         dndSession = nullptr;
     }
     WindowImpl* const window = session.window;
-    if (window == nullptr || window->dropTarget == nullptr || session.offer.data == nullptr) {
+    if (window->dropTarget == nullptr || session.offer.data == nullptr) {
         return;
     }
     DndOfferView view;
@@ -2606,15 +2601,9 @@ WindowImpl::~WindowImpl() {
     if (decoration != nullptr) {
         zxdg_toplevel_decoration_v1_destroy(decoration);
     }
-    if (toplevel != nullptr) {
-        xdg_toplevel_destroy(toplevel);
-    }
-    if (xdgSurface != nullptr) {
-        xdg_surface_destroy(xdgSurface);
-    }
-    if (surface != nullptr) {
-        wl_surface_destroy(surface);
-    }
+    xdg_toplevel_destroy(toplevel);
+    xdg_surface_destroy(xdgSurface);
+    wl_surface_destroy(surface);
 }
 
 u32 WindowImpl::pixelWidth() const {
@@ -2669,8 +2658,8 @@ void WindowImpl::configure() {
     maximized = pendingMaximized;
     fullscreen = pendingFullscreen;
     tiled = pendingTiled;
-    u32 width = pendingWidth == 0 ? logicalWidth : pendingWidth;
-    u32 height = pendingHeight == 0 ? logicalHeight : pendingHeight;
+    u32 width = pendingWidth;
+    u32 height = pendingHeight;
     if (!maximized && !fullscreen && !tiled) {
         width = snappedLogical(width, resizeUnitWidth, resizeBaseWidth);
         height = snappedLogical(height, resizeUnitHeight, resizeBaseHeight);

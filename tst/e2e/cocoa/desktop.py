@@ -204,7 +204,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                     time.sleep(.1)
                 wait(lambda: geometry()[3:] != (width, height), "interactive window resize")
                 screenshot("live-" + mode, "8040a0")
-            for icon in range(37):
+            for icon in (*range(37), 255):
                 command(f"cursor {icon}")
             command("clear-clipboard")
             command("paste")

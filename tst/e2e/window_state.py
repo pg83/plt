@@ -26,6 +26,7 @@ with Session("window_state") as s:
     s.ipc("output HEADLESS-1 scale 2")
     s.ipc(f'[con_id={s.window()["id"]}] resize set 430 300')
     s.wait(lambda: s.window()["rect"]["width"] == 430, "unrepresentable pixel grid preserves logical size")
+    s.ipc(f'[con_id={s.window()["id"]}] move position 20 20')
     s.screenshot("unsnappable-grid", [(.1, .5, .9, .8, "204060")])
     s.key("u")
     s.logged("FREE RESIZE READY")
