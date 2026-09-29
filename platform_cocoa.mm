@@ -34,8 +34,9 @@
 
 // @available guards the runtime, but building against an older SDK also
 // needs the declarations to exist at all; these gate every use of an API
-// newer than the SDK the build runs on.
-#if defined(MAC_OS_VERSION_15_0) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_VERSION_15_0
+// newer than the SDK the build runs on. The legacy unprefixed maximum is
+// frozen at macOS 14 in some newer SDKs; use the current availability macros.
+#if defined(__MAC_15_0) && __MAC_OS_X_VERSION_MAX_ALLOWED >= __MAC_15_0
     #define PLT_SDK_MACOS_15 1
 #else
     #define PLT_SDK_MACOS_15 0

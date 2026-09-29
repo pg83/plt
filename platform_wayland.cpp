@@ -2219,8 +2219,8 @@ void StreamOutput::finishImpl() {
 
 void PlatformImpl::dragEntered(u32 serial, struct wl_surface* surface, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer* offer) {
     if (dndSession != nullptr) {
-        // A new session begins before the old one saw leave; end it. The
-        // fiber tears down synchronously and detaches itself.
+        // Retire the previous hover. A target awaiting I/O can outlive
+        // this notification; dndTasks retains it until completion or shutdown.
         dndSession->leavePending = true;
         dndSession->fiber->wake();
     }

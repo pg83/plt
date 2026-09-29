@@ -35,6 +35,7 @@ Run as a regular user with writable temporary storage and shared memory.
 | native_map | Native toolkit maps the exposed Wayland surface; plt handles subsequent resize and scale changes |
 | native_preview | A native toolkit and plt share one Wayland connection, with separate input focus |
 | editor | Text entry and deletion |
+| connection_warmup | Writable-only display recovery before the first document opens |
 | compose_focus | Replaced and stale IME focus events, preedit cleanup and isolated document input |
 | drop_import | Real copy/move negotiation, rejection, interrupted transfers and window retirement during hover |
 | drop_lifetime | Cross-process drag enter queued before its target surface is destroyed |

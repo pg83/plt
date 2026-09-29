@@ -44,6 +44,7 @@ void Warmup::ready() {
 int main() {
     auto owner = ObjPool::fromMemory();
     Platform* const platform = Platform::create(*owner);
+    Document document(platform);
     {
         // Prepare the display before opening the document. Drain registry
         // replies so retrying an unwritable connection cannot piggyback on
@@ -58,7 +59,6 @@ int main() {
         platform->run();
         puts("CONNECTION WARMED UP");
     }
-    Document document(platform);
     document.open("plt-connection-warmup");
     document.run();
 }
