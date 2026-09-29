@@ -11,7 +11,7 @@ with Session("uri-import") as s:
     second.write_bytes(b"second document\x00binary\xff\n")
     invalid = ["https://example.invalid/file", "file://", "file://localhost",
                "file://remote.invalid/etc/passwd", "file:///bad%", "file:///bad%2",
-               "file:///bad%G0", "file:///bad%0Z"]
+               "file:///bad%G0", "file:///bad%0Z", "file:///bad%/0", "file:///bad%:0", "file:///bad%g0"]
     lower = second.as_uri().replace("%C3%A9", "%c3%a9")
     local = first.as_uri().replace("file:///", "file://localhost/", 1)
     manifest = work / "manifest.txt"

@@ -271,6 +271,11 @@ void Target::dropped(Drop& drop) {
         printf("DROPPED [%s]\n", content.cStr());
     }
     delete input;
+    // A document import consumes the offer once, even if a decoder retries.
+    input = drop.read(StringView(u8"text/plain;charset=utf-8"));
+    char extra;
+    STD_INSIST(input->read(&extra, 1) == 0);
+    delete input;
     color = 0x40a060;
     window->requestFrame();
 }

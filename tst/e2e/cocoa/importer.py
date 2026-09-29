@@ -18,4 +18,5 @@ with tempfile.TemporaryDirectory(prefix="plt-import-") as temp:
     (out / "client.log").write_bytes(result.stdout)
     assert result.returncode == 0, result.stdout.decode()
     assert f"IMPORTED {len(data)} {checksum}" in result.stdout.decode()
+    assert b"INDEXED" in result.stdout
     assert b"INITIAL TIMEOUT" in result.stdout and b"WORKER DONE" in result.stdout

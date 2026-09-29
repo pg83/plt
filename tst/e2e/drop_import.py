@@ -35,8 +35,10 @@ for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "
             continue
         if mode == "no-offer":
             assert "DROPPED" not in (s.artifacts / "client.log").read_text()
-        elif mode == "legacy-copy":
+        elif mode in ("legacy-copy", "legacy-move"):
+            # Before wl_data_device v3 there is no action negotiation: copy.
             s.logged("DROPPED [dragged document]")
+            s.logged("ACTION 1")
         elif mode in ("copy", "move"):
             s.logged("DROPPED [dragged document]")
             s.logged("SOURCE FINISHED")
@@ -51,7 +53,7 @@ for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "
         else:
             s.logged("SOURCE CANCELLED")
             assert "DROPPED" not in (s.artifacts / "client.log").read_text()
-        color = "40a060" if mode in ("copy", "move", "partial", "pipe-failure", "legacy-copy") else "204060"
+        color = "40a060" if mode in ("copy", "move", "partial", "pipe-failure", "legacy-copy", "legacy-move") else "204060"
         s.screenshot("target", [(.1, .5, .9, .8, color)], app_id="plt-drop-target")
         s.ipc(f'[con_id={target["id"]}] kill')
         assert s.client.wait(timeout=10) == 0

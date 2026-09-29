@@ -45,6 +45,16 @@ namespace {
         u64 timeout;
     };
 
+    // A paused indexing task resumes through its persistent application handle.
+    struct Indexer final: public Runable, public TimerCallback {
+        explicit Indexer(Scheduler& scheduler);
+        void run() override;
+        void ready() override;
+        Scheduler& scheduler;
+        Fiber* handle = nullptr;
+        bool done = false;
+    };
+
     struct Report final: public TimerCallback {
         explicit Report(const char* label);
         void ready() override;
@@ -140,6 +150,26 @@ void Preview::run() {
     STD_INSIST(false);
 }
 
+Indexer::Indexer(Scheduler& scheduler_)
+    : scheduler(scheduler_)
+{
+}
+
+void Indexer::run() {
+    scheduler.current()->park();
+    handle->wake();
+    STD_INSIST(handle->parkFor(100'000));
+    handle->wake();
+    handle->park();
+    STD_INSIST(!handle->parkFor(1000));
+    done = true;
+    puts("INDEXED");
+}
+
+void Indexer::ready() {
+    handle->wake();
+}
+
 Report::Report(const char* label_)
     : label(label_)
 {
@@ -180,16 +210,23 @@ int main() {
     app.platform->poller()->cancel(stale);
     Preview obsolete(app, 0);
     Preview expired(app, 2000);
+    Preview replaced(app, 1'000'000);
     {
         ObjPool::Ref requests = ObjPool::fromMemory();
         app.platform->scheduler()->create(*requests, obsolete);
         app.platform->scheduler()->create(*requests, expired);
+        app.platform->scheduler()->create(*requests, replaced);
     }
+    Indexer indexer(*app.platform->scheduler());
+    indexer.handle = app.platform->scheduler()->create(*app.owner, indexer);
+    app.platform->poller()->defer(indexer);
     pthread_t thread;
     STD_INSIST(pthread_create(&thread, nullptr, Importer::produce, &app) == 0);
     app.platform->scheduler()->create(*app.owner, app, 128 * 1024);
     app.platform->run();
     app.platform->poller()->cancel(progress);
+    STD_INSIST(indexer.done);
+    indexer.handle->wake();
     STD_INSIST(pthread_join(thread, nullptr) == 0);
     STD_INSIST(app.imported && app.notified && progress.ticks > 0);
     STD_INSIST(current.delivered && !stale.delivered && !duplicate.delivered);

@@ -294,6 +294,10 @@ void Desktop::dropped(Drop& drop) {
         input->readAll(content);
     }
     delete input;
+    input = drop.read(mime);
+    char extra;
+    STD_INSIST(input->read(&extra, 1) == 0);
+    delete input;
     printf("DROPPED %s\n", content.cStr());
     color = 0x40a060;
     window->requestFrame();

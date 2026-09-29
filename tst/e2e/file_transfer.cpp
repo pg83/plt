@@ -59,6 +59,7 @@ void Transfer::start() {
     output = ::open(setting("PLT_TRANSFER_OUTPUT", ""), O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, 0600);
     STD_INSIST(output >= 0);
     lock = platform->scheduler()->createMutex(*owner);
+    STD_INSIST(!lock->heldByCurrent());
     senders[0].app = senders[1].app = this;
     senders[0].path = setting("PLT_TRANSFER_FIRST", "");
     senders[1].path = setting("PLT_TRANSFER_SECOND", "");

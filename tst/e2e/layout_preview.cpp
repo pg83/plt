@@ -71,6 +71,12 @@ Document::Document(ObjPool& owner)
     output->finish();
     delete output;
     window->requestShow();
+    // A layout-only placeholder has neither renderer nor close handler.
+    auto pendingOwner = ObjPool::fromMemory();
+    auto* pending = static_cast<WindowHeadless*>(platform->createWindow(*pendingOwner, {}));
+    pending->requestFrame();
+    pending->dispatchFrame();
+    pending->requestClose();
 }
 
 bool Document::frame(const WindowInfo& info) {
