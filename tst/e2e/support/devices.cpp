@@ -1,6 +1,7 @@
 #include "virtual-pointer-client.h"
 
 #include <stdio.h>
+#include <time.h>
 #include <string.h>
 #include <wayland-client.h>
 
@@ -27,7 +28,7 @@ namespace {
     }
 }
 
-// Keep a real virtual pointer attached while Python drives Sway's seat commands.
+// Keep a real virtual pointer attached and inject the driver's input events.
 int main() {
     wl_display* const display = wl_display_connect(nullptr);
     if (display == nullptr) {
@@ -46,7 +47,30 @@ int main() {
     }
     puts("READY");
     fflush(stdout);
-    while (getchar() != EOF) {
+    char line[128];
+    unsigned int serial = 0;
+    while (fgets(line, sizeof(line), stdin) != nullptr) {
+        timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        const uint32_t time = now.tv_sec * 1000 + now.tv_nsec / 1000000;
+        unsigned int x, y, width, height, button, pressed;
+        int steps;
+        if (sscanf(line, "move %u %u %u %u", &x, &y, &width, &height) == 4) {
+            zwlr_virtual_pointer_v1_motion_absolute(pointer, time, x, y, width, height);
+        } else if (sscanf(line, "button %u %u", &button, &pressed) == 2) {
+            zwlr_virtual_pointer_v1_button(pointer, time, button, pressed);
+        } else if (sscanf(line, "scroll %d", &steps) == 1) {
+            zwlr_virtual_pointer_v1_axis_source(pointer, WL_POINTER_AXIS_SOURCE_WHEEL);
+            zwlr_virtual_pointer_v1_axis_discrete(pointer, time, WL_POINTER_AXIS_VERTICAL_SCROLL, wl_fixed_from_int(steps * 10), steps);
+        } else {
+            return 1;
+        }
+        zwlr_virtual_pointer_v1_frame(pointer);
+        if (wl_display_roundtrip(display) < 0) {
+            return 1;
+        }
+        printf("DONE %u\n", ++serial);
+        fflush(stdout);
     }
     zwlr_virtual_pointer_v1_destroy(pointer);
     zwlr_virtual_pointer_manager_v1_destroy(devices.manager);

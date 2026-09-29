@@ -22,6 +22,7 @@ class Session:
         self.processes = []
         self.logs = []
         self.client = None
+        self.input_serial = 0
         self.socket = None
         self.runtime = None
         self.env = os.environ.copy()
@@ -37,7 +38,7 @@ class Session:
             runtime = Path(self.runtime.name)
             runtime.chmod(0o700)
             self.env.update(
-                XDG_RUNTIME_DIR=str(runtime), WLR_BACKENDS="headless",
+                XDG_RUNTIME_DIR=str(runtime), XDG_CACHE_HOME=str(runtime / "cache"), WLR_BACKENDS="headless",
                 WLR_HEADLESS_OUTPUTS="1", WLR_LIBINPUT_NO_DEVICES="1",
                 WLR_RENDERER="pixman", DBUS_SESSION_BUS_ADDRESS="unix:path=/dev/null",
             )
@@ -62,7 +63,7 @@ class Session:
             self.socket = self.wait(lambda: next(runtime.glob("sway-ipc.*.sock"), None), "Sway IPC", client=False)
             self.env["WAYLAND_DISPLAY"] = wayland.name
             self.env["SWAYSOCK"] = str(self.socket)
-            self.start([os.environ["PLT_E2E_DEVICES"]], "devices", stdin=subprocess.PIPE)
+            self.devices = self.start([os.environ["PLT_E2E_DEVICES"]], "devices", stdin=subprocess.PIPE)
             self.wait(lambda: "READY" in (self.artifacts / "devices.log").read_text(), "virtual pointer", client=False)
             self.start(["wtype", "-s", "60000"], "keyboard")
             self.wait(lambda: any(item["type"] == "keyboard" for item in json.loads(
@@ -155,12 +156,24 @@ class Session:
             args.extend(["-m", modifier])
         self.command(*args)
 
+    def input(self, command):
+        self.input_serial += 1
+        self.devices.stdin.write((command + "\n").encode())
+        self.devices.stdin.flush()
+        self.wait(lambda: f"DONE {self.input_serial}\n" in (self.artifacts / "devices.log").read_text(), "input delivery")
+
     def pointer(self, x, y, app_id=None):
         r = self.window(app_id)["rect"]
-        self.ipc(f'seat seat0 cursor set {r["x"] + x} {r["y"] + y}')
+        output = json.loads(self.command("swaymsg", "-r", "-t", "get_outputs"))[0]["rect"]
+        self.input(f'move {r["x"] + x} {r["y"] + y} {output["width"]} {output["height"]}')
 
     def button(self, button="button1", pressed=True):
-        self.ipc(f'seat seat0 cursor {"press" if pressed else "release"} {button}')
+        if button in ("button4", "button5"):
+            if pressed:
+                self.input(f'scroll {1 if button == "button5" else -1}')
+        else:
+            code = {"button1": 272, "button2": 274, "button3": 273}[button]
+            self.input(f"button {code} {int(pressed)}")
 
     def click(self, x, y, button="button1", app_id=None):
         self.pointer(x, y, app_id)

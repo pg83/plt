@@ -34,6 +34,11 @@ esac
 "$CXX" --version
 (
     cd "$std_source"
+    if [[ "$mode" == coverage ]]; then
+        # libstd's assembly context entry reads a fixed register before any
+        # compiler-generated code may use it. Keep profiling out of that ABI.
+        export CXXFLAGS="$CXXFLAGS -fprofile-list=$root/dev/coverage-libstd.list"
+    fi
     python3 ./build -B "$build_dir/std" -j "$jobs" libstd
 )
 export CPPFLAGS="${CPPFLAGS:-} -I$std_source"
