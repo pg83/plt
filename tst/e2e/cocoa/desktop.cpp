@@ -2,6 +2,7 @@
 #include "fiber.h"
 #include "input.h"
 #include "native.h"
+#include "poller.h"
 #include "platform.h"
 
 #include <std/ios/input.h>
@@ -22,6 +23,18 @@ using namespace plt::e2e;
 using namespace stl;
 
 namespace {
+    struct ImportDialog final: public PollCallback {
+        ImportDialog(Platform& platform, bool replace);
+        ~ImportDialog();
+        void ready(PollFD event) override;
+        void run();
+        Platform& platform;
+        bool replace;
+        int pipes[2];
+        unsigned phase = 0;
+        PollWaiter waiter;
+    };
+
     struct Desktop final: public FrameCallback, public WindowEvents, public InputSink, public Runable, public DropTarget {
         Desktop();
         ~Desktop();
@@ -51,6 +64,50 @@ namespace {
         unsigned dropMode = 0;
         ObjPool::Ref auxiliary = ObjPool::fromMemory();
     };
+}
+
+ImportDialog::ImportDialog(Platform& platform_, bool replace_)
+    : platform(platform_)
+    , replace(replace_)
+{
+    STD_INSIST(::pipe(pipes) == 0);
+    waiter.fd = {.fd = pipes[0], .flags = PollFlag::In};
+    waiter.callback = this;
+}
+
+ImportDialog::~ImportDialog() {
+    platform.poller()->cancel(waiter);
+    ::close(pipes[0]);
+    ::close(pipes[1]);
+}
+
+void ImportDialog::ready(PollFD event) {
+    STD_INSIST(event.flags & PollFlag::In);
+    ++phase;
+    if (phase == 1) {
+        platform.poller()->arm(waiter);
+        platform.run();
+        STD_INSIST(phase == 2);
+        if (replace) {
+            // The nested dispatch removed the old native descriptor. A new
+            // subscription on the same application fd gets its own source.
+            platform.poller()->arm(waiter);
+        } else {
+            platform.stop();
+        }
+    } else {
+        platform.stop();
+    }
+}
+
+void ImportDialog::run() {
+    platform.poller()->arm(waiter);
+    STD_INSIST(write(pipes[1], "x", 1) == 1);
+    platform.run();
+    STD_INSIST(phase == (replace ? 3u : 2u));
+    char byte;
+    STD_INSIST(read(pipes[0], &byte, 1) == 1 && byte == 'x');
+    printf("NESTED IMPORT %u\n", phase);
 }
 
 Desktop::Desktop()
@@ -170,6 +227,11 @@ void Desktop::command(const char* line) {
         window->requestPointerIcon(static_cast<PointerIcon>(atoi(line + 7)));
     } else if (strncmp(line, "dropmode ", 9) == 0) {
         dropMode = atoi(line + 9);
+    } else if (strcmp(line, "import-dialog") == 0) {
+        ImportDialog first(*platform, false);
+        first.run();
+        ImportDialog replacement(*platform, true);
+        replacement.run();
     } else if (strcmp(line, "caret") == 0) {
         window->requestTextInputRect(20, 40, 8, 18);
     } else if (strcmp(line, "copy") == 0 || strcmp(line, "primary") == 0) {
@@ -303,7 +365,7 @@ void Desktop::dropped(Drop& drop) {
         puts("DROP IGNORED");
         return;
     }
-    const StringView mime = offer->format(offer->formats() - 1);
+    const StringView mime = dropMode == 7 ? StringView(u8"application/unknown") : offer->format(offer->formats() - 1);
     Input* input = drop.read(mime);
     Buffer content;
     if (dropMode == 5) {

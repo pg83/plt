@@ -141,6 +141,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             command("retire-queued")
             command("title")
             command("caret")
+            command("import-dialog")
             if os.environ.get("PLT_PASSIVE"):
                 command("mark")
                 command("compose")
@@ -162,6 +163,8 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                 raise SystemExit(0)
             command("mark")
             key(125)  # The candidate-navigation press/release belongs to the IME.
+            command("mark")
+            key(124)  # A second composing key reuses the suppression set.
             command("compose")
             wait(lambda: "TEXT 127757" in text() and "PREEDIT 0 -1 -1" in text(), "IME commit and preedit clear")
             key(0)  # Physical A, delivered by WindowServer to the application.
@@ -191,7 +194,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             cg.CGEventSetIntegerValueField(repeat, 8, 1)  # kCGKeyboardEventAutorepeat
             cg.CGEventPostToPid(app.pid, repeat)
             cf.CFRelease(repeat)
-            wait(lambda: "KEY 1 2 " in text(), "native key repeat")
+            wait(lambda: "KEY 1 1 " in text(), "native key repeat")
             key(0, 1 << 17)  # Shift
             key(11, 1 << 18)  # Control+B
             key(3, 1 << 19)  # Option+F
@@ -271,7 +274,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             screenshot("pasted", "40a060")
             drops = [("text", "dropped document", 0), ("file", drop_file.as_uri(), 0),
                      ("both", "dropped document", 1), ("lost", "", 0), ("lostfile", "", 0), ("text", None, 2), ("text", None, 3),
-                     ("text", None, 4), ("text", "", 5), ("text", None, 6)]
+                     ("text", None, 4), ("text", "", 5), ("text", None, 6), ("text", "", 7), ("file", "", 7)]
             for kind, expected, mode in drops:
                 drag(kind, expected, mode)
             command("restore")

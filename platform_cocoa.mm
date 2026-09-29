@@ -1004,9 +1004,8 @@ void PollerImpl::scheduleTimer() {
 void PollerImpl::descriptorReady(CFFileDescriptorRef descriptor) {
     const int fd = CFFileDescriptorGetNativeDescriptor(descriptor);
     ArmedFD* const entry = armed.find(fd);
-    if (entry == nullptr || entry->descriptor != descriptor) {
-        return;
-    }
+    // Each entry owns its CF source. Erasing it invalidates the source and
+    // descriptor on this same thread, so callbacks cannot outlive the entry.
     if (entry->waiters.empty()) {
         armed.erase(fd);
         return;
@@ -1367,7 +1366,7 @@ Input* CocoaDrop::read(StringView mime) {
         NSArray<NSURL*>* const urls = [pasteboard readObjectsForClasses:@[ [NSURL class] ] options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
         for (NSURL* url in urls) {
             NSData* const encoded = [url.absoluteString dataUsingEncoding:NSUTF8StringEncoding];
-            if (encoded != nil && encoded.length != 0) {
+            if (encoded != nil) {
                 content.append(encoded.bytes, encoded.length);
                 content.append("\r\n", 2);
             }
@@ -1415,9 +1414,8 @@ void WindowImpl::dragExited() {
 }
 
 BOOL WindowImpl::performDrop(id<NSDraggingInfo> sender) {
-    if (dropTarget == nullptr) {
-        return NO;
-    }
+    // AppKit only performs a drag accepted by dragOver. The target is fixed
+    // at construction, so accepting it guarantees the handler still exists.
     NSPasteboard* const pasteboard = [sender draggingPasteboard];
     CocoaDropOffer offer;
     offer.text = [pasteboard availableTypeFromArray:@[ NSPasteboardTypeString ]] != nil;
