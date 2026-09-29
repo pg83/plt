@@ -8,7 +8,7 @@ with Session("scroller") as s:
     s.logged("SCROLL ")
     s.screenshot("scrolled", [(.1, .5, .9, .8, "40a060")])
     s.input("wheel 1 2")
-    s.logged(" 0 0 2.000")
+    s.logged(" 0 0 -2.000")
     for axis in (0, 1):
         s.input(f"smooth {axis} 12")
         s.input(f"smooth {axis} 8")

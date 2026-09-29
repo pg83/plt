@@ -36,6 +36,7 @@ namespace {
     struct Target final: public App, public DropTarget {
         explicit Target(Platform* shared);
         void paint(Canvas& canvas) override;
+        void key(const KeyInput& input) override;
         DropReply dragOver(const DropOffer& offer, i32 x, i32 y) override;
         void dragLeft() override;
         void dropped(Drop& drop) override;
@@ -203,6 +204,13 @@ void Source::drag(u32 serial) {
     }
     source = wl_data_device_manager_create_data_source(manager);
     wl_data_source_add_listener(source, &sourceListener, this);
+    const char* selectionMime = setting("PLT_SELECTION_MIME", "");
+    if (*selectionMime != 0) {
+        wl_data_source_offer(source, selectionMime);
+        wl_data_device_set_selection(device, source, serial);
+        puts("SELECTION READY");
+        return;
+    }
     wl_data_source_offer(source, "text/plain;charset=utf-8");
     wl_data_source_offer(source, "text/uri-list");
     wl_data_source_set_actions(source, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY | WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE);
@@ -223,6 +231,19 @@ Target::Target(Platform* shared)
 void Target::paint(Canvas& canvas) {
     canvas.clear(color);
     canvas.text(20, 40, StringView(u8"Document drop target"));
+}
+
+void Target::key(const KeyInput& input) {
+    App::key(input);
+    if (input.action == InputAction::Press && input.baseCodepoint == 'p') {
+        Input* stream = window->secondary()->read();
+        Buffer bytes;
+        stream->readAll(bytes);
+        delete stream;
+        printf("PASTED [%s]\n", bytes.cStr());
+        color = 0x40a060;
+        window->requestFrame();
+    }
 }
 
 DropReply Target::dragOver(const DropOffer& offer, i32 x, i32) {

@@ -15,7 +15,7 @@ with Session("keymap-viewer") as s:
     for name, identity in keys.items():
         s.key(name)
         s.logged(f"KEY {identity} 0 ")
-    for modifier, flag in (("alt", 4), ("logo", 8)):
+    for modifier, flag in (("alt", 4), ("logo", 8), ("altgr", 64)):
         s.key("a", modifier)
         s.logged(f"KEY 1 0 {flag} 97")
     s.command("wtype", "-k", "dead_acute", "-k", "e")
