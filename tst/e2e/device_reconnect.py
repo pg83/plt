@@ -23,6 +23,11 @@ with Session("device-reconnect") as s:
     s.devices = s.start([os.environ["PLT_E2E_DEVICES"]], "devices", stdin=subprocess.PIPE)
     s.input_serial = 0
     s.wait(lambda: "READY" in (s.artifacts / "devices.log").read_text(), "replacement pointer")
+    focus = "FOCUS plt-keymap-viewer 1"
+    before = (s.artifacts / "client.log").read_text().count(focus)
+    s.start(["wtype", "-s", "60000"], "replacement-keyboard")
+    s.wait(lambda: (s.artifacts / "client.log").read_text().count(focus) > before,
+           "client receives replacement keyboard focus")
     s.key("b")
     s.logged("TEXT 98")
     s.pointer(120, 100)
