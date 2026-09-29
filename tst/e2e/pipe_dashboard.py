@@ -1,8 +1,9 @@
 import os
+from pathlib import Path
 from session import Session
 
 with Session("pipe_dashboard") as s:
-    pipe = s.artifacts / "telemetry.fifo"
+    pipe = Path(s.env["XDG_RUNTIME_DIR"]) / "telemetry.fifo"
     pipe.unlink(missing_ok=True)
     os.mkfifo(pipe)
     s.launch(PLT_DATA_PIPE=str(pipe))

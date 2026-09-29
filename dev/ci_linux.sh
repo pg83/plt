@@ -24,7 +24,10 @@ fi
 if [ "$mode" != build ]; then
     if [ -f /etc/alpine-release ]; then
         apk add --no-cache sway swaybg grim wtype wl-clipboard font-dejavu \
-            mesa-vulkan-swrast vulkan-validation-layers runuser
+            mesa-vulkan-swrast vulkan-validation-layers runuser libcap-utils
+        # The packaged DRM capabilities cannot be granted inside Docker; the
+        # headless compositor needs none of them.
+        if [ -n "$(getcap /usr/bin/sway)" ]; then setcap -r /usr/bin/sway; fi
     else
         apt-get install --yes --no-install-recommends sway swaybg grim wtype wl-clipboard \
             fonts-dejavu-core mesa-vulkan-drivers vulkan-validationlayers util-linux

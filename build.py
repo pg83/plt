@@ -227,7 +227,27 @@ if system == "Linux" and not platforms_headless:
         srcs=["$(S)/tst/e2e/app.cpp", "$(S)/tst/e2e/vulkan.cpp"],
         deps=[libplt, pkg_config("cairo"), pkg_config("vulkan")],
     )
-    e2e_binaries = []
+    pointer_xml = "$(S)/tst/e2e/support/wlr-virtual-pointer-unstable-v1.xml"
+    pointer_header = "$(B)/e2e-protocol/virtual-pointer-client.h"
+    pointer_code = "$(B)/e2e-protocol/virtual-pointer-code.h"
+    pointer_protocol = command(
+        inputs=[pointer_xml],
+        outputs=[pointer_header, pointer_code],
+        cmd=[
+            ["wayland-scanner", "client-header", pointer_xml, pointer_header],
+            ["wayland-scanner", "private-code", pointer_xml, pointer_code],
+        ],
+        cflags=["-I$(B)/e2e-protocol"],
+        descr="WL",
+        color="blue",
+    )
+    devices = program(
+        name="e2e_devices",
+        output="$(B)/e2e/devices",
+        srcs=[{"src": "$(S)/tst/e2e/support/devices.cpp", "inputs": [pointer_header, pointer_code]}],
+        deps=[pointer_protocol, pkg_config("wayland-client")],
+    )
+    e2e_binaries = [devices]
     for source in sorted(build.glob("$(S)/tst/e2e/*.cpp")):
         name = os.path.basename(source).removesuffix(".cpp")
         if name in {"app", "vulkan"}:

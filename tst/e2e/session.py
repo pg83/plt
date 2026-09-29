@@ -62,6 +62,11 @@ class Session:
             self.socket = self.wait(lambda: next(runtime.glob("sway-ipc.*.sock"), None), "Sway IPC", client=False)
             self.env["WAYLAND_DISPLAY"] = wayland.name
             self.env["SWAYSOCK"] = str(self.socket)
+            self.start([str(self.binary.parent / "devices")], "devices", stdin=subprocess.PIPE)
+            self.wait(lambda: "READY" in (self.artifacts / "devices.log").read_text(), "virtual pointer", client=False)
+            self.start(["wtype", "-s", "60000"], "keyboard")
+            self.wait(lambda: any(item["type"] == "keyboard" for item in json.loads(
+                self.command("swaymsg", "-r", "-t", "get_inputs"))), "virtual keyboard", client=False)
             (self.artifacts / "environment.json").write_text(json.dumps({
                 key: self.env.get(key) for key in (
                     "PLT_E2E_RENDERER", "WLR_RENDERER", "VK_DRIVER_FILES", "VK_ICD_FILENAMES",
@@ -72,12 +77,12 @@ class Session:
             self.cleanup()
             raise
 
-    def start(self, command, label, **environment):
+    def start(self, command, label, stdin=None, **environment):
         log = (self.artifacts / f"{label}.log").open("wb")
         self.logs.append(log)
         process = subprocess.Popen(
             command, env={**self.env, **environment}, stdout=log, stderr=subprocess.STDOUT,
-            start_new_session=False,
+            start_new_session=False, stdin=stdin,
         )
         self.processes.append(process)
         return process
@@ -212,6 +217,12 @@ class Session:
     def cleanup(self):
         errors = []
         for process in reversed(self.processes):
+            if process.stdin is not None:
+                process.stdin.close()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
             if process.poll() is None:
                 process.terminate()
                 try:
