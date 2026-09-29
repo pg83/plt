@@ -15,6 +15,7 @@ with Session("compose-focus") as s, Proxy(s, []) as proxy:
     active = proxy.surface("plt-compose-editor")
     passive = proxy.surface("plt-compose-survivor")
     interface = "zwp_text_input_v3"
+    active_before = (s.artifacts / "devices.log").read_text().count("IME ACTIVE")
     proxy.event(interface, "enter", surface=passive)
     proxy.event(interface, "leave", surface=passive)
     proxy.event(interface, "enter", surface=passive)
@@ -22,6 +23,10 @@ with Session("compose-focus") as s, Proxy(s, []) as proxy:
     proxy.event(interface, "done", serial=0)
     proxy.event(interface, "enter", surface=active)
     proxy.event(interface, "leave", surface=passive)
+    def focus_settled():
+        s.input("sync")
+        return (s.artifacts / "devices.log").read_text().count("IME ACTIVE") >= active_before + 3
+    s.wait(focus_settled, "three IME reactivations after injected focus changes")
     s.input("ime-commit 42")
     s.logged("TEXT 1 66")
     assert "TEXT 1 67" not in (s.artifacts / "client.log").read_text()

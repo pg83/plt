@@ -423,6 +423,8 @@ jobs:
           export CPPFLAGS="-isysroot $sdk"
           export CXXFLAGS="-mmacosx-version-min=14.0"
           export LDFLAGS="-isysroot $sdk -mmacosx-version-min=14.0"
+          clang++ -isysroot "$sdk" -mmacosx-version-min=14.0 -dM -E -x objective-c++ \
+            -include AppKit/AppKit.h /dev/null | grep -E 'MAC.*(MAX_ALLOWED|15_0)|__ENVIRONMENT_MAC_OS'
           bash dev/ci.sh coverage 2>&1 | tee "$RUNNER_TEMP/coverage-darwin-legacy.log"
 
       - name: Upload native e2e screenshots and logs

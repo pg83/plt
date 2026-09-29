@@ -109,7 +109,10 @@ int main() {
         unsigned int x, y, width, height, button, pressed;
         int steps;
         unsigned int axis;
-        if (sscanf(line, "move %u %u %u %u", &x, &y, &width, &height) == 4) {
+        if (strcmp(line, "sync\n") == 0) {
+            // Roundtrips around this command drain input-method state before
+            // a driver submits a commit using the newly negotiated serial.
+        } else if (sscanf(line, "move %u %u %u %u", &x, &y, &width, &height) == 4) {
             zwlr_virtual_pointer_v1_motion_absolute(pointer, time, x, y, width, height);
         } else if (sscanf(line, "button %u %u", &button, &pressed) == 2) {
             zwlr_virtual_pointer_v1_button(pointer, time, button, pressed);
