@@ -138,6 +138,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             command("auxiliary")
             time.sleep(.1)
             command("close-auxiliary")
+            command("retire-queued")
             command("title")
             command("caret")
             if os.environ.get("PLT_PASSIVE"):
@@ -273,7 +274,6 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                      ("text", None, 4), ("text", "", 5), ("text", None, 6)]
             for kind, expected, mode in drops:
                 drag(kind, expected, mode)
-            command("open-document")
             command("restore")
             command("minimize")
             def minimized(expected):
@@ -299,6 +299,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             command("unfullscreen")
             time.sleep(1)
             screenshot("windowed", "40a060")
+            command("open-document")
             commands.write("system-close\n")
             assert app.wait(timeout=15) == 0
     finally:

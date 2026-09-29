@@ -194,13 +194,20 @@ void Desktop::command(const char* line) {
         delete input;
         printf("PASTED %s\n", content.cStr());
         color = 0x40a060;
-    } else if (strcmp(line, "auxiliary") == 0) {
+    } else if (strcmp(line, "auxiliary") == 0 || strcmp(line, "retire-queued") == 0) {
         auxiliary = ObjPool::fromMemory();
         Window* pending = platform->createWindow(*auxiliary, {.appName = StringView(u8"\xff", 1)});
         canvas->holdInput(pending->renderContext());
         pending->info();
         pending->requestFrame();
         pending->requestClose();
+        if (strcmp(line, "retire-queued") == 0) {
+            // The display-link thread queues a main-loop block while this
+            // command still owns the loop. Retire its window before delivery.
+            usleep(100000);
+            auxiliary = ObjPool::fromMemory();
+            puts("QUEUED PREVIEW RETIRED");
+        }
     } else if (strcmp(line, "close-auxiliary") == 0) {
         auxiliary = ObjPool::fromMemory();
         canvas->command("detached-input");
