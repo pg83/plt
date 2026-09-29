@@ -29,6 +29,7 @@ common_sources = [
     "$(S)/input.cpp",
     "$(S)/loop_wake.cpp",
     "$(S)/mutex.cpp",
+    "$(S)/poller.cpp",
     "$(S)/poller_loop.cpp",
     "$(S)/pointer_grab.cpp",
     "$(S)/platform.cpp",
