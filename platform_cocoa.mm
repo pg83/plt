@@ -3,24 +3,26 @@
 #include "drop.h"
 #include "fiber.h"
 #include "input.h"
-#include "loop_wake.h"
 #include "poller.h"
-#include "poller_loop.h"
 #include "window.h"
 #include "platform.h"
+#include "loop_wake.h"
+#include "poller_loop.h"
+#include "chaos_monkey.h"
 
 #include <std/sys/crt.h>
-#include <dlfcn.h>
-#include <std/dbg/verify.h>
-#include <std/sym/i_map.h>
-#include <std/alg/minmax.h>
-#include <std/lib/buffer.h>
 #include <std/lib/list.h>
 #include <std/ios/input.h>
+#include <std/sym/i_map.h>
+#include <std/alg/minmax.h>
+#include <std/dbg/verify.h>
 #include <std/ios/output.h>
+#include <std/lib/buffer.h>
 #include <std/thr/poll_fd.h>
 #include <std/mem/obj_pool.h>
 #include <std/mem/small_obj_allocator.h>
+
+#include <dlfcn.h>
 
 #import <AppKit/AppKit.h>
 #import <mach/mach.h>
@@ -33,11 +35,10 @@
 // needs the declarations to exist at all; these gate every use of an API
 // newer than the SDK the build runs on.
 #if defined(MAC_OS_VERSION_15_0) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_VERSION_15_0
-#define PLT_SDK_MACOS_15 1
+    #define PLT_SDK_MACOS_15 1
 #else
-#define PLT_SDK_MACOS_15 0
+    #define PLT_SDK_MACOS_15 0
 #endif
-
 
 #include <errno.h>
 #include <float.h>
@@ -52,8 +53,7 @@ unsigned long plt::cocoaWindowStyleMask(bool decorations) {
     if (!decorations) {
         return NSWindowStyleMaskBorderless | NSWindowStyleMaskResizable;
     }
-    return NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-        | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+    return NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
 }
 
 bool plt::cocoaResizeUsesExactProposal(bool fullscreen, bool viewAvailable, bool liveResize) {
@@ -86,7 +86,6 @@ namespace plt::cocoa_detail {
         void* owner_ = nullptr;
         bool scheduled_ = false;
     };
-
 }
 
 void cocoaCloseImpl(void* owner);
@@ -129,7 +128,6 @@ void cocoaWakeReady(CFMachPortRef port, void* message, CFIndex size, void* owner
 @property(nonatomic, assign) void* owner;
 @property(nonatomic, strong) NSTrackingArea* tracking;
 @end
-
 
 @interface PltDisplayLinkTarget: NSObject {
 @public
@@ -629,6 +627,11 @@ namespace {
             CFRelease(source);
         }
 
+        ~MachLoopWake() {
+            CFMachPortInvalidate(port);
+            CFRelease(port);
+        }
+
         void signal() override {
             mach_msg_header_t header{};
             header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MAKE_SEND_ONCE, 0);
@@ -801,7 +804,6 @@ namespace {
         CFRunLoopWakeUp(CFRunLoopGetMain());
         return kCVReturnSuccess;
     }
-
 }
 
 PlatformImpl::PlatformImpl(ObjPool& owner)
@@ -817,22 +819,14 @@ NSMenu* plt::cocoaBuildMainMenu(NSString* appName) {
     [bar addItem:applicationItem];
 
     NSMenu* const application = [[NSMenu alloc] initWithTitle:appName];
-    [application addItemWithTitle:[@"About " stringByAppendingString:appName]
-                           action:@selector(orderFrontStandardAboutPanel:)
-                    keyEquivalent:@""];
+    [application addItemWithTitle:[@"About " stringByAppendingString:appName] action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
     [application addItem:[NSMenuItem separatorItem]];
-    [application addItemWithTitle:[@"Hide " stringByAppendingString:appName]
-                           action:@selector(hide:)
-                    keyEquivalent:@"h"];
-    NSMenuItem* const hideOthers = [application addItemWithTitle:@"Hide Others"
-                                                          action:@selector(hideOtherApplications:)
-                                                   keyEquivalent:@"h"];
+    [application addItemWithTitle:[@"Hide " stringByAppendingString:appName] action:@selector(hide:) keyEquivalent:@"h"];
+    NSMenuItem* const hideOthers = [application addItemWithTitle:@"Hide Others" action:@selector(hideOtherApplications:) keyEquivalent:@"h"];
     hideOthers.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
     [application addItemWithTitle:@"Show All" action:@selector(unhideAllApplications:) keyEquivalent:@""];
     [application addItem:[NSMenuItem separatorItem]];
-    [application addItemWithTitle:[@"Quit " stringByAppendingString:appName]
-                           action:@selector(terminate:)
-                    keyEquivalent:@"q"];
+    [application addItemWithTitle:[@"Quit " stringByAppendingString:appName] action:@selector(terminate:) keyEquivalent:@"q"];
     applicationItem.submenu = application;
     return bar;
 }
@@ -846,9 +840,7 @@ void PlatformImpl::ensureApplication(StringView appName) {
     // and OS release, so 'q' stops repeating while 'w' still does.  A
     // terminal wants the repeat; registerDefaults scopes the opt-out
     // to this process without persisting anything.
-    [[NSUserDefaults standardUserDefaults] registerDefaults:@{
-        @"ApplePressAndHoldEnabled" : @NO
-    }];
+    [[NSUserDefaults standardUserDefaults] registerDefaults:@{@"ApplePressAndHoldEnabled" : @NO}];
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     // The embedder's name, or the process name - which Foundation
@@ -1016,7 +1008,7 @@ void PollerImpl::descriptorReady(CFFileDescriptorRef descriptor) {
     }
     struct pollfd event{fd, (short)0, 0};
     event.events = PollFD{.fd = fd, .flags = entryFlags(*entry)}.toPollEvents();
-    const int pollResult = ::poll(&event, 1, 0);
+    const int pollResult = chaos(Fault::PollInterrupted) ? -1 : ::poll(&event, 1, 0);
     if (pollResult <= 0 || event.revents == 0) {
         enableEntryCallbacks(*entry);
         return;
@@ -1144,11 +1136,11 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     // resize commit, so the new-size surface lands a tick after the bounds
     // change and the old surface flashes at the new size. screenChanged()
     // retargets this link across displays.
-    if (CVDisplayLinkCreateWithActiveCGDisplays(&displayLink) == kCVReturnSuccess && displayLink != nullptr) {
+    if (!chaos(Fault::DisplayLink) && CVDisplayLinkCreateWithActiveCGDisplays(&displayLink) == kCVReturnSuccess && displayLink != nullptr) {
         displayLinkTarget = [PltDisplayLinkTarget new];
         displayLinkTarget->gate.attach(this);
         displayLinkContext = (__bridge_retained void*)(displayLinkTarget);
-        if (CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback, displayLinkContext) != kCVReturnSuccess) {
+        if (chaos(Fault::DisplayCallback) || CVDisplayLinkSetOutputCallback(displayLink, displayLinkCallback, displayLinkContext) != kCVReturnSuccess) {
             displayLinkTarget->gate.detach();
             CFBridgingRelease(displayLinkContext);
             displayLinkContext = nullptr;
@@ -1192,7 +1184,13 @@ void WindowImpl::requestFrame() {
         return;
     }
     frameRequested = true;
-    startDisplayLink();
+    if (displayLink == nullptr) {
+        // Display links can be unavailable (remote/headless sessions).
+        // CoreAnimation still services invalidated layers on the main loop.
+        [view.layer setNeedsDisplay];
+    } else {
+        startDisplayLink();
+    }
 }
 
 void WindowImpl::startDisplayLink() {
@@ -1284,16 +1282,16 @@ void WindowImpl::requestResize(u32 width, u32 height) {
     // synchronous resize path would then recurse. Defer it, so the window system
     // delivers a fresh frame() with the new size instead of recursing.
     dispatch_async(dispatch_get_main_queue(), ^{
-        // A zoom or a fullscreen transition may have taken the window over
-        // while this waited: entering either is synchronous, changing the
-        // frame of a zoomed window un-zooms it, and a resize computed before
-        // the transition would tear the new state right back down (issue
-        // 118). Such a window is not ours to size; drop the stale request
-        // and let the next frame reflow the grid over the pixels it has.
-        if ((target.styleMask & NSWindowStyleMaskFullScreen) != 0 || [target isZoomed]) {
-            return;
-        }
-        [target setContentSize:size];
+      // A zoom or a fullscreen transition may have taken the window over
+      // while this waited: entering either is synchronous, changing the
+      // frame of a zoomed window un-zooms it, and a resize computed before
+      // the transition would tear the new state right back down (issue
+      // 118). Such a window is not ours to size; drop the stale request
+      // and let the next frame reflow the grid over the pixels it has.
+      if ((target.styleMask & NSWindowStyleMaskFullScreen) != 0 || [target isZoomed]) {
+          return;
+      }
+      [target setContentSize:size];
     });
 }
 
@@ -2054,15 +2052,11 @@ KeyInput plt::keyInputFromEvent(NSEvent* event, bool pressed) {
         // for the two active-layout levels explicitly, so Shift+A and
         // Shift+5 retain both the unshifted key and the produced alternate
         // on key-up as well as key-down.
-        const u32 unshifted = firstCodepoint(
-            [event charactersByApplyingModifiers:0]
-        );
+        const u32 unshifted = firstCodepoint([event charactersByApplyingModifiers:0]);
         if (unshifted != 0) {
             layout = unshifted;
         }
-        shifted = firstCodepoint(
-            [event charactersByApplyingModifiers:NSEventModifierFlagShift]
-        );
+        shifted = firstCodepoint([event charactersByApplyingModifiers:NSEventModifierFlagShift]);
         if (shifted == 0) {
             shifted = firstCodepoint(event.characters);
         }

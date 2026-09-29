@@ -1,3 +1,4 @@
+#include "drop.h"
 #include "fiber.h"
 #include "input.h"
 #include "native.h"
@@ -21,7 +22,7 @@ using namespace plt::e2e;
 using namespace stl;
 
 namespace {
-    struct Desktop final: public FrameCallback, public WindowEvents, public InputSink, public Runable {
+    struct Desktop final: public FrameCallback, public WindowEvents, public InputSink, public Runable, public DropTarget {
         Desktop();
         ~Desktop();
         bool frame(const WindowInfo& info) override;
@@ -37,6 +38,9 @@ namespace {
         void focus(bool focused) override;
         void pointerPresence(bool present) override;
         void flush() override;
+        DropReply dragOver(const DropOffer& offer, i32 x, i32 y) override;
+        void dragLeft() override;
+        void dropped(Drop& drop) override;
 
         ObjPool::Ref owner = ObjPool::fromMemory();
         Platform* platform;
@@ -63,6 +67,7 @@ Desktop::Desktop()
             .input = createFiberInputSink(*owner, *platform->scheduler(), *this),
             .events = this,
             .frame = this,
+            .drop = this,
             .appName = StringView(u8"PLT E2E"),
         }
     );
@@ -166,6 +171,7 @@ void Desktop::command(const char* line) {
         delete output;
     } else if (strcmp(line, "quit") == 0) {
         window->requestClose();
+    } else if (canvas->command(line)) {
     } else {
         fprintf(stderr, "unknown command: %s\n", line);
         exit(1);
@@ -217,4 +223,26 @@ int main() {
     setvbuf(stdout, nullptr, _IOLBF, 0);
     Desktop desktop;
     desktop.platform->run();
+}
+
+DropReply Desktop::dragOver(const DropOffer& offer, i32 x, i32 y) {
+    printf("DRAG %zu %d %d\n", offer.formats(), x, y);
+    return {offer.formats() ? offer.format(0) : StringView(), DropAction::Copy};
+}
+
+void Desktop::dragLeft() {
+    puts("DRAG LEFT");
+}
+
+void Desktop::dropped(Drop& drop) {
+    DropOffer* offer = drop.what();
+    STD_INSIST(offer->formats() > 0);
+    const StringView mime = offer->format(0);
+    Input* input = drop.read(mime);
+    Buffer content;
+    input->readAll(content);
+    delete input;
+    printf("DROPPED %s\n", content.cStr());
+    color = 0x40a060;
+    window->requestFrame();
 }

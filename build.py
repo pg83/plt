@@ -144,13 +144,26 @@ elif system == "Darwin":
 else:
     raise RuntimeError(f"unsupported platform: {system}")
 
+library_sources = common_sources if platforms_headless else [*common_sources, backend_source]
+
 libplt = library(
     name="plt_headless" if platforms_headless else "plt",
-    srcs=common_sources if platforms_headless else [*common_sources, backend_source],
+    srcs=[*library_sources, "$(S)/chaos_monkey.cpp"],
     public_cflags=["-I$(S)", "-I$(S)/.."],
     cxxflags=locals().get("backend_cxxflags", []),
     deps=[libstd, *backend_deps],
     output="$(B)/libplt_headless.a" if platforms_headless else "$(B)/libplt.a",
+)
+
+# The fault script and its parser are linked only into the test archive.
+libplt_test = library(
+    name="plt_test",
+    srcs=[*library_sources, "$(S)/tst/chaos_monkey.cpp"],
+    cppflags=["-DPLATFORM_FOR_TESTS=1"],
+    public_cflags=["-I$(S)", "-I$(S)/.."],
+    cxxflags=locals().get("backend_cxxflags", []),
+    deps=[libstd, *backend_deps],
+    output="$(B)/libplt_test.a",
 )
 
 if build.target == build.host and not platforms_headless:
@@ -163,7 +176,7 @@ if build.target == build.host and not platforms_headless:
             name="plt_cocoa_tests",
             output="$(B)/plt_cocoa_tests",
             srcs=["$(S)/tst/cocoa_main.mm", "$(S)/platform_cocoa_ut.mm"],
-            deps=[libplt, libstd],
+            deps=[libplt_test, libstd],
         )
         test_deps.append(plt_cocoa_tests)
         test_commands.append([*test_timeout, "$(B)/plt_cocoa_tests"])
@@ -183,7 +196,7 @@ if build.target == build.host and not platforms_headless:
                 for source in wayland_test_sources
             ],
             deps=[
-                libplt,
+                libplt_test,
                 libstd,
                 pkg_config("wayland-server >= 1.20"),
                 pkg_config("xkbcommon >= 1.0"),
@@ -216,7 +229,7 @@ if system == "Linux" and not platforms_headless:
     e2e_support = library(
         name="plt_e2e_support",
         srcs=["$(S)/tst/e2e/app.cpp", "$(S)/tst/e2e/vulkan.cpp"],
-        deps=[libplt, pkg_config("cairo"), pkg_config("fontconfig"), pkg_config("vulkan")],
+        deps=[libplt_test, pkg_config("cairo"), pkg_config("fontconfig"), pkg_config("vulkan")],
     )
     pointer_xml = "$(S)/tst/e2e/support/wlr-virtual-pointer-unstable-v1.xml"
     pointer_header = "$(B)/e2e-protocol/virtual-pointer-client.h"
@@ -272,6 +285,13 @@ if system == "Darwin" and not platforms_headless:
         output="$(B)/e2e/desktop",
         srcs=["$(S)/tst/e2e/cocoa/desktop.cpp", "$(S)/tst/e2e/cocoa/native.mm"],
         cxxflags=backend_cxxflags,
-        deps=[libplt, libstd],
+        deps=[libplt_test, libstd],
     )
-    group("e2e-binaries", cocoa_e2e)
+    cocoa_recovery = program(
+        name="e2e_cocoa_recovery",
+        output="$(B)/e2e/recovery",
+        srcs=["$(S)/tst/e2e/cocoa/recovery.cpp", "$(S)/tst/e2e/cocoa/native.mm"],
+        cxxflags=backend_cxxflags,
+        deps=[libplt_test, libstd],
+    )
+    group("e2e-binaries", cocoa_e2e, cocoa_recovery)

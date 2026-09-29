@@ -10,6 +10,7 @@ namespace plt::e2e {
     struct MetalCanvas {
         virtual bool paint(const WindowInfo& info, u32 color) = 0;
         virtual void describe() = 0;
+        virtual bool command(const char* value) = 0;
         static MetalCanvas* create(stl::ObjPool& owner, const RenderContext& context);
     };
 }

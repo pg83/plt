@@ -8,6 +8,7 @@
 #include "platform.h"
 #include "loop_wake.h"
 #include "poller_loop.h"
+#include "chaos_monkey.h"
 #include "pointer_grab.h"
 #include "xdg-shell-client-protocol.h"
 #include "viewporter-client-protocol.h"
@@ -15,15 +16,15 @@
 #include "cursor-shape-v1-client-protocol.h"
 #include "viewporter-client-protocol-code.h"
 #include "xdg-activation-v1-client-protocol.h"
-#include "fractional-scale-v1-client-protocol.h"
 #include "tablet-unstable-v2-client-protocol.h"
-#include "text-input-unstable-v3-client-protocol.h"
-#include "tablet-unstable-v2-client-protocol-code.h"
+#include "fractional-scale-v1-client-protocol.h"
 #include "cursor-shape-v1-client-protocol-code.h"
+#include "text-input-unstable-v3-client-protocol.h"
 #include "xdg-activation-v1-client-protocol-code.h"
+#include "tablet-unstable-v2-client-protocol-code.h"
 #include "fractional-scale-v1-client-protocol-code.h"
-#include "text-input-unstable-v3-client-protocol-code.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
+#include "text-input-unstable-v3-client-protocol-code.h"
 #include "primary-selection-unstable-v1-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol-code.h"
 #include "primary-selection-unstable-v1-client-protocol-code.h"
@@ -31,9 +32,9 @@
 #include <std/sys/crt.h>
 #include <std/ios/input.h>
 #include <std/sym/i_map.h>
-#include <std/ios/output.h>
 #include <std/sys/throw.h>
 #include <std/alg/minmax.h>
+#include <std/ios/output.h>
 #include <std/lib/buffer.h>
 #include <std/lib/vector.h>
 #include <std/thr/poll_fd.h>
@@ -42,22 +43,22 @@
 #include <std/mem/small_obj_allocator.h>
 
 #include <new>
-#include <cstring>
 #include <cerrno>
 #include <poll.h>
 #include <climits>
 #include <cstdlib>
+#include <cstring>
 #include <fcntl.h>
 #include <spawn.h>
-#include <pthread.h>
 #include <signal.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 #include <linux/input-event-codes.h>
-#include <xkbcommon/xkbcommon-keysyms.h>
 #include <xkbcommon/xkbcommon-compose.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 
 using namespace stl;
 using namespace plt;
@@ -355,6 +356,7 @@ namespace {
             TaskBlock* const block = takeTaskBlock();
             scheduler_->spawn(*allocator_->make<FiberTask<F>>(*this, block, body), block->stack, sizeof(block->stack));
         }
+
         TaskBlock* takeTaskBlock();
         void recycleTaskBlock(TaskBlock* block);
         void enableTextInput(WindowImpl& window);
@@ -496,7 +498,7 @@ namespace {
         if (sigpending(&pending) == 0) {
             wasPending = sigismember(&pending, SIGPIPE) == 1;
         }
-        const ssize_t result = write(fd, data, size);
+        const ssize_t result = chaos(Fault::WriteInterrupted) || chaos(Fault::SelectionWrite) ? -1 : write(fd, data, size);
         const int writeError = errno;
         if (result < 0 && writeError == EPIPE && !wasPending) {
             const struct timespec timeout{};
@@ -763,17 +765,17 @@ namespace {
             close(fd);
             return;
         }
-        void* const mapping = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+        void* const mapping = chaos(Fault::KeymapMap) ? MAP_FAILED : mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
         close(fd);
         if (mapping == MAP_FAILED) {
             return;
         }
-        struct xkb_keymap* const keymap = xkb_keymap_new_from_string(platform.xkbContext, (const char*)(mapping), XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
+        struct xkb_keymap* const keymap = chaos(Fault::KeymapCompile) ? nullptr : xkb_keymap_new_from_string(platform.xkbContext, (const char*)(mapping), XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
         munmap(mapping, size);
         if (keymap == nullptr) {
             return;
         }
-        struct xkb_state* const state = xkb_state_new(keymap);
+        struct xkb_state* const state = chaos(Fault::KeymapState) ? nullptr : xkb_state_new(keymap);
         if (state == nullptr) {
             xkb_keymap_unref(keymap);
             return;
@@ -1167,8 +1169,8 @@ namespace {
             [](void* data, struct zwp_text_input_v3*, u32) {
         ((PlatformImpl*)(data))->textInputDone();
     },
-        // Version 2 events; never delivered because the manager is bound at
-        // version 1.
+    // Version 2 events; never delivered because the manager is bound at
+    // version 1.
 #ifdef ZWP_TEXT_INPUT_V3_ACTION_SINCE_VERSION
         .action = [](void*, struct zwp_text_input_v3*, u32, u32) {},
 #endif
@@ -1340,7 +1342,7 @@ Input* DndDrop::read(StringView mime) {
     bool* flag = nullptr;
     if (chosen != nullptr) {
         int pipes[2];
-        if (pipe2(pipes, O_CLOEXEC) == 0) {
+        if (!chaos(Fault::SelectionPipe) && pipe2(pipes, O_CLOEXEC) == 0) {
             wl_data_offer_receive(offer, chosen, pipes[1]);
             close(pipes[1]);
             if (platform->flushDisplay()) {
@@ -1383,7 +1385,7 @@ PlatformImpl::PlatformImpl(ObjPool& owner)
     }
     // Dead-key compose sequences. A missing table (e.g. a plain "C" locale
     // without compose data) simply disables composition.
-    composeTable = xkb_compose_table_new_from_locale(xkbContext, locale, XKB_COMPOSE_COMPILE_NO_FLAGS);
+    composeTable = chaos(Fault::ComposeTable) ? nullptr : xkb_compose_table_new_from_locale(xkbContext, locale, XKB_COMPOSE_COMPILE_NO_FLAGS);
     if (composeTable != nullptr) {
         composeState = xkb_compose_state_new(composeTable, XKB_COMPOSE_STATE_NO_FLAGS);
     }
@@ -2085,7 +2087,7 @@ void RepeatBody::run() {
 
 void PlatformImpl::writeSelection(int fd, StringView content) {
     spawnTask([this, fd, owned = Buffer(content)] {
-        const int flags = fcntl(fd, F_GETFL, 0);
+        const int flags = chaos(Fault::SelectionFlags) ? -1 : fcntl(fd, F_GETFL, 0);
         if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
             close(fd);
             return;
@@ -2111,9 +2113,10 @@ StreamInput::StreamInput(PlatformImpl& platform_, int fd_, Buffer&& local_, bool
     : platform(platform_)
     , local(static_cast<Buffer&&>(local_))
     , fd(fd_)
-    , drained(drained_) {
+    , drained(drained_)
+{
     if (fd >= 0) {
-        const int flags = fcntl(fd, F_GETFL, 0);
+        const int flags = chaos(Fault::SelectionFlags) ? -1 : fcntl(fd, F_GETFL, 0);
         if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
             close(fd);
             fd = -1;
@@ -2153,7 +2156,7 @@ size_t StreamInput::readImpl(void* data, size_t len) {
         return 0;
     }
     for (;;) {
-        const ssize_t count = ::read(fd, data, len);
+        const ssize_t count = chaos(Fault::ReadInterrupted) || chaos(Fault::SelectionRead) ? -1 : ::read(fd, data, len);
         if (count > 0) {
             return (size_t)(count);
         }
@@ -2567,12 +2570,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
 
     if (platform.decorationManager != nullptr) {
         decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(platform.decorationManager, toplevel);
-        zxdg_toplevel_decoration_v1_set_mode(
-            decoration,
-            options.decorations
-                ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
-                : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
-        );
+        zxdg_toplevel_decoration_v1_set_mode(decoration, options.decorations ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
     }
     if (platform.viewporter != nullptr) {
         viewport = wp_viewporter_get_viewport(platform.viewporter, surface);
@@ -2890,7 +2888,7 @@ Input* ClipboardImpl::read() {
         const char* const mime = offer.mime();
         if (mime != nullptr) {
             int pipes[2];
-            if (pipe2(pipes, O_CLOEXEC) == 0) {
+            if (!chaos(Fault::SelectionPipe) && pipe2(pipes, O_CLOEXEC) == 0) {
                 if (primary) {
                     zwp_primary_selection_offer_v1_receive(offer.primary, mime, pipes[1]);
                 } else {
