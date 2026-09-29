@@ -29,7 +29,7 @@ with GCC/glibc, Clang/Alpine musl, Clang ASan, Clang UBSan, and Clang on
 Darwin (including Cocoa tests). Each job builds a pinned libstd revision
 with the same compiler and instrumentation as plt.
 
-Linux and Darwin coverage runs export separate LLVM tracefiles. One
+Linux, macOS 15 and macOS 14 compatibility coverage runs export separate LLVM tracefiles. One
 `coverage` job merges them and uploads the combined report to Codecov
 using OIDC. CI requires at least 90% line and branch coverage of the complete library,
 including objects unused by test executables. Tests, dependencies and generated

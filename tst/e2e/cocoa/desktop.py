@@ -258,6 +258,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             # Resize grid changes apply while WindowServer tracks the border.
             for mode in ("resize", "resize-free", "resize-base"):
                 command(mode)
+                command("center")
                 _, x, y, width, height = geometry()
                 for kind, dx, dy in ((5, 0, 0), (1, 0, 0), (6, 20, 20), (6, 57, 41), (2, 57, 41)):
                     event = cg.CGEventCreateMouseEvent(None, kind, Point(x + width - 2 + dx, y + height - 2 + dy), 0)

@@ -135,6 +135,8 @@ bool Canvas::command(const char* value) {
     id<NSTextInputClient> client = (id<NSTextInputClient>)window.contentView;
     if (strcmp(value, "native-state") == 0) {
         printf("MINIMIZED %d\n", window.miniaturized);
+    } else if (strcmp(value, "center") == 0) {
+        [window center];
     } else if (strcmp(value, "modified-ime") == 0) {
         // An embedded input method commits while processing a shortcut.
         // AppKit's currentEvent must still carry the shortcut modifiers.

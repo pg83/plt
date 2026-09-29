@@ -32,7 +32,13 @@ Run as a regular user with writable temporary storage and shared memory.
 | Program | Scenario |
 | --- | --- |
 | gallery | Presentation, resizing, fractional and integer output scales |
+| native_map | Native toolkit maps the exposed Wayland surface; plt handles subsequent resize and scale changes |
+| native_preview | A native toolkit and plt share one Wayland connection, with separate input focus |
 | editor | Text entry and deletion |
+| compose_focus | Replaced and stale IME focus events, preedit cleanup and isolated document input |
+| drop_import | Real copy/move negotiation, rejection, interrupted transfers and window retirement during hover |
+| drop_lifetime | Cross-process drag enter queued before its target surface is destroyed |
+| drop_shutdown | Shutdown and replacement while a file validator keeps previous drag callbacks suspended |
 | pointer | Clicking, dragging and pointer icons |
 | scroller | Wheel input and repainting |
 | clipboard | Streaming copy/paste with independent clipboard clients |
@@ -67,6 +73,12 @@ scenario; there is no silent skip.
 python3 tst/e2e/run.py --binary-dir .build/e2e \
     --source-dir tst/e2e/cocoa --renderer metal --artifacts .build/e2e-metal
 ```
+
+The macOS 14 coverage job exercises the cursor fallbacks on their actual OS.
+GitHub [retires this runner on November 2, 2026](https://github.com/actions/runner-images/issues/13518);
+retaining the compatibility test after that date requires another macOS 14 runner.
+The `backing-mode` probe records every advertised display mode, uses a different
+backing scale when the runner exposes one, and restores the original mode.
 
 ## Coverage
 
