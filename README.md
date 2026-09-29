@@ -49,8 +49,9 @@ libstd revision used by CI; `dev/ci_linux.sh` installs their dependencies.
 ## End-to-end tests
 
 [Real compositor scenarios](tst/e2e/README.md) pair C++ applications with Python
-drivers. Separate `e2e-shm` and `e2e-lavapipe` jobs run all scenarios under Sway,
-check captured pixels, and upload PNG screenshots and logs. Linux coverage
+drivers. Every Linux test job (GCC, musl, ASan, UBSan and coverage) runs all scenarios
+under Sway with both shm and lavapipe, checks captured pixels, and uploads PNG
+screenshots and logs. Linux coverage
 includes both rendering paths. All CI configurations use explicit jobs.
 
 ```sh

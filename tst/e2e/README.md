@@ -43,7 +43,8 @@ Run as a regular user with writable temporary storage and shared memory.
 | worker | Background thread progress and event loop wakeups |
 | render_retry | Retrying deferred rendering |
 
-CI has explicit `e2e-shm` and `e2e-lavapipe` jobs, both gated by `build`.
-Linux coverage runs both renderers and includes their production code coverage
+Every Linux test job (GCC/glibc, Clang/musl, Clang/ASan, Clang/UBSan and
+coverage) runs both renderers, using the same compiler and instrumentation as
+the unit tests. All jobs are gated by `build`. Linux coverage includes their production code coverage
 in the report merged with Darwin. Screenshots and logs are uploaded on success
 and failure.

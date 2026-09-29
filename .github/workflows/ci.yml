@@ -64,7 +64,7 @@ jobs:
           ref: ${{ env.LIBSTD_REVISION }}
           path: .deps/libstd
 
-      - name: Run unit and Wayland integration tests
+      - name: Run unit, Wayland integration and e2e tests
         env:
           CI_IMAGE: ${{ env.GCC_IMAGE }}
           CI_COMPILER: gcc
@@ -75,6 +75,16 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
             "$CI_IMAGE" sh dev/ci_linux.sh "$CI_MODE" "$CI_COMPILER" \
             2>&1 | tee "$RUNNER_TEMP/tests-glibc.log"
+
+      - name: Upload e2e screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tests-glibc-e2e
+          path: .build/ci-test/e2e-*/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload failure log
         if: failure()
@@ -101,7 +111,7 @@ jobs:
           ref: ${{ env.LIBSTD_REVISION }}
           path: .deps/libstd
 
-      - name: Run unit and Wayland integration tests
+      - name: Run unit, Wayland integration and e2e tests
         env:
           CI_IMAGE: ${{ env.ALPINE_IMAGE }}
           CI_COMPILER: clang
@@ -112,6 +122,16 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
             "$CI_IMAGE" sh dev/ci_linux.sh "$CI_MODE" "$CI_COMPILER" \
             2>&1 | tee "$RUNNER_TEMP/tests-musl.log"
+
+      - name: Upload e2e screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tests-musl-e2e
+          path: .build/ci-test/e2e-*/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload failure log
         if: failure()
@@ -138,7 +158,7 @@ jobs:
           ref: ${{ env.LIBSTD_REVISION }}
           path: .deps/libstd
 
-      - name: Run unit and Wayland integration tests
+      - name: Run unit, Wayland integration and e2e tests
         env:
           CI_IMAGE: ${{ env.UBUNTU_IMAGE }}
           CI_COMPILER: clang
@@ -149,6 +169,16 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
             "$CI_IMAGE" sh dev/ci_linux.sh "$CI_MODE" "$CI_COMPILER" \
             2>&1 | tee "$RUNNER_TEMP/tests-asan.log"
+
+      - name: Upload e2e screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tests-asan-e2e
+          path: .build/ci-asan/e2e-*/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload failure log
         if: failure()
@@ -175,7 +205,7 @@ jobs:
           ref: ${{ env.LIBSTD_REVISION }}
           path: .deps/libstd
 
-      - name: Run unit and Wayland integration tests
+      - name: Run unit, Wayland integration and e2e tests
         env:
           CI_IMAGE: ${{ env.UBUNTU_IMAGE }}
           CI_COMPILER: clang
@@ -186,6 +216,16 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
             "$CI_IMAGE" sh dev/ci_linux.sh "$CI_MODE" "$CI_COMPILER" \
             2>&1 | tee "$RUNNER_TEMP/tests-ubsan.log"
+
+      - name: Upload e2e screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tests-ubsan-e2e
+          path: .build/ci-ubsan/e2e-*/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload failure log
         if: failure()
@@ -230,82 +270,6 @@ jobs:
           path: ${{ runner.temp }}/tests-darwin.log
           if-no-files-found: ignore
           retention-days: 7
-
-  e2e-shm:
-    name: E2E / shm
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Check out libstd
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: pg83/std
-          ref: ${{ env.LIBSTD_REVISION }}
-          path: .deps/libstd
-
-      - name: Run real compositor scenarios
-        env:
-          PLT_E2E_RENDERER: shm
-        run: |
-          set -o pipefail
-          docker run --rm --env PLT_E2E_RENDERER \
-            --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
-            "$UBUNTU_IMAGE" sh dev/ci_linux.sh e2e clang \
-            2>&1 | tee "$RUNNER_TEMP/e2e.log"
-
-      - name: Upload screenshots and logs
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-shm
-          path: |
-            .build/ci-e2e/e2e-shm/
-            ${{ runner.temp }}/e2e.log
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
-
-  e2e-lavapipe:
-    name: E2E / lavapipe
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Check out libstd
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: pg83/std
-          ref: ${{ env.LIBSTD_REVISION }}
-          path: .deps/libstd
-
-      - name: Run real compositor scenarios
-        env:
-          PLT_E2E_RENDERER: lavapipe
-        run: |
-          set -o pipefail
-          docker run --rm --env PLT_E2E_RENDERER \
-            --volume "$GITHUB_WORKSPACE:/workspace" --workdir /workspace \
-            "$UBUNTU_IMAGE" sh dev/ci_linux.sh e2e clang \
-            2>&1 | tee "$RUNNER_TEMP/e2e.log"
-
-      - name: Upload screenshots and logs
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-lavapipe
-          path: |
-            .build/ci-e2e/e2e-lavapipe/
-            ${{ runner.temp }}/e2e.log
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
 
   coverage-linux:
     name: Coverage linux

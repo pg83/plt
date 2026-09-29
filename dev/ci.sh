@@ -43,14 +43,9 @@ if [[ "$mode" == build ]]; then
 elif [[ "$mode" != e2e ]]; then
     python3 ./build -B "$build_dir/plt" -j "$jobs" test
 fi
-if [[ "$(uname -s)" == Linux && ( "$mode" == e2e || "$mode" == coverage ) ]]; then
+if [[ "$(uname -s)" == Linux && "$mode" != build ]]; then
     python3 ./build -B "$build_dir/plt" -j "$jobs" e2e-binaries
-    renderers=shm
-    if [[ "$mode" == coverage ]]; then
-        renderers="shm lavapipe"
-    else
-        renderers=${PLT_E2E_RENDERER:-shm}
-    fi
+    renderers="shm lavapipe"
     # Sway refuses to run as root. Containers build as root, then run clients
     # and the compositor as nobody, retaining all artifacts in the workspace.
     runner=()
@@ -58,10 +53,12 @@ if [[ "$(uname -s)" == Linux && ( "$mode" == e2e || "$mode" == coverage ) ]]; th
         chown -R nobody "$build_dir"
         runner=(runuser -u nobody --)
     fi
+    e2e_status=0
     for renderer in $renderers; do
         "${runner[@]}" python3 tst/e2e/run.py --binary-dir "$build_dir/plt/e2e" \
-            --artifacts "$build_dir/e2e-$renderer" --renderer "$renderer"
+            --artifacts "$build_dir/e2e-$renderer" --renderer "$renderer" || e2e_status=1
     done
+    if [[ "$e2e_status" != 0 ]]; then exit "$e2e_status"; fi
 fi
 if [[ "$mode" == coverage ]]; then
     python3 dev/ci_coverage.py "$build_dir/plt" "$build_dir/profiles" "$root/.build/coverage"

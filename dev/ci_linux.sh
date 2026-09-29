@@ -21,9 +21,14 @@ else
         export LDFLAGS="${LDFLAGS:-} -fuse-ld=lld"
     fi
 fi
-if [ "$mode" = e2e ] || [ "$mode" = coverage ]; then
-    apt-get install --yes --no-install-recommends sway swaybg grim wtype wl-clipboard \
-        fonts-dejavu-core mesa-vulkan-drivers vulkan-validationlayers
+if [ "$mode" != build ]; then
+    if [ -f /etc/alpine-release ]; then
+        apk add --no-cache sway swaybg grim wtype wl-clipboard font-dejavu \
+            mesa-vulkan-swrast vulkan-validation-layers runuser
+    else
+        apt-get install --yes --no-install-recommends sway swaybg grim wtype wl-clipboard \
+            fonts-dejavu-core mesa-vulkan-drivers vulkan-validationlayers util-linux
+    fi
     export VK_DRIVER_FILES=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
     test -n "$VK_DRIVER_FILES"
     export VK_ICD_FILENAMES="$VK_DRIVER_FILES"
