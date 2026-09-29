@@ -37,6 +37,15 @@ namespace {
         "no-cursor-shape",
         "no-output",
         "legacy-seat",
+        "selection-set-flags",
+        "read-again",
+        "write-again",
+        "write-zero",
+        "flush-interrupted",
+        "flush-again",
+        "flush-error",
+        "display-read",
+        "display-dispatch",
     };
     static_assert(sizeof(names) / sizeof(*names) == (unsigned)Fault::Count);
 
@@ -94,7 +103,7 @@ __attribute__((no_profile_instrument_function)) bool plt::chaos(Fault fault) {
     pthread_mutex_unlock(&script.mutex);
     if (fail) {
         fprintf(stderr, "CHAOS %s\n", names[(unsigned)fault]);
-        errno = fault == Fault::ReadInterrupted || fault == Fault::WriteInterrupted || fault == Fault::PollInterrupted ? EINTR : EIO;
+        errno = fault == Fault::ReadInterrupted || fault == Fault::WriteInterrupted || fault == Fault::PollInterrupted || fault == Fault::FlushInterrupted ? EINTR : fault == Fault::ReadAgain || fault == Fault::WriteAgain || fault == Fault::FlushAgain ? EAGAIN : EIO;
     }
     return fail;
 }

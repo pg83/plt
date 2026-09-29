@@ -27,6 +27,15 @@ namespace plt {
         NoCursorShape,
         NoOutput,
         LegacySeat,
+        SelectionSetFlags,
+        ReadAgain,
+        WriteAgain,
+        WriteZero,
+        FlushInterrupted,
+        FlushAgain,
+        FlushError,
+        DisplayRead,
+        DisplayDispatch,
         Count,
     };
 

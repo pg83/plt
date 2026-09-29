@@ -120,11 +120,14 @@ def main():
     parser.add_argument("--output", required=True, help="merged lcov tracefile to write")
     parser.add_argument("--summary", help="optional per-file text summary to write")
     parser.add_argument("--minimum-line-coverage", type=float, default=0, help="required percentage of covered production lines")
+    parser.add_argument("--minimum-branch-coverage", type=float, default=0, help="required percentage of covered production branches")
     parser.add_argument("inputs", nargs="+", help="shard lcov tracefiles")
     arguments = parser.parse_args()
 
     if not 0 <= arguments.minimum_line_coverage <= 100:
         parser.error("minimum line coverage must be between 0 and 100")
+    if not 0 <= arguments.minimum_branch_coverage <= 100:
+        parser.error("minimum branch coverage must be between 0 and 100")
     files = {}
     for path in arguments.inputs:
         merge_tracefile(path, files)
@@ -139,11 +142,16 @@ def main():
         f"lines {totals['line_hits']}/{totals['lines']}, "
         f"branches {totals['branch_hits']}/{totals['branches']}"
     )
-    coverage = 100 * totals["line_hits"] / totals["lines"] if totals["lines"] else 0
-    if coverage < arguments.minimum_line_coverage:
-        print(f"line coverage {coverage:.2f}% is below {arguments.minimum_line_coverage:.2f}%", file=sys.stderr)
-        return 1
-    return 0
+    failed = False
+    for kind, hits, total, required in (
+        ("line", totals["line_hits"], totals["lines"], arguments.minimum_line_coverage),
+        ("branch", totals["branch_hits"], totals["branches"], arguments.minimum_branch_coverage),
+    ):
+        coverage = 100 * hits / total if total else 0
+        if coverage < required:
+            print(f"{kind} coverage {coverage:.2f}% is below {required:.2f}%", file=sys.stderr)
+            failed = True
+    return int(failed)
 
 
 if __name__ == "__main__":

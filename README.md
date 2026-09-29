@@ -31,7 +31,7 @@ with the same compiler and instrumentation as plt.
 
 Linux and Darwin coverage runs export separate LLVM tracefiles. One
 `coverage` job merges them and uploads the combined report to Codecov
-using OIDC. CI requires at least 90% line coverage of the complete library,
+using OIDC. CI requires at least 90% line and branch coverage of the complete library,
 including objects unused by test executables. Tests, dependencies and generated
 sources are excluded.
 

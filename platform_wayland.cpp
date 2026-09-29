@@ -498,7 +498,7 @@ namespace {
         if (sigpending(&pending) == 0) {
             wasPending = sigismember(&pending, SIGPIPE) == 1;
         }
-        const ssize_t result = chaos(Fault::WriteInterrupted) || chaos(Fault::SelectionWrite) ? -1 : write(fd, data, size);
+        const ssize_t result = chaos(Fault::WriteInterrupted) || chaos(Fault::WriteAgain) || chaos(Fault::SelectionWrite) ? -1 : chaos(Fault::WriteZero) ? 0 : write(fd, data, size);
         const int writeError = errno;
         if (result < 0 && writeError == EPIPE && !wasPending) {
             const struct timespec timeout{};
@@ -1342,7 +1342,7 @@ Input* DndDrop::read(StringView mime) {
     bool* flag = nullptr;
     if (chosen != nullptr) {
         int pipes[2];
-        if (!chaos(Fault::SelectionPipe) && pipe2(pipes, O_CLOEXEC) == 0) {
+        if ((chaos(Fault::SelectionPipe) ? -1 : pipe2(pipes, O_CLOEXEC)) == 0) {
             wl_data_offer_receive(offer, chosen, pipes[1]);
             close(pipes[1]);
             if (platform->flushDisplay()) {
@@ -1525,7 +1525,7 @@ void PlatformImpl::armDisplay(bool write) {
 bool PlatformImpl::flushDisplay() {
     int result;
     do {
-        result = wl_display_flush(display);
+        result = chaos(Fault::FlushInterrupted) || chaos(Fault::FlushAgain) || chaos(Fault::FlushError) ? -1 : wl_display_flush(display);
     } while (result < 0 && errno == EINTR);
     if (result >= 0) {
         armDisplay(false);
@@ -1553,16 +1553,17 @@ void PlatformImpl::ready(PollFD event) {
         // Read and demultiplex, dispatch what is ours, and return; the
         // run loop dispatches pending events before every sleep.
         while (wl_display_prepare_read(display) != 0) {
-            if (wl_display_dispatch_pending(display) < 0) {
+            if ((chaos(Fault::DisplayDispatch) ? -1 : wl_display_dispatch_pending(display)) < 0) {
                 stop();
                 return;
             }
         }
-        if (wl_display_read_events(display) < 0) {
+        const int readResult = wl_display_read_events(display);
+        if ((chaos(Fault::DisplayRead) ? -1 : readResult) < 0) {
             stop();
             return;
         }
-        if (wl_display_dispatch_pending(display) < 0) {
+        if ((chaos(Fault::DisplayDispatch) ? -1 : wl_display_dispatch_pending(display)) < 0) {
             stop();
             return;
         }
@@ -1716,7 +1717,7 @@ void PlatformImpl::createSelectionDevices() {
 }
 
 void PlatformImpl::dispatch() {
-    if (wl_display_dispatch_pending(display) < 0) {
+    if ((chaos(Fault::DisplayDispatch) ? -1 : wl_display_dispatch_pending(display)) < 0) {
         stop();
         return;
     }
@@ -2115,7 +2116,7 @@ void RepeatBody::run() {
 void PlatformImpl::writeSelection(int fd, StringView content) {
     spawnTask([this, fd, owned = Buffer(content)] {
         const int flags = chaos(Fault::SelectionFlags) ? -1 : fcntl(fd, F_GETFL, 0);
-        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        if (flags < 0 || (chaos(Fault::SelectionSetFlags) ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK)) < 0) {
             close(fd);
             return;
         }
@@ -2144,7 +2145,7 @@ StreamInput::StreamInput(PlatformImpl& platform_, int fd_, Buffer&& local_, bool
 {
     if (fd >= 0) {
         const int flags = chaos(Fault::SelectionFlags) ? -1 : fcntl(fd, F_GETFL, 0);
-        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        if (flags < 0 || (chaos(Fault::SelectionSetFlags) ? -1 : fcntl(fd, F_SETFL, flags | O_NONBLOCK)) < 0) {
             close(fd);
             fd = -1;
         }
@@ -2183,7 +2184,7 @@ size_t StreamInput::readImpl(void* data, size_t len) {
         return 0;
     }
     for (;;) {
-        const ssize_t count = chaos(Fault::ReadInterrupted) || chaos(Fault::SelectionRead) ? -1 : ::read(fd, data, len);
+        const ssize_t count = chaos(Fault::ReadInterrupted) || chaos(Fault::ReadAgain) || chaos(Fault::SelectionRead) ? -1 : ::read(fd, data, len);
         if (count > 0) {
             return (size_t)(count);
         }
@@ -2915,7 +2916,7 @@ Input* ClipboardImpl::read() {
         const char* const mime = offer.mime();
         if (mime != nullptr) {
             int pipes[2];
-            if (!chaos(Fault::SelectionPipe) && pipe2(pipes, O_CLOEXEC) == 0) {
+            if ((chaos(Fault::SelectionPipe) ? -1 : pipe2(pipes, O_CLOEXEC)) == 0) {
                 if (primary) {
                     zwp_primary_selection_offer_v1_receive(offer.primary, mime, pipes[1]);
                 } else {

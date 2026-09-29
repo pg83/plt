@@ -5,14 +5,14 @@ import subprocess
 from session import Session
 
 root = Path(os.environ["PLT_E2E_ARTIFACTS"])
-for fault in ("selection-pipe", "selection-flags", "selection-read", "read-interrupted",
-              "selection-write", "write-interrupted", "compose-table",
+for fault in ("selection-pipe", "selection-flags", "selection-set-flags", "selection-read", "read-interrupted", "read-again",
+              "selection-write", "write-interrupted", "write-again", "write-zero", "compose-table",
               "keymap-map", "keymap-compile", "keymap-state"):
     os.environ["PLT_E2E_ARTIFACTS"] = str(root / fault)
     with Session(fault) as s:
         s.launch(PLT_CHAOS=f"{fault}@0")
         s.focus()
-        if fault in ("selection-write", "write-interrupted"):
+        if fault in ("selection-write", "write-interrupted", "write-again", "write-zero"):
             s.key("c")
             s.logged("COPY")
             value = s.command("wl-paste", "--no-newline")
@@ -32,7 +32,7 @@ for fault in ("selection-pipe", "selection-flags", "selection-read", "read-inter
             s.wait(clipboard_ready, "clipboard owner")
             s.key("v")
             s.logged(f"CHAOS {fault}")
-            failed = fault in ("selection-pipe", "selection-flags", "selection-read")
+            failed = fault in ("selection-pipe", "selection-flags", "selection-set-flags", "selection-read")
             s.logged("PASTE []" if failed else "PASTE [recovered]")
             if failed:
                 s.screenshot("failed", [(.1, .5, .9, .8, "c04040")])

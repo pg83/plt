@@ -415,6 +415,7 @@ jobs:
           mkdir -p "$report"
           python3 dev/merge_lcov.py \
             --minimum-line-coverage 90 \
+            --minimum-branch-coverage 90 \
             --output "$report/coverage.info" \
             --summary "$report/summary.txt" \
             "$RUNNER_TEMP/coverage-inputs/coverage-linux/coverage.info" \

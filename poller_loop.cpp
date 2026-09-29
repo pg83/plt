@@ -1,21 +1,23 @@
 #include "poller_loop.h"
 
+#include "chaos_monkey.h"
+
 #include <std/sys/crt.h>
-#include <std/str/view.h>
-#include <std/sys/throw.h>
-#include <std/alg/minmax.h>
 #include <std/alg/xchg.h>
 #include <std/lib/list.h>
-#include <std/lib/vector.h>
+#include <std/str/view.h>
 #include <std/map/treap.h>
-#include <std/map/treap_node.h>
+#include <std/sys/throw.h>
+#include <std/alg/minmax.h>
+#include <std/lib/vector.h>
 #include <std/mem/obj_list.h>
 #include <std/mem/obj_pool.h>
+#include <std/map/treap_node.h>
 
 #include <cerrno>
+#include <poll.h>
 #include <climits>
 #include <cstdint>
-#include <poll.h>
 
 using namespace plt;
 using namespace stl;
@@ -245,7 +247,7 @@ void PollerLoopImpl::wait(u64 monotonicDeadline) {
     }
     int result;
     do {
-        result = ::poll(pollFDs.mutData(), pollFDs.length(), timeoutMilliseconds);
+        result = chaos(Fault::PollInterrupted) ? -1 : ::poll(pollFDs.mutData(), pollFDs.length(), timeoutMilliseconds);
     } while (result < 0 && errno == EINTR);
     if (result < 0) {
         Errno(errno == 0 ? EINVAL : errno).raise(StringView(u8"poll failed"));

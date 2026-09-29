@@ -5,7 +5,7 @@ from session import Session
 
 root = Path(os.environ["PLT_E2E_ARTIFACTS"])
 cases = ["no-clipboard", "no-primary", "no-text-input", "no-viewport", "no-fractional-scale",
-         "no-decoration", "no-activation", "no-cursor-shape", "no-output", "legacy-seat", "passive"]
+         "no-decoration", "no-activation", "no-cursor-shape", "no-output", "legacy-seat", "flush-interrupted", "flush-again", "poll-interrupted", "passive"]
 for case in cases:
     os.environ["PLT_E2E_ARTIFACTS"] = str(root / case)
     with Session(case) as s:
