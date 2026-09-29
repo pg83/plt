@@ -1,6 +1,7 @@
 #include "test.h"
-
 #include "xdg-decoration-unstable-v1-client-protocol.h"
+
+#include <std/sys/crt.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,17 +41,7 @@ namespace plt::test {
 
         const RenderContext render = client.window->renderContext();
         const WindowInfo initial = events.lastInfo;
-        if (render.backend != RenderBackend::Wayland
-            || render.connection == nullptr || render.window == nullptr
-            || initial.width != 800 || initial.height != 600
-            || initial.screenPixelWidth != 1920
-            || initial.screenPixelHeight != 1080
-            || initial.contentScale != 1
-            || initial.focused || initial.maximized || initial.fullscreen
-            || initial.tiled || initial.iconified
-            || events.frameCount == 0
-            || events.lastInfo.width != initial.width
-            || events.lastInfo.height != initial.height) {
+        if (render.backend != RenderBackend::Wayland || render.connection == nullptr || render.window == nullptr || initial.width != 800 || initial.height != 600 || initial.screenPixelWidth != 1920 || initial.screenPixelHeight != 1080 || initial.contentScale != 1 || initial.focused || initial.maximized || initial.fullscreen || initial.tiled || initial.iconified || events.frameCount == 0 || events.lastInfo.width != initial.width || events.lastInfo.height != initial.height) {
             fprintf(stderr, "window API: invalid initial state or render context\n");
             return false;
         }
@@ -77,41 +68,42 @@ namespace plt::test {
         client.window->requestFullscreen(false);
         client.window->requestRestore();
         client.window->requestIconify();
+        // Activation is a token request, server reply, then an activate request.
+        // A single 1 ms pump cannot guarantee that all three were processed.
+        const auto activated = [&](u32 expected) {
+            const u64 deadline = stl::monotonicNowUs() + 1'000'000;
+            do {
+                pump(*client.platform);
+                const u32 actual = command(fd, Command::QueryActivation).count;
+                if (actual >= expected) {
+                    return actual == expected;
+                }
+            } while (stl::monotonicNowUs() < deadline);
+            return false;
+        };
         client.window->requestAttention();
-        pump(*client.platform);
-        if (command(fd, Command::QueryActivation).count != 1) {
+        if (!activated(1)) {
             fprintf(stderr, "window API: requestAttention did not activate\n");
             return false;
         }
         client.window->requestFocus();
-        pump(*client.platform);
-        if (command(fd, Command::QueryActivation).count != 2) {
+        if (!activated(2)) {
             fprintf(stderr, "window API: focus did not activate\n");
             return false;
         }
 
-        const u32 expectedRequests =
-            UpdatedTitle | InitialAppId | Move | Maximize | Unmaximize
-            | Fullscreen | Unfullscreen | Minimize;
+        const u32 expectedRequests = UpdatedTitle | InitialAppId | Move | Maximize | Unmaximize | Fullscreen | Unfullscreen | Minimize;
         const Reply requests = command(fd, Command::QueryWindowRequests);
         const Reply minimum = command(fd, Command::QueryMinimum);
-        if ((requests.count & expectedRequests) != expectedRequests
-            || minimum.first != 320 || minimum.second != 240) {
-            fprintf(
-                stderr,
-                "window API: request mask=%x minimum=%dx%d\n",
-                requests.count,
-                minimum.first,
-                minimum.second
-            );
+        if ((requests.count & expectedRequests) != expectedRequests || minimum.first != 320 || minimum.second != 240) {
+            fprintf(stderr, "window API: request mask=%x minimum=%dx%d\n", requests.count, minimum.first, minimum.second);
             return false;
         }
 
         command(fd, Command::ConfigureWindowState);
         pump(*client.platform);
         const WindowInfo state = events.lastInfo;
-        if (state.width != 900 || state.height != 700 || !state.focused
-            || !state.maximized || !state.fullscreen || !state.tiled) {
+        if (state.width != 900 || state.height != 700 || !state.focused || !state.maximized || !state.fullscreen || !state.tiled) {
             fprintf(stderr, "window API: configured state was not exposed\n");
             return false;
         }
@@ -119,24 +111,15 @@ namespace plt::test {
         command(fd, Command::ConfigureWindowResize);
         pump(*client.platform);
         const WindowInfo resized = events.lastInfo;
-        if (resized.width != 813 || resized.height != 627
-            || resized.focused || resized.maximized
-            || resized.fullscreen || resized.tiled) {
-            fprintf(
-                stderr,
-                "window API: snapped size=%ux%u expected 813x627\n",
-                resized.width,
-                resized.height
-            );
+        if (resized.width != 813 || resized.height != 627 || resized.focused || resized.maximized || resized.fullscreen || resized.tiled) {
+            fprintf(stderr, "window API: snapped size=%ux%u expected 813x627\n", resized.width, resized.height);
             return false;
         }
 
         client.window->requestResize(640, 480);
         pump(*client.platform);
         const Reply geometry = command(fd, Command::QueryWindowGeometry);
-        if (geometry.first != 640 || geometry.second != 480
-            || events.lastInfo.width != 640
-            || events.lastInfo.height != 480) {
+        if (geometry.first != 640 || geometry.second != 480 || events.lastInfo.width != 640 || events.lastInfo.height != 480) {
             fprintf(stderr, "window API: explicit resize failed\n");
             return false;
         }
