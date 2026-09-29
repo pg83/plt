@@ -2674,12 +2674,11 @@ void WindowImpl::configure() {
         width = snappedLogical(width, resizeUnitWidth, resizeBaseWidth);
         height = snappedLogical(height, resizeUnitHeight, resizeBaseHeight);
     }
-    const bool first = !configured;
     setLogicalSize(width, height);
     configured = true;
-    if (first || shown) {
-        requestFrame();
-    }
+    // A native renderer can map the exposed surface without requestShow().
+    // Every compositor configure still needs a frame at its new geometry.
+    requestFrame();
 }
 
 void WindowImpl::contentScale(u32 numerator) {

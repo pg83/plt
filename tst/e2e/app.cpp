@@ -201,7 +201,12 @@ void App::open(const char* title, u32 width, u32 height, DropTarget* drop) {
         }
     );
     surface = owner->make<Surface>(*owner, window->renderContext());
-    window->requestShow();
+    if (strcmp(setting("PLT_NATIVE_MAP", "0"), "1") == 0) {
+        // An embedding toolkit may map the public native surface itself.
+        wl_surface_commit(static_cast<wl_surface*>(window->renderContext().window));
+    } else {
+        window->requestShow();
+    }
 }
 
 void App::run() {

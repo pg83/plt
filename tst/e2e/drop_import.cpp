@@ -40,6 +40,7 @@ namespace {
         DropReply dragOver(const DropOffer& offer, i32 x, i32 y) override;
         void dragLeft() override;
         void dropped(Drop& drop) override;
+        ObjPool::Ref preview = ObjPool::fromMemory();
         u32 color = 0x204060;
     };
 
@@ -249,6 +250,10 @@ void Target::key(const KeyInput& input) {
 DropReply Target::dragOver(const DropOffer& offer, i32 x, i32) {
     const char* mode = setting("PLT_DROP_MODE", "copy");
     printf("HOVER %d\n", x);
+    if (strcmp(mode, "close-preview") == 0) {
+        preview = ObjPool::fromMemory();
+        puts("PREVIEW CLOSED");
+    }
     if (strcmp(mode, "renegotiate") == 0) {
         return {x >= 180 ? StringView(u8"text/uri-list") : StringView(u8"text/plain;charset=utf-8"), x >= 280 ? DropAction::Move : DropAction::Copy};
     }
@@ -307,10 +312,20 @@ void Target::dropped(Drop& drop) {
 int main() {
     auto owner = ObjPool::fromMemory();
     Platform* platform = Platform::create(*owner);
+    if (strcmp(setting("PLT_SOURCE_ONLY", "0"), "1") == 0) {
+        Source source(platform);
+        source.open("plt-drag-source", 300, 220);
+        source.connect();
+        source.run();
+        return 0;
+    }
     Target target(platform);
     target.open("plt-drop-target", 400, 280, strcmp(setting("PLT_DROP_MODE", ""), "no-target") == 0 ? nullptr : &target);
     Source source(target.platform);
     source.open("plt-drag-source", 300, 220);
     source.connect();
+    if (strcmp(setting("PLT_DROP_MODE", ""), "close-preview") == 0) {
+        platform->createWindow(*target.preview, {});
+    }
     target.run();
 }
