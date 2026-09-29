@@ -31,7 +31,7 @@ with the same compiler and instrumentation as plt.
 
 Linux and Darwin coverage runs export separate LLVM tracefiles. One
 `coverage` job merges them and uploads the combined report to Codecov
-using OIDC. CI requires at least 80% line coverage of the complete library,
+using OIDC. CI requires at least 90% line coverage of the complete library,
 including objects unused by test executables. Tests, dependencies and generated
 sources are excluded.
 
@@ -54,7 +54,9 @@ libstd revision used by CI; `dev/ci_linux.sh` installs their dependencies.
 drivers. Every Linux test job (GCC, musl, ASan, UBSan and coverage) runs all scenarios
 under Sway with both shm and lavapipe, checks captured pixels, and uploads PNG
 screenshots and logs. Darwin runs a native Cocoa/Metal desktop with external
-input and screenshot checks. Linux coverage
+input, native drag-and-drop, IME, asynchronous document import and screenshot checks.
+Tests link a separate `plt_test` library with deterministic chaos scripts; the
+installed `plt` library contains no fault controls. Linux coverage
 includes both rendering paths. All CI configurations use explicit jobs.
 
 ```sh
