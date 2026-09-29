@@ -158,7 +158,7 @@ libplt = library(
 # The fault script and its parser are linked only into the test archive.
 libplt_test = library(
     name="plt_test",
-    srcs=[*library_sources, "$(S)/tst/chaos_monkey.cpp"],
+    srcs=[*library_sources, "$(S)/chaos_monkey.cpp"],
     cppflags=["-DPLATFORM_FOR_TESTS=1"],
     public_cflags=["-I$(S)", "-I$(S)/.."],
     cxxflags=locals().get("backend_cxxflags", []),

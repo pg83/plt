@@ -82,12 +82,11 @@ in run [36612648647](https://github.com/pg83/plt/actions/runs/36612648647).
 
 `./build plt` produces the installed production `libplt.a`.
 `./build plt_test` produces `libplt_test.a` with `PLATFORM_FOR_TESTS=1`;
-all integration and e2e programs link this archive. The test-only chaos parser
-lives in `tst/chaos_monkey.cpp`. Production links an inert implementation from
-`chaos_monkey.cpp`. CI checks both archives for the presence/absence of the
+all integration and e2e programs link this archive. Both implementations live in `chaos_monkey.cpp`: `PLATFORM_FOR_TESTS`
+selects the fault script, and the production branch is inert. CI checks both archives for the presence/absence of the
 `PLT_CHAOS` control string. Coverage exports both full archives, so production
 objects not linked by any test still count in the denominator. The test-only
-parser does not count toward library coverage.
+parser is not instrumented and does not count toward library coverage.
 
 The deterministic fault script is passed to each client through its environment:
 
