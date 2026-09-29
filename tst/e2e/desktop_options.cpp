@@ -102,7 +102,7 @@ int main() {
     app.commands = ::open(setting("PLT_COMMAND_PIPE", ""), O_RDWR | O_NONBLOCK | O_CLOEXEC);
     STD_INSIST(app.commands >= 0);
     app.window->requestFocus();
-    app.window->requestTextInputRect(0, 0, 0, 0);
+    app.window->requestTextInputRect(0, 0, 8, 0);
     app.platform->scheduler()->create(*app.owner, app, 128 * 1024);
     app.App::run();
 }

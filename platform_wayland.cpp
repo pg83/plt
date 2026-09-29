@@ -1510,7 +1510,7 @@ bool PlatformImpl::flushDisplay(Fault fault) {
 }
 
 void PlatformImpl::ready(PollFD event) {
-    if (event.flags & (PollFlag::Err | PollFlag::Hup) || !(event.flags & (PollFlag::In | PollFlag::Out))) {
+    if (event.flags & (PollFlag::Err | PollFlag::Hup)) {
         stop();
         return;
     }
@@ -1522,7 +1522,7 @@ void PlatformImpl::ready(PollFD event) {
         // Read and demultiplex, dispatch what is ours, and return; the
         // run loop dispatches pending events before every sleep.
         while (wl_display_prepare_read(display) != 0) {
-            if ((chaos(Fault::DisplayDispatch) ? -1 : wl_display_dispatch_pending(display)) < 0) {
+            if ((chaos(Fault::PendingDispatch) ? -1 : wl_display_dispatch_pending(display)) < 0) {
                 stop();
                 return;
             }

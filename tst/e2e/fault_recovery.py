@@ -46,4 +46,9 @@ for fault in ("selection-pipe", "selection-flags", "selection-set-flags", "selec
                 s.key("v")
                 s.logged("PASTE [recovered]")
             s.screenshot("recovered", [(.1, .5, .9, .8, "40a060")])
+        if fault == "compose-table":
+            s.ipc("workspace 2")
+            s.ipc("workspace 1")
+            s.focus()
+            s.screenshot("focus-restored", [(.1, .5, .9, .8, "40a060")])
         s.close()

@@ -84,10 +84,9 @@ class Proxy:
                 self.interfaces[interface.attrib["name"]] = {
                     direction: interface.findall(direction) for direction in ("request", "event")
                 }
-        self.objects = {1: "wl_display"}
         self.error = None
         self.stopping = threading.Event()
-        self.connections = []
+        self.workers = []
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(self.path)
         self.listener.listen(1)
@@ -98,10 +97,10 @@ class Proxy:
         self.thread.start()
         return self
 
-    def transform(self, frame, direction):
+    def transform(self, frame, direction, objects):
         object_id, header = struct.unpack_from("=II", frame)
         opcode = header & 0xffff
-        interface = self.objects.get(object_id)
+        interface = objects.get(object_id)
         messages = self.interfaces.get(interface, {}).get(direction, [])
         if opcode >= len(messages):
             return frame
@@ -115,9 +114,9 @@ class Proxy:
             if argument.attrib["type"] == "new_id":
                 value = values[argument.attrib["name"]]
                 if "interface" in argument.attrib:
-                    self.objects[value] = argument.attrib["interface"]
+                    objects[value] = argument.attrib["interface"]
                 else:
-                    self.objects[value[2]] = value[0]
+                    objects[value[2]] = value[0]
         if direction != "event":
             return frame
         for rule in self.rules:
@@ -128,6 +127,9 @@ class Proxy:
                 continue
             rule["fired"] = True
             self.session.artifacts.joinpath("wire-faults.json").write_text(json.dumps(self.rules))
+            if rule.get("drop"):
+                assert all(argument.attrib["type"] != "fd" for argument in arguments)
+                return b""
             if "insert" in rule:
                 inserted = rule["insert"]
                 event = next(event for event in messages if event.attrib["name"] == inserted["event"])
@@ -140,23 +142,33 @@ class Proxy:
         return frame
 
     def run(self):
-        pending = {}
         try:
             while not self.stopping.is_set():
                 try:
                     client, _ = self.listener.accept()
-                    break
                 except socket.timeout:
                     continue
-            else:
-                return
+                # Mesa may establish a separate discovery connection before
+                # using the supplied display for WSI. Its traffic stays intact.
+                worker = threading.Thread(target=self.relay, args=(client, not self.workers), daemon=True)
+                self.workers.append(worker)
+                worker.start()
+        finally:
+            for worker in self.workers:
+                worker.join(timeout=2)
+
+    def relay(self, client, primary):
+        pending = {}
+        connections = [client]
+        objects = {1: "wl_display"}
+        try:
             server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connections.append(server)
             server.connect(str(Path(self.session.runtime.name) / self.session.env["WAYLAND_DISPLAY"]))
-            self.connections = [client, server]
             buffers = {client: bytearray(), server: bytearray()}
             pending = {client: [], server: []}
             while not self.stopping.is_set():
-                readable, _, _ = select.select(self.connections, [], [], .1)
+                readable, _, _ = select.select(connections, [], [], .1)
                 for source in readable:
                     data, ancillary, flags, _ = source.recvmsg(65536, socket.CMSG_SPACE(256 * 4))
                     descriptors = pending[source]
@@ -176,7 +188,7 @@ class Proxy:
                             break
                         frame = bytes(buffer[:size])
                         del buffer[:size]
-                        outgoing.extend(self.transform(frame, "request" if source is client else "event"))
+                        outgoing.extend(self.transform(frame, "request" if source is client else "event", objects) if primary else frame)
                     # libwayland queues descriptors independently of bytes.
                     # Send the batch with the complete prefix, retaining any
                     # partial message so the next read starts at its header.
@@ -196,14 +208,17 @@ class Proxy:
             for descriptors in pending.values():
                 for descriptor in descriptors:
                     socket.close(descriptor)
-            for connection in self.connections:
+            for connection in connections:
                 connection.close()
 
-    def __exit__(self, kind, value, traceback):
+    def disconnect(self):
         self.stopping.set()
         self.thread.join(timeout=3)
-        self.listener.close()
         assert not self.thread.is_alive(), "Wayland relay did not stop"
+
+    def __exit__(self, kind, value, traceback):
+        self.disconnect()
+        self.listener.close()
         if self.error:
             raise self.error
         if kind is None:

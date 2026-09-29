@@ -74,6 +74,7 @@ namespace {
         "cocoa-descriptor",
         "cocoa-wake-source",
         "cocoa-descriptor-source",
+        "pending-dispatch",
     };
     static_assert(sizeof(names) / sizeof(*names) == (unsigned)Fault::Count);
 
