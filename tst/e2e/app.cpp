@@ -192,7 +192,9 @@ void App::open(const char* title, u32 width, u32 height, DropTarget* drop) {
             .minimumWidth = 160,
             .minimumHeight = 120,
             .decorations = false,
-            .input = strcmp(setting("PLT_PASSIVE", "0"), "1") == 0 ? nullptr : createFiberInputSink(*owner, *platform->scheduler(), *this),
+            .input = strcmp(setting("PLT_PASSIVE", "0"), "1") == 0        ? nullptr
+                     : strcmp(setting("PLT_DIRECT_INPUT", "0"), "1") == 0 ? this
+                                                                          : createFiberInputSink(*owner, *platform->scheduler(), *this),
             .events = this,
             .frame = this,
             .drop = drop,

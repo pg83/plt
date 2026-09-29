@@ -156,11 +156,11 @@ class Session:
             args.extend(["-m", modifier])
         self.command(*args)
 
-    def input(self, command):
+    def input(self, command, *, client=True):
         self.input_serial += 1
         self.devices.stdin.write((command + "\n").encode())
         self.devices.stdin.flush()
-        self.wait(lambda: f"DONE {self.input_serial}\n" in (self.artifacts / "devices.log").read_text(), "input delivery")
+        self.wait(lambda: f"DONE {self.input_serial}\n" in (self.artifacts / "devices.log").read_text(), "input delivery", client=client)
 
     def pointer(self, x, y, app_id=None):
         r = self.window(app_id)["rect"]

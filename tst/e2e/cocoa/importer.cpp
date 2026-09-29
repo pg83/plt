@@ -12,6 +12,7 @@
 
 #include <fcntl.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <pthread.h>
 #include <sys/socket.h>
@@ -85,6 +86,9 @@ void* Importer::produce(void* self) {
     Importer& app = *(Importer*)self;
     FILE* input = fopen(getenv("PLT_IMPORT_FILE"), "rb");
     STD_INSIST(input != nullptr);
+    char greeting[5];
+    STD_INSIST(read(app.sockets[1], greeting, sizeof(greeting)) == sizeof(greeting));
+    STD_INSIST(memcmp(greeting, "READY", sizeof(greeting)) == 0);
     unsigned char chunk[4096];
     size_t count;
     // Let the initial read time out, then deliver a real document in pieces.
@@ -106,6 +110,8 @@ void* Importer::produce(void* self) {
 
 void Importer::run() {
     Scheduler* scheduler = platform->scheduler();
+    STD_INSIST(scheduler->awaitWritable(sockets[0], 1'000'000));
+    STD_INSIST(write(sockets[0], "READY", 5) == 5);
     STD_INSIST(!scheduler->awaitReadable(sockets[0], 1000));
     puts("INITIAL TIMEOUT");
     for (;;) {

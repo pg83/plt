@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include <stdio.h>
+#include <string.h>
 
 using namespace plt;
 using namespace plt::e2e;
@@ -8,12 +9,19 @@ using namespace stl;
 
 namespace {
     struct Editor final: public App {
+        explicit Editor(Platform* shared);
         void paint(Canvas& canvas) override;
         void text(const TextInput& input) override;
         void preedit(StringView text, i32 begin, i32 end) override;
         unsigned count = 0;
         bool composing = false;
+        bool closeOnText = false;
     };
+}
+
+Editor::Editor(Platform* shared)
+    : App(shared)
+{
 }
 
 void Editor::paint(Canvas& canvas) {
@@ -23,6 +31,13 @@ void Editor::paint(Canvas& canvas) {
 
 void Editor::text(const TextInput& input) {
     printf("TEXT %u %u\n", ++count, input.codepoint);
+    if (closeOnText) {
+        owner = ObjPool::fromMemory();
+        window = nullptr;
+        surface = nullptr;
+        puts("EDITOR CLOSED");
+        return;
+    }
     window->requestFrame();
 }
 
@@ -33,7 +48,13 @@ void Editor::preedit(StringView text, i32 begin, i32 end) {
 }
 
 int main() {
-    Editor editor;
+    auto owner = ObjPool::fromMemory();
+    Platform* const platform = Platform::create(*owner);
+    Editor editor(platform), survivor(platform);
+    editor.closeOnText = strcmp(setting("PLT_CLOSE_ON_TEXT", "0"), "1") == 0;
+    if (editor.closeOnText) {
+        survivor.open("plt-compose-survivor");
+    }
     editor.open("plt-compose-editor");
     editor.window->requestTextInputRect(24, 50, 12, 20);
     editor.run();

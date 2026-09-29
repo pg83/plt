@@ -324,12 +324,11 @@ namespace {
         void seatCapabilities(u32 capabilities);
         void createSelectionDevices();
         void armDisplay(bool write);
-        bool flushDisplay();
+        bool flushDisplay(Fault fault = Fault::FlushError);
         void dispatch();
         void serial(u32 value);
         void keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool repeated = false);
         bool consumeEnterPressedKey(u32 key, u32 state);
-        void repeat();
         void stopRepeat();
         u16 modifiers() const;
         InputKey inputKey(xkb_keysym_t symbol) const;
@@ -503,7 +502,7 @@ namespace {
         const int writeError = errno;
         if (result < 0 && writeError == EPIPE && !wasPending) {
             const struct timespec timeout{};
-            while (sigtimedwait(&blocked, nullptr, &timeout) < 0 && errno == EINTR) {
+            while ((chaos(Fault::SignalWaitInterrupted) ? -1 : sigtimedwait(&blocked, nullptr, &timeout)) < 0 && errno == EINTR) {
             }
         }
         pthread_sigmask(SIG_SETMASK, &previous, nullptr);
@@ -840,6 +839,9 @@ namespace {
         PlatformImpl& platform = *(PlatformImpl*)(data);
         platform.repeatRate = rate > 0 ? (u32)(rate) : 0;
         platform.repeatDelay = delay > 0 ? (u32)(delay) : 0;
+        if (platform.repeatRate == 0) {
+            platform.stopRepeat();
+        }
     }
 
     const struct wl_keyboard_listener keyboardListener{
@@ -1313,7 +1315,7 @@ Input* DndDrop::read(StringView mime) {
         if ((chaos(Fault::SelectionPipe) ? -1 : pipe2(pipes, O_CLOEXEC)) == 0) {
             wl_data_offer_receive(offer, chosen, pipes[1]);
             close(pipes[1]);
-            if (platform->flushDisplay()) {
+            if (platform->flushDisplay(Fault::DropFlush)) {
                 fd = pipes[0];
                 flag = &drained;
             } else {
@@ -1493,10 +1495,10 @@ void PlatformImpl::armDisplay(bool write) {
     poller_->arm(displayWaiter_);
 }
 
-bool PlatformImpl::flushDisplay() {
+bool PlatformImpl::flushDisplay(Fault fault) {
     int result;
     do {
-        result = chaos(Fault::FlushInterrupted) || chaos(Fault::FlushAgain) || chaos(Fault::FlushError) ? -1 : wl_display_flush(display);
+        result = chaos(Fault::FlushInterrupted) || chaos(Fault::FlushAgain) || chaos(fault) ? -1 : wl_display_flush(display);
     } while (result < 0 && errno == EINTR);
     if (result >= 0) {
         armDisplay(false);
@@ -1614,7 +1616,7 @@ void PlatformImpl::bindRegistry(u32 name, const char* interface, u32 version) {
 }
 
 void PlatformImpl::globalRemoved(u32 name) {
-    if (name == outputName && output != nullptr) {
+    if (name == outputName) {
         releaseOutput(output);
         output = nullptr;
         outputName = 0;
@@ -1623,7 +1625,7 @@ void PlatformImpl::globalRemoved(u32 name) {
         outputScale = 1;
         return;
     }
-    if (name == seatName && seat != nullptr) {
+    if (name == seatName) {
         // Drop every seat-derived object; a replacement seat rebinds through
         // the registry and re-creates them from its capabilities.
         seatCapabilities(0);
@@ -1713,7 +1715,7 @@ void PlatformImpl::run() {
         if (stopped) {
             break;
         }
-        if (!flushDisplay()) {
+        if (!flushDisplay(Fault::LoopFlush)) {
             break;
         }
         poller_->wait(poller_->nextDeadline());
@@ -2044,14 +2046,6 @@ void PlatformImpl::keyboardKey(u32 serial, u32 time, u32 key, u32 state, bool re
     }
 }
 
-void PlatformImpl::repeat() {
-    if (repeatWindow == nullptr || repeatRate == 0 || repeatWindow != keyboardFocus) {
-        stopRepeat();
-        return;
-    }
-    keyboardKey(repeatSerial, repeatTime, repeatKeycode, WL_KEYBOARD_KEY_STATE_PRESSED, true);
-}
-
 void PlatformImpl::stopRepeat() {
     repeatWindow = nullptr;
     repeatKeycode = 0;
@@ -2077,7 +2071,7 @@ void RepeatBody::run() {
             continue;
         }
         while (impl.repeatKeycode != 0 && impl.repeatRate != 0) {
-            impl.repeat();
+            impl.keyboardKey(impl.repeatSerial, impl.repeatTime, impl.repeatKeycode, WL_KEYBOARD_KEY_STATE_PRESSED, true);
             if (impl.repeatKeycode == 0 || impl.repeatRate == 0) {
                 break;
             }
@@ -2105,7 +2099,7 @@ void PlatformImpl::writeSelection(int fd, StringView content) {
             const ssize_t count = writeNoSignal(fd, (const u8*)(owned.data()) + offset, chunk);
             if (count > 0) {
                 offset += (size_t)(count);
-            } else if (count < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
+            } else if (count < 0 && errno != EINTR && errno != EAGAIN) {
                 break;
             }
         }
@@ -2173,7 +2167,7 @@ size_t StreamInput::readImpl(void* data, size_t len) {
         if (errno == EINTR) {
             continue;
         }
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+        if (errno != EAGAIN) {
             close(fd);
             fd = -1;
             return 0;
@@ -2551,7 +2545,7 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     primarySelection.window = this;
     primarySelection.primary = true;
     clipboardSelection.window = this;
-    surface = wl_compositor_create_surface(platform.compositor);
+    surface = chaos(Fault::WindowSurface) ? nullptr : wl_compositor_create_surface(platform.compositor);
     if (surface == nullptr) {
         fail(u8"wl_compositor_create_surface failed");
     }
@@ -2640,7 +2634,7 @@ i32 WindowImpl::logicalCoordinate(i32 pixels) const {
 }
 
 u32 WindowImpl::snappedLogical(u32 suggested, u32 unit, u32 base) const {
-    if (unit <= 1 || suggested == 0) {
+    if (unit <= 1) {
         return suggested;
     }
     const u32 pixels = max(1u, (u32)(((u64)(suggested)*scaleNumerator) / scaleDenominator));
@@ -2648,13 +2642,11 @@ u32 WindowImpl::snappedLogical(u32 suggested, u32 unit, u32 base) const {
         return logicalForPixel(base + unit);
     }
     const u32 target = base + ((pixels - base) / unit) * unit;
-    for (u32 logical = logicalForPixel(target); logical != 0; --logical) {
-        if (((u64)(logical)*scaleNumerator) / scaleDenominator == target) {
-            return logical;
-        }
-        if (logical + 2 < logicalForPixel(target)) {
-            break;
-        }
+    // ceil(target / scale) is the first possible logical size. If it
+    // overshoots the grid point, smaller sizes cannot represent it either.
+    const u32 logical = logicalForPixel(target);
+    if (((u64)(logical)*scaleNumerator) / scaleDenominator == target) {
+        return logical;
     }
     return suggested;
 }
@@ -2732,7 +2724,9 @@ void WindowImpl::requestFrame() {
 
 void WindowImpl::ready() {
     frameScheduled = false;
-    if (!configured || !frameRequested || frameCallback != nullptr || frame == nullptr) {
+    // requestFrame schedules only configured windows with a renderer. A
+    // render callback may queue another pass before its frame fence exists.
+    if (frameCallback != nullptr) {
         return;
     }
     frameRequested = false;
@@ -2749,7 +2743,7 @@ void WindowImpl::ready() {
         return;
     }
     frameRetries = 0;
-    frameCallback = wl_surface_frame(surface);
+    frameCallback = chaos(Fault::FrameCallback) ? nullptr : wl_surface_frame(surface);
     if (frameCallback != nullptr) {
         wl_callback_add_listener(frameCallback, &frameListener, this);
     }
@@ -2885,7 +2879,7 @@ Input* ClipboardImpl::read() {
                     wl_data_offer_receive(offer.data, mime, pipes[1]);
                 }
                 close(pipes[1]);
-                if (platform.flushDisplay()) {
+                if (platform.flushDisplay(Fault::SelectionFlush)) {
                     fd = pipes[0];
                 } else {
                     close(pipes[0]);

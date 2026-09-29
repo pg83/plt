@@ -5,7 +5,7 @@ import time
 from session import Session
 
 root = Path(os.environ["PLT_E2E_ARTIFACTS"])
-for rule in ("flush-error@0", "flush-error@3", "display-read@0", "display-dispatch@0",
+for rule in ("loop-flush@0", "flush-error@0", "flush-error@3", "display-read@0", "display-dispatch@0",
              "display-dispatch@1", "display-dispatch@2", "display-dispatch@3"):
     os.environ["PLT_E2E_ARTIFACTS"] = str(root / rule.replace("@", "-"))
     with Session(rule) as s:

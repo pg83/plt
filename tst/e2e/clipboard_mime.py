@@ -4,21 +4,28 @@ from pathlib import Path
 from session import Session
 
 root = Path(os.environ["PLT_E2E_ARTIFACTS"])
-for mime, expected in (("UTF8_STRING", "dragged document"), ("text/plain", "dragged document"),
-                       ("application/octet-stream", "")):
-    os.environ["PLT_E2E_ARTIFACTS"] = str(root / mime.replace("/", "-"))
+for mime, expected, fault in (("UTF8_STRING", "dragged document", ""), ("text/plain", "dragged document", ""),
+                              ("application/octet-stream", "", ""), ("UTF8_STRING", "", "selection-flush@0")):
+    os.environ["PLT_E2E_ARTIFACTS"] = str(root / (mime.replace("/", "-") + ("-disconnect" if fault else "")))
     with Session(mime) as s:
-        s.launch(PLT_SELECTION_MIME=mime)
+        s.launch(PLT_SELECTION_MIME=mime, PLT_CHAOS=fault)
         s.logged("SOURCE READY")
         source = s.window("plt-drag-source")
         target = s.window("plt-drop-target")
         s.ipc(f'[con_id={source["id"]}] move position 20 50')
         s.ipc(f'[con_id={target["id"]}] move position 450 50')
         s.focus("plt-drag-source")
+        s.screenshot("source-ready", [(.1, .5, .9, .8, "e0b040")], app_id="plt-drag-source")
         s.click(100, 100, app_id="plt-drag-source")
         s.logged("SELECTION READY")
         s.focus("plt-drop-target")
         s.key("p")
+        if fault:
+            assert s.client.wait(timeout=10) == 0
+            log = (s.artifacts / "client.log").read_text()
+            assert "CHAOS selection-flush" in log and "PASTED []" in log, log
+            s.client = None
+            continue
         s.logged(f"PASTED [{expected}]")
         if expected:
             s.logged("SENT " + mime)

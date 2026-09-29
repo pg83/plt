@@ -132,7 +132,9 @@ MetalCanvas* MetalCanvas::create(ObjPool& owner, const RenderContext& context) {
 
 bool Canvas::command(const char* value) {
     id<NSTextInputClient> client = (id<NSTextInputClient>)window.contentView;
-    if (strcmp(value, "system-close") == 0) {
+    if (strcmp(value, "native-state") == 0) {
+        printf("MINIMIZED %d\n", window.miniaturized);
+    } else if (strcmp(value, "system-close") == 0) {
         [window performClose:nil];
     } else if (strcmp(value, "detached-input") == 0) {
         STD_INSIST(savedInput != nil);

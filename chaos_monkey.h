@@ -53,6 +53,12 @@ namespace plt {
         NoAppAsn,
         NoAppLabel,
         SelectionTimeout,
+        WindowSurface,
+        FrameCallback,
+        LoopFlush,
+        SelectionFlush,
+        DropFlush,
+        SignalWaitInterrupted,
         Count,
     };
 

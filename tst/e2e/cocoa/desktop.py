@@ -157,7 +157,7 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             key(0, 1 << 16)  # Caps Lock modifier
             key(48, 1 << 17)  # Back-tab
             cg.CGEventKeyboardSetUnicodeString.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(C.c_uint16)]
-            for text_input in ("🌍", "é"):
+            for text_input in ("🌍", "é", "\uf727"):
                 raw = text_input.encode("utf-16-le")
                 units = (C.c_uint16 * (len(raw) // 2)).from_buffer_copy(raw)
                 for pressed in (True, False):
@@ -251,7 +251,13 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
             command("open-document")
             command("restore")
             command("minimize")
+            def minimized(expected):
+                before = len(text())
+                command("native-state")
+                return f"MINIMIZED {int(expected)}" in text()[before:]
+            wait(lambda: minimized(True), "native minimize completion")
             command("restore")
+            wait(lambda: minimized(False), "native restore completion")
             screenshot("restored", "40a060")
             command("maximize")
             command("maximize")

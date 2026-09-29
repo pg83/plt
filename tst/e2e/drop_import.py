@@ -4,10 +4,10 @@ from pathlib import Path
 from session import Session
 
 root = Path(os.environ["PLT_E2E_ARTIFACTS"])
-for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "leave", "pipe-failure", "no-offer", "close-hover", "legacy-copy", "legacy-move", "renegotiate", "no-target"):
+for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "leave", "pipe-failure", "flush-failure", "no-offer", "close-hover", "legacy-copy", "legacy-move", "renegotiate", "no-target"):
     os.environ["PLT_E2E_ARTIFACTS"] = str(root / mode)
     with Session(mode) as s:
-        fault = "selection-pipe@0" if mode == "pipe-failure" else "legacy-data-device@0" if mode.startswith("legacy-") else ""
+        fault = "drop-flush@0" if mode == "flush-failure" else "selection-pipe@0" if mode == "pipe-failure" else "legacy-data-device@0" if mode.startswith("legacy-") else ""
         s.launch(PLT_DROP_MODE=mode.removeprefix("legacy-"), PLT_CHAOS=fault)
         s.logged("SOURCE READY")
         source = s.window("plt-drag-source")
@@ -30,6 +30,13 @@ for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "
         if mode == "leave":
             s.pointer(100, 100, "plt-drag-source")
             s.logged("LEFT")
+        if mode == "flush-failure":
+            s.input("button 272 0", client=False)
+            assert s.client.wait(timeout=10) == 0
+            log = (s.artifacts / "client.log").read_text()
+            assert "CHAOS drop-flush" in log and "DROPPED []" in log, log
+            s.client = None
+            continue
         s.button(pressed=False)
         if mode == "close-hover":
             s.logged("TARGET CLOSED")
