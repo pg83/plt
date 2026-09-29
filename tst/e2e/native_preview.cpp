@@ -89,6 +89,9 @@ void NativePreview::close(void* data, xdg_toplevel*) {
 NativePreview::NativePreview(Editor& app_)
     : app(app_)
 {
+    // Discard an unshown placeholder before the native toolkit takes over.
+    auto pending = ObjPool::fromMemory();
+    app.platform->createWindow(*pending, {})->requestClose();
     auto* display = static_cast<wl_display*>(app.window->renderContext().connection);
     registry = wl_display_get_registry(display);
     static const wl_registry_listener registryListener{global, removed};

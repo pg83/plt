@@ -2438,6 +2438,11 @@ void PlatformImpl::textInputEntered(struct wl_surface* surface) {
     if (surface == nullptr) {
         return;
     }
+    // A replacement enter must retire the previous composition, even when
+    // a compositor omitted its leave notification during a focus change.
+    if (textInputWindow != nullptr) {
+        textInputLeft(nullptr);
+    }
     textInputWindow = (WindowImpl*)(wl_proxy_get_user_data((struct wl_proxy*)(surface)));
     if (textInputWindow != nullptr) {
         enableTextInput(*textInputWindow);

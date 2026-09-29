@@ -66,6 +66,7 @@ namespace plt {
         CocoaDescriptorSource,
         PendingDispatch,
         SignalWaitAgain,
+        CocoaDropEncode,
         Count,
     };
 

@@ -1380,7 +1380,7 @@ Input* CocoaDrop::read(StringView mime) {
     if (first && view->files && mime == uriListMime) {
         NSArray<NSURL*>* const urls = [pasteboard readObjectsForClasses:@[ [NSURL class] ] options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
         for (NSURL* url in urls) {
-            NSData* const encoded = [url.absoluteString dataUsingEncoding:NSUTF8StringEncoding];
+            NSData* const encoded = chaos(Fault::CocoaDropEncode) ? nil : [url.absoluteString dataUsingEncoding:NSUTF8StringEncoding];
             if (encoded != nil) {
                 content.append(encoded.bytes, encoded.length);
                 content.append("\r\n", 2);

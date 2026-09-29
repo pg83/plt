@@ -76,6 +76,7 @@ namespace {
         "cocoa-descriptor-source",
         "pending-dispatch",
         "signal-wait-again",
+        "cocoa-drop-encode",
     };
     static_assert(sizeof(names) / sizeof(*names) == (unsigned)Fault::Count);
 

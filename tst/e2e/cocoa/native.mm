@@ -149,6 +149,8 @@ bool Canvas::command(const char* value) {
             {@"a", @"a", 0, 0, true},
             {@"A", @"a", NSEventModifierFlagShift, 0xff, false},
             {@"a", @"é", NSEventModifierFlagShift, 0x40, false},
+            {@"§", @"§", 0, 0x0a, false},
+            {@"π", @"π", NSEventModifierFlagControl, 0xff, false},
             {@"\1", @"\1", NSEventModifierFlagOption, 0, false},
         };
         for (const KeyCase& item : cases) {

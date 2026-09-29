@@ -83,6 +83,12 @@ ImportDialog::~ImportDialog() {
 }
 
 void ImportDialog::ready(PollFD event) {
+    if (event.flags & PollFlag::Out) {
+        STD_INSIST(write(pipes[1], "x", 1) == 1);
+        waiter.fd = {.fd = pipes[0], .flags = PollFlag::In};
+        platform.poller()->arm(waiter);
+        return;
+    }
     STD_INSIST(event.flags & PollFlag::In);
     ++phase;
     if (phase == 1) {
@@ -102,8 +108,8 @@ void ImportDialog::ready(PollFD event) {
 }
 
 void ImportDialog::run() {
+    waiter.fd = {.fd = pipes[1], .flags = PollFlag::Out};
     platform.poller()->arm(waiter);
-    STD_INSIST(write(pipes[1], "x", 1) == 1);
     platform.run();
     STD_INSIST(phase == (replace ? 3u : 2u));
     char byte;
@@ -259,6 +265,9 @@ void Desktop::command(const char* line) {
         delete input;
         printf("PASTED %s\n", content.cStr());
         color = 0x40a060;
+    } else if (strcmp(line, "cold-preview") == 0) {
+        auto pending = ObjPool::fromMemory();
+        platform->createWindow(*pending, {});
     } else if (strcmp(line, "auxiliary") == 0 || strcmp(line, "retire-queued") == 0) {
         auxiliary = ObjPool::fromMemory();
         Window* pending = platform->createWindow(*auxiliary, {.appName = StringView(u8"\xff", 1)});

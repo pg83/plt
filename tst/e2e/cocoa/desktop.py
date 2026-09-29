@@ -130,11 +130,16 @@ with tempfile.TemporaryDirectory(prefix="plt-cocoa-") as temp:
                 screenshot(f"dropped-{kind}-{mode}", color)
 
             screenshot("initial", "204060")
-            if os.environ.get("PLT_NO_DROP"):
-                drag("text", None, 2, "204060")
+            if os.environ.get("PLT_NO_DROP") or os.environ.get("PLT_DROP_FAILURE"):
+                if os.environ.get("PLT_NO_DROP"):
+                    drag("text", None, 2, "204060")
+                else:
+                    drag("file", "", 0)
+                    assert "CHAOS cocoa-drop-encode" in text()
                 commands.write("system-close\n")
                 assert app.wait(timeout=15) == 0
                 raise SystemExit(0)
+            command("cold-preview")
             command("auxiliary")
             time.sleep(.1)
             command("auxiliary-frame")
