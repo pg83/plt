@@ -4,10 +4,11 @@ from pathlib import Path
 from session import Session
 
 root = Path(os.environ["PLT_E2E_ARTIFACTS"])
-for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "leave", "pipe-failure"):
+for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "leave", "pipe-failure", "no-offer", "close-hover", "legacy-copy", "legacy-move"):
     os.environ["PLT_E2E_ARTIFACTS"] = str(root / mode)
     with Session(mode) as s:
-        s.launch(PLT_DROP_MODE=mode, PLT_CHAOS="selection-pipe@0" if mode == "pipe-failure" else "")
+        fault = "selection-pipe@0" if mode == "pipe-failure" else "legacy-data-device@0" if mode.startswith("legacy-") else ""
+        s.launch(PLT_DROP_MODE=mode.removeprefix("legacy-"), PLT_CHAOS=fault)
         s.logged("SOURCE READY")
         source = s.window("plt-drag-source")
         target = s.window("plt-drop-target")
@@ -19,12 +20,24 @@ for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "
         s.button()
         s.logged("DRAG STARTED")
         s.pointer(100, 100, "plt-drop-target")
-        s.logged("HOVER")
+        if mode != "no-offer":
+            s.logged("HOVER")
         if mode == "leave":
             s.pointer(100, 100, "plt-drag-source")
             s.logged("LEFT")
         s.button(pressed=False)
-        if mode in ("copy", "move"):
+        if mode == "close-hover":
+            s.logged("TARGET CLOSED")
+            s.screenshot("surviving-source", [(.1, .5, .9, .8, "e0b040")], app_id="plt-drag-source")
+            s.ipc(f'[con_id={source["id"]}] kill')
+            assert s.client.wait(timeout=10) == 0
+            s.client = None
+            continue
+        if mode == "no-offer":
+            assert "DROPPED" not in (s.artifacts / "client.log").read_text()
+        elif mode == "legacy-copy":
+            s.logged("DROPPED [dragged document]")
+        elif mode in ("copy", "move"):
             s.logged("DROPPED [dragged document]")
             s.logged("SOURCE FINISHED")
             s.logged("ACTION " + ("2" if mode == "move" else "1"))
@@ -38,7 +51,7 @@ for mode in ("copy", "move", "reject", "unknown", "none", "ignore", "partial", "
         else:
             s.logged("SOURCE CANCELLED")
             assert "DROPPED" not in (s.artifacts / "client.log").read_text()
-        color = "40a060" if mode in ("copy", "move", "partial", "pipe-failure") else "204060"
+        color = "40a060" if mode in ("copy", "move", "partial", "pipe-failure", "legacy-copy") else "204060"
         s.screenshot("target", [(.1, .5, .9, .8, color)], app_id="plt-drop-target")
         s.ipc(f'[con_id={target["id"]}] kill')
         assert s.client.wait(timeout=10) == 0

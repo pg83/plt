@@ -1598,7 +1598,7 @@ void PlatformImpl::bindRegistry(u32 name, const char* interface, u32 version) {
         if (chaos(Fault::NoClipboard)) {
             return;
         }
-        dataDeviceManager = (struct wl_data_device_manager*)(wl_registry_bind(registry, name, &wl_data_device_manager_interface, min(version, 3u)));
+        dataDeviceManager = (struct wl_data_device_manager*)(wl_registry_bind(registry, name, &wl_data_device_manager_interface, chaos(Fault::LegacyDataDevice) ? 1u : min(version, 3u)));
     } else if (StringView(interface) == StringView(zwp_primary_selection_device_manager_v1_interface.name)) {
         if (chaos(Fault::NoPrimary)) {
             return;

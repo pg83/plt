@@ -52,6 +52,7 @@ namespace {
         "no-compositor",
         "no-shell",
         "no-seat",
+        "legacy-data-device",
     };
     static_assert(sizeof(names) / sizeof(*names) == (unsigned)Fault::Count);
 

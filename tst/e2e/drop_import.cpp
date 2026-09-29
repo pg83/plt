@@ -34,6 +34,7 @@ namespace {
     };
 
     struct Target final: public App, public DropTarget {
+        explicit Target(Platform* shared);
         void paint(Canvas& canvas) override;
         DropReply dragOver(const DropOffer& offer, i32 x, i32 y) override;
         void dragLeft() override;
@@ -195,6 +196,11 @@ void Source::connect() {
 }
 
 void Source::drag(u32 serial) {
+    if (strcmp(setting("PLT_DROP_MODE", ""), "no-offer") == 0) {
+        wl_data_device_start_drag(device, nullptr, (wl_surface*)window->renderContext().window, nullptr, serial);
+        puts("DRAG STARTED");
+        return;
+    }
     source = wl_data_device_manager_create_data_source(manager);
     wl_data_source_add_listener(source, &sourceListener, this);
     wl_data_source_offer(source, "text/plain;charset=utf-8");
@@ -209,6 +215,11 @@ void Source::paint(Canvas& canvas) {
     canvas.text(20, 40, StringView(u8"Drag this document"));
 }
 
+Target::Target(Platform* shared)
+    : App(shared)
+{
+}
+
 void Target::paint(Canvas& canvas) {
     canvas.clear(color);
     canvas.text(20, 40, StringView(u8"Document drop target"));
@@ -217,6 +228,13 @@ void Target::paint(Canvas& canvas) {
 DropReply Target::dragOver(const DropOffer& offer, i32, i32) {
     const char* mode = setting("PLT_DROP_MODE", "copy");
     puts("HOVER");
+    if (strcmp(mode, "close-hover") == 0) {
+        owner = ObjPool::Ref();
+        window = nullptr;
+        surface = nullptr;
+        puts("TARGET CLOSED");
+        return {};
+    }
     for (size_t i = 0; i != offer.formats(); ++i) {
         STD_INSIST(!offer.format(i).empty());
     }
@@ -258,7 +276,9 @@ void Target::dropped(Drop& drop) {
 }
 
 int main() {
-    Target target;
+    auto owner = ObjPool::fromMemory();
+    Platform* platform = Platform::create(*owner);
+    Target target(platform);
     target.open("plt-drop-target", 400, 280, &target);
     Source source(target.platform);
     source.open("plt-drag-source", 300, 220);

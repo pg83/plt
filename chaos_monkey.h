@@ -42,6 +42,7 @@ namespace plt {
         NoCompositor,
         NoShell,
         NoSeat,
+        LegacyDataDevice,
         Count,
     };
 
