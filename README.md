@@ -1,5 +1,11 @@
 # plt
 
+[![CI](https://github.com/pg83/plt/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/pg83/plt/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/pg83/plt/branch/master/graph/badge.svg)](https://app.codecov.io/gh/pg83/plt/tree/master)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-informational)](STYLE.md)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-8a8a8a)](#ci)
+
 Small native desktop platform layer built on libstd.
 
 The library provides native Linux/Wayland and macOS/Cocoa backends. Its public
@@ -15,3 +21,27 @@ Build with:
 ```sh
 ./build
 ```
+
+## CI
+
+The initial `build` job gates every test and coverage job. The suite runs
+with GCC/glibc, Clang/Alpine musl, Clang ASan, Clang UBSan, and Clang on
+Darwin (including Cocoa tests). Each job builds a pinned libstd revision
+with the same compiler and instrumentation as plt.
+
+Linux and Darwin coverage runs export separate LLVM tracefiles. One
+`coverage` job merges them and uploads the combined report to Codecov
+using OIDC. Tests, dependencies and generated sources are excluded.
+
+To reproduce a job with the required compiler and dependencies installed:
+
+```sh
+CC=clang CXX=clang++ LIBSTD_SOURCE=../std bash dev/ci.sh test
+CC=clang CXX=clang++ LIBSTD_SOURCE=../std bash dev/ci.sh asan
+CC=clang CXX=clang++ LIBSTD_SOURCE=../std bash dev/ci.sh ubsan
+CC=clang CXX=clang++ LIBSTD_SOURCE=../std bash dev/ci.sh coverage
+```
+
+Coverage additionally requires `llvm-profdata` and `llvm-cov` from the
+compiler's LLVM version. The workflow records the container images and
+libstd revision used by CI; `dev/ci_linux.sh` installs their dependencies.
