@@ -149,6 +149,8 @@ Desktop::Desktop()
             .appName = getenv("PLT_PASSIVE") ? StringView() : StringView(u8"PLT E2E"),
         }
     );
+    const WindowInfo initial = window->info();
+    STD_INSIST(initial.width == 400 && initial.height == 280);
     canvas = MetalCanvas::create(*owner, window->renderContext());
     canvas->command("compose");
     color = 0x204060;

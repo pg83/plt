@@ -273,6 +273,8 @@ namespace {
         Buffer title;
         u32 logicalWidth = 1;
         u32 logicalHeight = 1;
+        u32 initialWidth = 0;
+        u32 initialHeight = 0;
         u32 pendingWidth = 0;
         u32 pendingHeight = 0;
         u32 scaleNumerator = scaleDenominator;
@@ -1055,8 +1057,14 @@ namespace {
                     break;
             }
         }
-        window.pendingWidth = width > 0 ? (u32)(width) : window.logicalWidth;
-        window.pendingHeight = height > 0 ? (u32)(height) : window.logicalHeight;
+        window.pendingWidth = width > 0 ? (u32)(width) : 0;
+        window.pendingHeight = height > 0 ? (u32)(height) : 0;
+        if (width > 0) {
+            window.initialWidth = 0;
+        }
+        if (height > 0) {
+            window.initialHeight = 0;
+        }
     }
 
     const struct xdg_toplevel_listener toplevelListener{
@@ -2575,6 +2583,8 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     , dropTarget(options.drop)
     , logicalWidth(max(1u, options.width))
     , logicalHeight(max(1u, options.height))
+    , initialWidth(logicalWidth)
+    , initialHeight(logicalHeight)
     , minimumWidth(max(1u, options.minimumWidth))
     , minimumHeight(max(1u, options.minimumHeight))
 {
@@ -2699,8 +2709,8 @@ void WindowImpl::configure() {
     maximized = pendingMaximized;
     fullscreen = pendingFullscreen;
     tiled = pendingTiled;
-    u32 width = pendingWidth;
-    u32 height = pendingHeight;
+    u32 width = pendingWidth == 0 ? logicalWidth : pendingWidth;
+    u32 height = pendingHeight == 0 ? logicalHeight : pendingHeight;
     if (!maximized && !fullscreen && !tiled) {
         width = snappedLogical(width, resizeUnitWidth, resizeBaseWidth);
         height = snappedLogical(height, resizeUnitHeight, resizeBaseHeight);
@@ -2713,7 +2723,7 @@ void WindowImpl::configure() {
 }
 
 void WindowImpl::contentScale(u32 numerator) {
-    if (numerator == 0 || numerator == scaleNumerator) {
+    if (numerator == 0 || (numerator == scaleNumerator && initialWidth == 0 && initialHeight == 0)) {
         return;
     }
     scaleNumerator = numerator;
@@ -2721,7 +2731,9 @@ void WindowImpl::contentScale(u32 numerator) {
         wl_surface_set_buffer_scale(surface, 1);
     }
     xdg_toplevel_set_min_size(toplevel, logicalForPixel(minimumWidth), logicalForPixel(minimumHeight));
-    setLogicalSize(logicalWidth, logicalHeight);
+    setLogicalSize(initialWidth != 0 ? logicalForPixel(initialWidth) : logicalWidth, initialHeight != 0 ? logicalForPixel(initialHeight) : logicalHeight);
+    initialWidth = 0;
+    initialHeight = 0;
     requestFrame();
 }
 
@@ -2843,6 +2855,12 @@ void WindowImpl::requestFullscreen(bool value) {
 }
 
 void WindowImpl::requestResize(u32 width, u32 height) {
+    if (initialWidth != 0) {
+        initialWidth = max(1u, width);
+    }
+    if (initialHeight != 0) {
+        initialHeight = max(1u, height);
+    }
     setLogicalSize(logicalForPixel(width), logicalForPixel(height));
     requestFrame();
 }
