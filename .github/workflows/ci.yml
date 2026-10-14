@@ -41,7 +41,7 @@ jobs:
 
       - name: Upload failure log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-log
           path: ${{ runner.temp }}/build.log
@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload e2e screenshots and logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-glibc-e2e
           path: .build/ci-test/e2e-*/
@@ -88,7 +88,7 @@ jobs:
 
       - name: Upload failure log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-glibc-log
           path: ${{ runner.temp }}/tests-glibc.log
@@ -125,7 +125,7 @@ jobs:
 
       - name: Upload e2e screenshots and logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-musl-e2e
           path: .build/ci-test/e2e-*/
@@ -135,7 +135,7 @@ jobs:
 
       - name: Upload failure log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-musl-log
           path: ${{ runner.temp }}/tests-musl.log
@@ -172,7 +172,7 @@ jobs:
 
       - name: Upload e2e screenshots and logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-asan-e2e
           path: .build/ci-asan/e2e-*/
@@ -182,7 +182,7 @@ jobs:
 
       - name: Upload failure log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-asan-log
           path: ${{ runner.temp }}/tests-asan.log
@@ -219,7 +219,7 @@ jobs:
 
       - name: Upload e2e screenshots and logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-ubsan-e2e
           path: .build/ci-ubsan/e2e-*/
@@ -229,7 +229,7 @@ jobs:
 
       - name: Upload failure log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-ubsan-log
           path: ${{ runner.temp }}/tests-ubsan.log
@@ -264,7 +264,7 @@ jobs:
 
       - name: Upload native e2e screenshots and logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-darwin-e2e
           path: .build/ci-test/e2e-metal/
@@ -274,7 +274,7 @@ jobs:
 
       - name: Upload failure log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-darwin-log
           path: ${{ runner.temp }}/tests-darwin.log
@@ -307,7 +307,7 @@ jobs:
 
       - name: Upload coverage e2e screenshots and logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-e2e-artifacts
           path: .build/ci-coverage/e2e-*/
@@ -317,7 +317,7 @@ jobs:
 
       - name: Upload platform tracefile
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-linux
           path: |
@@ -329,7 +329,7 @@ jobs:
 
       - name: Upload failure log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-linux-log
           path: ${{ runner.temp }}/coverage-linux.log
@@ -364,7 +364,7 @@ jobs:
 
       - name: Upload native e2e screenshots and logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-darwin-e2e
           path: .build/ci-coverage/e2e-metal/
@@ -374,7 +374,7 @@ jobs:
 
       - name: Upload platform tracefile
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-darwin
           path: |
@@ -386,7 +386,7 @@ jobs:
 
       - name: Upload failure log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-darwin-log
           path: ${{ runner.temp }}/coverage-darwin.log
@@ -427,7 +427,7 @@ jobs:
 
       - name: Upload native e2e screenshots and logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-darwin-legacy-e2e
           path: .build/ci-coverage/e2e-metal/
@@ -437,7 +437,7 @@ jobs:
 
       - name: Upload platform tracefile
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-darwin-legacy
           path: |
@@ -449,7 +449,7 @@ jobs:
 
       - name: Upload failure log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-darwin-legacy-log
           path: ${{ runner.temp }}/coverage-darwin-legacy.log
@@ -498,7 +498,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-report
           path: ${{ runner.temp }}/coverage-report
