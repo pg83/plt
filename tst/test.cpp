@@ -144,6 +144,9 @@ namespace plt::test {
         wl_resource* dataDevice = nullptr;
         wl_resource* dataSource = nullptr;
         wl_resource* dataOffer = nullptr;
+        // The current offer is announced again after keyboard enter, as a
+        // compositor does when selection focus moves.
+        const char* selectionMime = nullptr;
         wl_resource* primaryDevice = nullptr;
         wl_resource* primarySource = nullptr;
         wl_resource* primaryOffer = nullptr;
@@ -875,6 +878,7 @@ namespace plt::test {
         if (dataDevice == nullptr) {
             return false;
         }
+        selectionMime = mime;
         dataOffer = wl_resource_create(client, &wl_data_offer_interface, wl_resource_get_version(dataDevice), 0);
         wl_resource_set_implementation(dataOffer, &dataOfferImplementation, this, nullptr);
         wl_data_device_send_data_offer(dataDevice, dataOffer);
@@ -1123,6 +1127,9 @@ namespace plt::test {
                     wl_keyboard_send_modifiers(keyboard, serial++, 0, 0, 0, 0);
                     wl_array_release(&keys);
                     wl_display_flush_clients(display);
+                    if (selectionMime != nullptr) {
+                        offerSelection(selectionMime);
+                    }
                     reply.count = 1;
                 }
                 break;
@@ -1719,6 +1726,7 @@ int main() {
     success = runScenario("selection source cancellation", sourceCancellation) && success;
     success = runScenario("poller API", pollerApi) && success;
     success = runScenario("deferred clipboard", deferredClipboard) && success;
+    success = runScenario("selection event", selectionEvent) && success;
     success = runScenario("fractional rounding", fractionalRounding) && success;
     success = runScenario("initial fractional size", initialFractionalSize) && success;
     success = runScenario("late initial scale", lateInitialScale) && success;

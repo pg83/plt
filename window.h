@@ -83,6 +83,11 @@ namespace plt {
 
     struct WindowEvents {
         virtual void close() = 0;
+        // The secondary selection changed hands, a new offer or none; sent
+        // to the window with keyboard focus, as the compositor tells it.
+        // Optional: clients that do not track selection changes need no hook.
+        virtual void selection() {
+        }
     };
 
     struct FrameCallback {

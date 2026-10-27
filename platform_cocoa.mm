@@ -188,6 +188,11 @@ void cocoaWakeReady(CFMachPortRef port, void* message, CFIndex size, void* owner
     cocoaInvalidateImpl(self.owner);
 }
 
+- (void)windowDidChangeOcclusionState:(NSNotification*)notification {
+    (void)notification;
+    cocoaInvalidateImpl(self.owner);
+}
+
 - (void)windowDidBecomeKey:(NSNotification*)notification {
     (void)notification;
     cocoaFocusImpl(self.owner, true);
@@ -209,6 +214,9 @@ void cocoaWakeReady(CFMachPortRef port, void* message, CFIndex size, void* owner
     // synchronously during a live resize, so we render the resize frame inside
     // the same transaction as the bounds change.
     CAMetalLayer* layer = [CAMetalLayer layer];
+    // Let the window show through pixels whose alpha the renderer leaves
+    // short, matching the transparent window background below.
+    layer.opaque = NO;
     layer.needsDisplayOnBoundsChange = YES;
     return layer;
 }
@@ -609,6 +617,7 @@ namespace {
         bool frameRequested = false;
         u32 idleFrames = 0;
         bool preeditShown = false;
+        NSInteger pasteboardChange = 0;
     };
 
     // The run loop natively sleeps on a mach port set; a port message is
@@ -1140,6 +1149,9 @@ WindowImpl::WindowImpl(PlatformImpl& platform_, const WindowOptions& options)
     const CGFloat scale = screen != nil ? screen.backingScaleFactor : 1.0;
     const NSRect frame = NSMakeRect(0, 0, max(1u, options.width) / scale, max(1u, options.height) / scale);
     window = [[PltWindow alloc] initWithContentRect:frame styleMask:(NSWindowStyleMask)cocoaWindowStyleMask(options.decorations) backing:NSBackingStoreBuffered defer:NO screen:screen];
+    // The content supplies the window's pixels, including their alpha.
+    window.opaque = NO;
+    window.backgroundColor = NSColor.clearColor;
     delegate = [PltWindowDelegate new];
     delegate.owner = this;
     window.delegate = delegate;
@@ -1290,10 +1302,17 @@ void WindowImpl::requestMaximized(bool value) {
 }
 
 void WindowImpl::requestFullscreen(bool value) {
-    const bool current = (window.styleMask & NSWindowStyleMaskFullScreen) != 0;
-    if (current != value) {
-        [window toggleFullScreen:nil];
-    }
+    NSWindow* const target = window;
+    // Asynchronous, like every request*. -toggleFullScreen: resizes the
+    // window synchronously, and the layer's displayLayer: would otherwise
+    // render inside the frame that made the request, taking that frame's
+    // drawable with it. Decide by the state when the request actually runs.
+    dispatch_async(dispatch_get_main_queue(), ^{
+      const bool current = (target.styleMask & NSWindowStyleMaskFullScreen) != 0;
+      if (current != value) {
+          [target toggleFullScreen:nil];
+      }
+    });
 }
 
 void WindowImpl::requestResize(u32 width, u32 height) {
@@ -1338,7 +1357,7 @@ void WindowImpl::applySizeConstraints() {
 }
 
 bool WindowImpl::inLiveResize() const {
-    return view.inLiveResize;
+    return view != nil && view.inLiveResize;
 }
 
 WindowInfo WindowImpl::info() const {
@@ -1635,6 +1654,16 @@ void WindowImpl::focused(bool value) {
     if (input != nullptr) {
         input->focus(value);
         input->flush();
+    }
+    // NSPasteboard announces no changes: inspect its change count whenever
+    // this window becomes key, which is when another application could have
+    // written the selection while we were in the background.
+    if (value && events != nullptr) {
+        const NSInteger change = [[NSPasteboard generalPasteboard] changeCount];
+        if (change != pasteboardChange) {
+            pasteboardChange = change;
+            events->selection();
+        }
     }
 }
 

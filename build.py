@@ -172,6 +172,22 @@ if build.target == build.host and not platforms_headless:
     test_timeout = ["python3", "$(S)/tst/run_timed.py", "120"]
     test_deps = []
     test_commands = []
+    plt_unit_tests = program(
+        name="plt_unit_tests",
+        output="$(B)/plt_unit_tests",
+        srcs=[
+            "$(S)/tst/test_ut.cpp",
+            "$(S)/drop_ut.cpp",
+            "$(S)/fiber_ut.cpp",
+            "$(S)/input_ut.cpp",
+            "$(S)/mutex_ut.cpp",
+            "$(S)/platform_headless_ut.cpp",
+            "$(S)/pointer_grab_ut.cpp",
+        ],
+        deps=[libplt_test, libstd],
+    )
+    test_deps.append(plt_unit_tests)
+    test_commands.append([*test_timeout, "$(B)/plt_unit_tests"])
     if system == "Darwin":
         plt_cocoa_tests = program(
             name="plt_cocoa_tests",

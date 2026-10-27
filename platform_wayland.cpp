@@ -691,11 +691,16 @@ namespace {
     void dataDeviceSelection(void* data, struct wl_data_device*, struct wl_data_offer* proxy) {
         PlatformImpl& platform = *(PlatformImpl*)(data);
         platform.clipboardOffer.reset();
-        if (proxy == nullptr) {
-            return;
+        if (proxy != nullptr) {
+            platform.clipboardOffer = platform.pendingClipboardOffer;
+            platform.pendingClipboardOffer = {};
         }
-        platform.clipboardOffer = platform.pendingClipboardOffer;
-        platform.pendingClipboardOffer = {};
+        // Selection belongs to the keyboard focus: report both a new offer
+        // and an empty selection to that window.
+        WindowImpl* const window = platform.keyboardFocus;
+        if (window != nullptr && window->events != nullptr) {
+            window->events->selection();
+        }
     }
 
     const struct wl_data_device_listener dataDeviceListener{
@@ -2802,7 +2807,11 @@ void WindowImpl::cancelFrame() {
 }
 
 void WindowImpl::frameReady(struct wl_callback* callback) {
-    wl_callback_destroy(callback);
+    if (callback != frameCallback) {
+        wl_callback_destroy(callback);
+        return;
+    }
+    wl_callback_destroy(frameCallback);
     frameCallback = nullptr;
     if (frameRequested) {
         requestFrame();
@@ -3093,7 +3102,7 @@ void WindowImpl::pointerFrame() {
             lineX = -scrollStepsX / 120.0;
             lineY = -scrollStepsY / 120.0;
         }
-        if (lineX != 0 || lineY != 0 || scrollPhase == ScrollPhase::End) {
+        if (lineX != 0 || lineY != 0 || scrollPhase == ScrollPhase::End || scrollPhase == ScrollPhase::Cancel) {
             input->scroll({
                 .x = lineX,
                 .y = lineY,
